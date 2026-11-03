@@ -1,12 +1,12 @@
 # 第1章 安装与简介
 
-这一章的目标很简单：把第一章后面所有章节都要用到的基本环境装好，理解 Codex 里两个最常见的概念——Skill 和 MCP。你不必理解很深，只需要按顺序完成每一步，并且知道每个命令是干什么的。学完这一章，你会拥有一个可以运行 Codex、可以安装技能、可以连接浏览器工具的电脑环境。
+这一章的目标很简单：把第一章后面所有章节都要用到的基本环境装好，理解 Codex 里两个最常见的概念——Skill 和 MCP。你不必理解很深，只需要按顺序完成每一步，并且知道每个命令是干什么的。学完这一章，你会拥有一个可以运行 Codex、可以安装技能、可以连接浏览器工具的电脑环境。先别急着一次装完全部，把每一项的命令和输出对上号，后面每一章都会用到这份基础；装错了也只是重来一遍，不丢面子。
 
 ## 1.1 安装 Python
 
 ### 简介
 
-Python 是一种编程语言，也是大量 MCP 和 Skill 脚本层的运行前提。很多技能并不是“用魔法在工作”，而是先调用一个 Python 脚本做确定性的计算，再把结果交给模型去判断。因此，电脑上有一个能用的 Python 非常重要。
+Python 是一种编程语言，也是大量 MCP 和 Skill 脚本层的运行前提。很多技能并不是“用魔法在工作”，而是先调用一个 Python 脚本做确定性的计算，再把结果交给模型去判断。因此，电脑上有一个能用的 Python 非常重要。装好 Python 只是第一步，后面大部分社区脚本和 Skill 都要靠它才能跑；安装时就把版本和 PATH 确认清楚，后面会少踩很多坑。
 
 官方建议安装 Python 3.12 或更高版本。Windows 安装时务必勾选“Add Python to PATH”，否则后面你在终端里输入 `python`，电脑会告诉你找不到命令。如果你希望每个项目都有独立环境，可以再安装 `uv`，用 `uv venv` 建隔离环境，用 `uv pip install` 安装包，不与系统 Python 互相干扰。
 
@@ -73,7 +73,11 @@ uv --version
 
 **Codex**：这是 Windows 临时目录用了 `ADMINI~1` 这种短路径名造成的。解决办法很简单：不要选在 `%TEMP%` 里建项目环境，换成 `D:\codex-python-verify` 这样的普通长路径。把路径写正常，提示就消失了。
 
+把这一节放回整条链路里看，它只是其中一段；真正动手时不必追求一次全对，先把命令跑通、把输出对上，遇到报错再回来查对应位置，往往比从头读一遍更快。
+
 ### 总结
+
+这一节的内容说起来不少，真正值得带走的是下面几条；把它们串起来看一遍，比单独记某一条更有用。
 
 - `python --version` 能返回版本号，说明 Python 装好了。
 - `python` 和 `py` 不是同一个东西，以 `sys.executable` 输出的真实路径为准。
@@ -84,7 +88,7 @@ uv --version
 
 ### 简介
 
-Node.js 是一个让 JavaScript 在电脑本地运行的环境。你后面会遇到两件事依赖它：`npm install -g @openai/codex` 这条命令需要 Node.js 22 以上；`chrome-devtools-mcp` 等 MCP 服务器通过 `npx` 启动，也依赖 Node.js。如果只装 Python 不装 Node.js，很多工具还是跑不起来。
+Node.js 是一个让 JavaScript 在电脑本地运行的环境。你后面会遇到两件事依赖它：`npm install -g @openai/codex` 这条命令需要 Node.js 22 以上；`chrome-devtools-mcp` 等 MCP 服务器通过 `npx` 启动，也依赖 Node.js。如果只装 Python 不装 Node.js，很多工具还是跑不起来。Node.js 装好后你平时看不见它工作，但几乎所有按需启动的工具都靠它；这一节的重点是确认三个命令都能用，并弄清楚 npx 什么时候会帮你自动下载。
 
 Windows 安装 LTS 版 `.msi` 时，安装向导里有个“Add to PATH”，不要取消。macOS 可以用 `brew install node@24`。需要维护多个 Node 版本时，可以用 `nvm` 管理。
 
@@ -140,7 +144,11 @@ npm config get registry
 
 如果公司或学校把 npm 换成内部镜像，这里会显示其他地址。只要命令能正常下载工具，通常不用管它。
 
+这些步骤看起来零散，其实前后是有因果的：前一步的产物就是后一步的输入，中间哪一环没对上，后面就会以各种奇怪的方式报错。
+
 ### 总结
+
+这一节的内容说起来不少，真正值得带走的是下面几条；把它们串起来看一遍，比单独记某一条更有用。
 
 - `node`、`npm`、`npx` 三个版本命令都要有输出，安装才算完整。
 - npx 负责“临时下载并运行工具”，适合 `chrome-devtools-mcp` 这类按需启动的服务器。
@@ -151,7 +159,7 @@ npm config get registry
 
 ### 简介
 
-Codex CLI 是全书终端操作的基础。它是 OpenAI 官方命令行工具，安装方式有两种：macOS/Linux 用安装脚本，Windows 用 PowerShell 安装脚本；如果已经在 1.2 节装好 Node.js 22 以上，也可以直接执行 `npm install -g @openai/codex`。装好之后要用 ChatGPT 账号或 API Key 登录，登录状态会保存下来，下次不用重新认证。
+Codex CLI 是全书终端操作的基础。它是 OpenAI 官方命令行工具，安装方式有两种：macOS/Linux 用安装脚本，Windows 用 PowerShell 安装脚本；如果已经在 1.2 节装好 Node.js 22 以上，也可以直接执行 `npm install -g @openai/codex`。装好之后要用 ChatGPT 账号或 API Key 登录，登录状态会保存下来，下次不用重新认证。Codex CLI 是后面所有 Skill 和 MCP 的主入口，值得多花几分钟把安装、登录、自检这三件事一次理顺，后面就不会在工具层面反复卡壳。
 
 ### 调用记录
 
@@ -201,7 +209,11 @@ ERROR: unexpected status 503 Service Unavailable
 
 原因是当前供应商的模型通道不可用，而不是 Codex 没装好或没登录。遇到这种情况，用 `codex doctor` 确认安装、配置、auth 三项正常，再去管模型供应商。这正是下一节 `CC Switch` 要解决的问题。
 
+如果只记住一句，那就是：先让最小链路真实跑通，再谈优化和自动化；跳过验证直接堆功能，最后往往要花更多时间回头补。
+
 ### 总结
+
+这一节的内容说起来不少，真正值得带走的是下面几条；把它们串起来看一遍，比单独记某一条更有用。
 
 - 安装成功的标志是 `codex --version` 有版本号。
 - `codex login status` 能确认登录状态，密钥不会完整显示。
@@ -212,7 +224,7 @@ ERROR: unexpected status 503 Service Unavailable
 
 ### 简介
 
-Codex Desktop 是 Codex 的图形界面形态。它的好处是适合同时打开多个项目、并行处理多个任务线程，而且项目里的文件、审批、对话记录都看得见。macOS 从官方下载 `.dmg`，Windows 可以通过 `codex app` 自动打开安装器，也可以从 Microsoft Store 或 `winget` 安装。
+Codex Desktop 是 Codex 的图形界面形态。它的好处是适合同时打开多个项目、并行处理多个任务线程，而且项目里的文件、审批、对话记录都看得见。macOS 从官方下载 `.dmg`，Windows 可以通过 `codex app` 自动打开安装器，也可以从 Microsoft Store 或 `winget` 安装。桌面版不是必须品，但对喜欢同时开多个项目、多看几个窗口的人来说，它比光秃秃的命令行直观得多，也更容易判断正在发生什么。
 
 需要特别强调的是“审批边界”：桌面版打开本地文件夹后，并不会默认获得随意修改文件的权限。你第一次要求它做有副作用的事，它会弹审批；如果它未经提示就修改文件，说明审批策略需要调整。
 
@@ -259,7 +271,11 @@ codex app --help
 
 `OnRequest` 的意思是“遇到需要权限的操作会先问你”。在桌面版里打开一个已有项目，然后对它说：**“解释目录结构，不要修改任何文件”**。如果它认真回答而没有弹修改权限，正常；如果它未经提示就创建或修改文件，说明这台机器的审批策略设置得过松，需要收紧。
 
+本节记录里保留了失败和阻断，不是为了吓人，而是让你知道正常使用中也会遇到这些情况，遇到了照着排查即可，不必怀疑自己。
+
 ### 总结
+
+这一节的内容说起来不少，真正值得带走的是下面几条；把它们串起来看一遍，比单独记某一条更有用。
 
 - 桌面版不是 CLI 的必需品，但适合多任务并行。
 - Windows 上可用 `codex app` 自动获取安装器，也可以用 Microsoft Store。
@@ -270,7 +286,7 @@ codex app --help
 
 ### 简介
 
-CC Switch 是一个图形化管理工具，用来管理 Codex 和 Claude Code 的模型供应商配置，避免手改 `~/.codex/auth.json` 和 `config.toml`。它内置 DeepSeek、Qwen、Kimi、GLM 等 50 多个供应商预设。你在界面上选择供应商，保存后，CC Switch 会自动更新 Codex 的配置文件；切换模型后重启或重新打开 Codex 对话，新模型就生效。
+CC Switch 是一个图形化管理工具，用来管理 Codex 和 Claude Code 的模型供应商配置，避免手改 `~/.codex/auth.json` 和 `config.toml`。它内置 DeepSeek、Qwen、Kimi、GLM 等 50 多个供应商预设。你在界面上选择供应商，保存后，CC Switch 会自动更新 Codex 的配置文件；切换模型后重启或重新打开 Codex 对话，新模型就生效。模型供应商这件事平时看不见，可一旦切错，Codex 会在你真正提问时才报错；用 CC Switch 把这些配置统一管起来，相当于给模型切换上了一道保险。
 
 Windows 上可以从 Releases 下载安装包，macOS 可执行 `brew install --cask cc-switch`。如果你已经让 CC Switch 接管 Codex 配置，`config.toml` 里的 `model_provider`、`model`、`base_url` 会指向它的本地代理。
 
@@ -324,7 +340,11 @@ No available channel for model deepseek-ai/deepseek-v4.1-flash
 
 意思是这个模型没有可用通道，不是 Codex 坏了。处理顺序是：先在 CC Switch 界面上看供应商 API Key 是否已填、模型名是否存在于该供应商；换一个能用的供应商；保存后重新打开 Codex 对话再试。
 
+做完这一节，建议把关键命令和输出随手记在自己的笔记里；下次再遇到同类任务，翻自己的记录通常比重新搜索更快。
+
 ### 总结
+
+这一节的内容说起来不少，真正值得带走的是下面几条；把它们串起来看一遍，比单独记某一条更有用。
 
 - CC Switch 的作用是替你把模型供应商配置写到 `~/.codex/config.toml`。
 - 看到 `base_url` 指向本机 `127.0.0.1` 端口，说明 Codex 走了 CC Switch 的本地代理。
@@ -335,7 +355,7 @@ No available channel for model deepseek-ai/deepseek-v4.1-flash
 
 ### 简介
 
-Skill 是给 Codex 的一套“工作说明书”，它不是模型本身自带的能力，而是一个文件夹。Codex 根据用户的话，决定要不要读取这个文件夹里的说明。一个最小的 Skill 包含一个 `SKILL.md` 文件，文件开头是 YAML 格式的 `name` 和 `description`；可选地，还可以有 `scripts/`、`references/`、`assets/` 等目录。
+Skill 是给 Codex 的一套“工作说明书”，它不是模型本身自带的能力，而是一个文件夹。Codex 根据用户的话，决定要不要读取这个文件夹里的说明。一个最小的 Skill 包含一个 `SKILL.md` 文件，文件开头是 YAML 格式的 `name` 和 `description`；可选地，还可以有 `scripts/`、`references/`、`assets/` 等目录。技能文件看起来只是几个文本文件，但它们的摆放和组织方式决定了 Codex 什么时候会'想起'它们；把这个机制理解透，后面装再多技能也不会乱。
 
 Skill 的触发是分阶段的：不管哪种任务，Codex 都能先看到 `name` 和 `description`，它们决定“这个技能要不要被考虑”；命中之后，Codex 才读取 `SKILL.md` 正文；只有正文需要时，才会加载 `scripts/`、`references/` 之类的附加资源。这就是“渐进加载”。
 
@@ -424,7 +444,11 @@ uvx --with pyyaml python -X utf8 C:\Users\Administrator\.codex\skills\.system\sk
 
 `SKILL.md` 里的“跳过已完成项、按原顺序输出、不要新建文件”这三条规则，都真实地反映在结果里了。
 
+把这一节放回整条链路里看，它只是其中一段；真正动手时不必追求一次全对，先把命令跑通、把输出对上，遇到报错再回来查对应位置，往往比从头读一遍更快。
+
 ### 总结
+
+这一节的内容说起来不少，真正值得带走的是下面几条；把它们串起来看一遍，比单独记某一条更有用。
 
 - Skill 的最小单元是一个带 `SKILL.md` 的文件夹。
 - `frontmatter` 的 `name` 决定名字，`description` 决定什么时候被触发。
@@ -435,7 +459,7 @@ uvx --with pyyaml python -X utf8 C:\Users\Administrator\.codex\skills\.system\sk
 
 ### 简介
 
-Codex 内置了 `skill-installer`，它可以从官方技能列表或任意 GitHub 仓库安装技能，不需要你手动克隆目录。第一个要安装的 Skill 是 `create-plan`，它专门在用户要求规划时，把需求整理成一份结构清晰的计划。
+Codex 内置了 `skill-installer`，它可以从官方技能列表或任意 GitHub 仓库安装技能，不需要你手动克隆目录。第一个要安装的 Skill 是 `create-plan`，它专门在用户要求规划时，把需求整理成一份结构清晰的计划。第一个技能不必复杂，先把'装上、被触发、给出产出'这条最小链路完整跑通；这一关过了，后面再学什么技能都是同一套思路。
 
 这里还要理解什么叫“隐式触发”：不需要输入 `$create-plan` 这种显式命令，只要你自然地说“给我一个计划”，Codex 就有机会根据 `description` 自动匹配到 `create-plan`。本书第4章会正式用它开发软件，所以这一章把它当作贯穿全书的种子技能。下面的记录来自 `create-plan` 的 `SKILL.md` 被加载后的一次真实执行。
 
@@ -513,7 +537,11 @@ fatal: Remote branch main not found in upstream origin
 
 注意这里最值得学习的点：它没有一上来就说“我来写代码”，而是先读代码、识别边界、说明假设，再给你一份可以照着执行的计划。
 
+这些步骤看起来零散，其实前后是有因果的：前一步的产物就是后一步的输入，中间哪一环没对上，后面就会以各种奇怪的方式报错。
+
 ### 总结
+
+这一节的内容说起来不少，真正值得带走的是下面几条；把它们串起来看一遍，比单独记某一条更有用。
 
 - `skill-installer` 能按仓库路径安装 Skill，装好后目录在 `~/.codex/skills` 下。
 - `create-plan` 的流程约束是“先扫描、再假设、最后输出计划”。
@@ -524,7 +552,7 @@ fatal: Remote branch main not found in upstream origin
 
 ### 简介
 
-MCP（Model Context Protocol）是“把外部工具连上”的标准协议，Skill 是“决定怎么用”的工作说明书。这句话是全书反复出现的基础认知：MCP 给 Codex 提供原子能力，比如打开浏览器、读文件、执行调试器；Skill 把这些能力组合成固定流程，比如“先启动、再定位、再填写、再校验”。
+MCP（Model Context Protocol）是“把外部工具连上”的标准协议，Skill 是“决定怎么用”的工作说明书。这句话是全书反复出现的基础认知：MCP 给 Codex 提供原子能力，比如打开浏览器、读文件、执行调试器；Skill 把这些能力组合成固定流程，比如“先启动、再定位、再填写、再校验”。MCP 和 Skill 的分工是全书反复出现的主线，这一节用一个小小的 echo 实例，把'配置被识别'和'真正握手成功'这两种状态的区别讲清楚。
 
 Codex 的 MCP 服务器声明在 `~/.codex/config.toml` 中。使用 `command` 和 `args` 的是 stdio 服务器，也就是 Codex 启动一个本地命令，通过标准输入输出和它通信；使用 `url` 的是远程服务器。本节不引入复杂服务器，而是添加一个最简单的临时配置，让你看清配置长什么样、Codex 是怎么识别的。
 
@@ -581,7 +609,11 @@ args = ["/c", "echo", "hello"]
 
 **Codex**：MCP 回答“我能做什么工具”，Skill 回答“这件事按什么顺序做”。例如浏览器 MCP 只负责打开页面、点击、求值、截图；而一个 RPA 技能决定“先打开、再定位搜索框、输入、提交、等结果出现、再读取前三条”。没有 MCP，技能没有手；没有技能，MCP 只是一堆孤立的工具按钮。
 
+如果只记住一句，那就是：先让最小链路真实跑通，再谈优化和自动化；跳过验证直接堆功能，最后往往要花更多时间回头补。
+
 ### 总结
+
+这一节的内容说起来不少，真正值得带走的是下面几条；把它们串起来看一遍，比单独记某一条更有用。
 
 - MCP 配置写在 `~/.codex/config.toml`，stdio 用 `command` + `args`，远程用 `url`。
 - `codex mcp add` 是添加服务器最可靠的入口。
@@ -592,7 +624,7 @@ args = ["/c", "echo", "hello"]
 
 ### 简介
 
-Chrome DevTools MCP 让 Codex 连接真实浏览器：打开页面、读取 DOM、截图、查看网络请求、跑 Lighthouse 审计。它对你的意义是，以后 Codex 不需要你手动打开浏览器再描述结果，它可以自己打开页面并返回结构化的数据。
+Chrome DevTools MCP 让 Codex 连接真实浏览器：打开页面、读取 DOM、截图、查看网络请求、跑 Lighthouse 审计。它对你的意义是，以后 Codex 不需要你手动打开浏览器再描述结果，它可以自己打开页面并返回结构化的数据。浏览器 MCP 是从'让 AI 看着网页猜'到'让 AI 直接读网页'的分水岭；这一节装好它，并把第一条链路真实验证一遍。
 
 安装命令只有一个：
 
@@ -704,7 +736,11 @@ wait_for  { pageId: 2, text: ["Example Domain"], visible: true }
 
 看到匹配文本出现，说明页面已经进入可操作状态。
 
+本节记录里保留了失败和阻断，不是为了吓人，而是让你知道正常使用中也会遇到这些情况，遇到了照着排查即可，不必怀疑自己。
+
 ### 总结
+
+这一节的内容说起来不少，真正值得带走的是下面几条；把它们串起来看一遍，比单独记某一条更有用。
 
 - 安装 Chrome DevTools MCP 只需一条 `codex mcp add` 命令，服务器会在第一次调用时才真正下载。
 - 它提供的核心工具是 `new_page`、`navigate_page`、`evaluate_script`、`take_snapshot`、`take_screenshot` 和 `wait_for`。
