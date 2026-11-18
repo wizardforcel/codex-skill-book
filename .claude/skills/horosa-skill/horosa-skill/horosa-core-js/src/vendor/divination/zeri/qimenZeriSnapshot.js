@@ -1,0 +1,89 @@
+// [奇门择日] AI 快照附加段 builder(拼接在 DunJiaMain 奇门全文快照之后)。
+// 🔒 三个段头「择日搜索配置/择日条件/命中时辰」与 aiExport.AI_EXPORT_PRESET_SECTIONS.qimenzeri
+// 的追加段逐字成对(四同步纪律),改任一侧必同改另一侧(qimenZeriFourLedger.test.js 钉死)。
+import { JOINER_CN } from './conditionTypes.js';
+import { appendZeriHitRows, zeriRowDurationMin } from './zeriExplainText.js';
+import { qimenLeafSummary } from './qimenConditionTypes.js';
+import {
+	PAIPAN_OPTIONS, SCHOOL_OPTIONS,
+	KONG_MODE_OPTIONS, MA_MODE_OPTIONS, TIME_ALG_OPTIONS, DAY_SWITCH_OPTIONS, ZHIRUN_LEAP_OPTIONS,
+	qijuMethodUsesJieqiFa, qijuMethodOptionsFor, qijuMethodSelectValue,
+} from '../../dunjia/DunJiaCalc.js';
+
+function labelOf(options, value){
+	const hit = (options || []).find((o)=>`${o.value}` === `${value}`);
+	return hit ? hit.label : `${value === undefined || value === null ? '' : value}`;
+}
+
+// 链式 joiner 树文本(组无 op;兄弟第 2 起带 且/或/异或 前缀)——勿按 op 键读(恒 undefined)。
+export function describeQimenTreeLines(node, depth, index, out){
+	const lines = out || [];
+	if(!node){
+		return lines;
+	}
+	const pad = '  '.repeat(depth);
+	const gate = index > 0 ? `${JOINER_CN[node.joiner || 'all']} ` : '';
+	if(node.kind === 'group' || Array.isArray(node.children)){
+		lines.push(`${pad}${gate}${node.negate ? '非·' : ''}分组(${(node.children || []).length} 条):`);
+		(node.children || []).forEach((c, i)=>describeQimenTreeLines(c, depth + 1, i, lines));
+		return lines;
+	}
+	lines.push(`${pad}${gate}${qimenLeafSummary(node)}`);
+	return lines;
+}
+
+export function buildQimenZeriSnapshotExtra({ cfg, geo, options, tree, results, truncated, explainAt, maxRows, explainRows }){
+	const lines = [];
+	lines.push('[择日搜索配置]');
+	lines.push(`时间段：${cfg ? `${cfg.startDate} ${cfg.startTime} → ${cfg.endDate} ${cfg.endTime}` : '未设'}`);
+	const geoText = geo
+		? (geo.pos || (geo.gpsLon !== undefined && geo.gpsLon !== null ? `${geo.gpsLon},${geo.gpsLat}` : '未设'))
+		: '未设';
+	lines.push(`地点：${geoText}　时区：${geo && geo.zone !== undefined && geo.zone !== null ? geo.zone : '—'}`);
+	if(options){
+		const segs = [
+			labelOf(PAIPAN_OPTIONS, options.paiPanType),
+			// 起局法文字随排盘体例(非时家刻家只有「本家默认 / 阴盘」,与工作台 / 奇门页同一判据)
+			(()=>{ const pt = options.paiPanType === undefined || options.paiPanType === null || options.paiPanType === '' ? 3 : options.paiPanType; return labelOf(qijuMethodOptionsFor(pt), qijuMethodSelectValue(pt, options.qijuMethod)); })(),
+			labelOf(SCHOOL_OPTIONS, options.school),
+			`空亡${labelOf(KONG_MODE_OPTIONS, options.kongMode)}`,
+			`驿马${labelOf(MA_MODE_OPTIONS, options.yimaMode)}`,
+			labelOf(TIME_ALG_OPTIONS, options.timeAlg),
+			labelOf(DAY_SWITCH_OPTIONS, options.after23NewDay),
+		];
+		// 置闰阈值只在「置闰」起局法 × 时家 / 刻家时起作用(其余家别引擎不用它,写进快照会误导)
+		if(options.qijuMethod === 'zhirun' && qijuMethodUsesJieqiFa(options.paiPanType === undefined || options.paiPanType === null || options.paiPanType === '' ? 3 : options.paiPanType)){
+			segs.push(labelOf(ZHIRUN_LEAP_OPTIONS, options.zhirunLeapDays));
+		}
+		if(options.qijuMethod === 'shuzi' && options.shuziReportNumber){
+			segs.push(`报数${options.shuziReportNumber}`);
+		}
+		lines.push(`参数：${segs.join('·')}`);
+	}
+	lines.push('');
+	lines.push('[择日条件]');
+	const treeLines = [];
+	(tree && tree.children ? tree.children : []).forEach((c, i)=>describeQimenTreeLines(c, 0, i, treeLines));
+	if(treeLines.length){
+		lines.push(...treeLines);
+	}else{
+		lines.push('(未设条件)');
+	}
+	lines.push('');
+	lines.push('[命中时辰]');
+	const rows = Array.isArray(results) ? results : null;
+	if(!rows){
+		lines.push('尚未找局。');
+	}else if(!rows.length){
+		lines.push('时间段内无满足条件的时辰。');
+	}else{
+		// 命中行补时长(分,由 start/end 相减);清单上限全局可配(缺省 60);前 N 行附判读树。
+		appendZeriHitRows(lines, rows, {
+			formatRow: (row, i)=>{ const dm = zeriRowDurationMin(row); return `${i + 1}. ${row.start} ~ ${row.end}${dm !== null ? `(${dm}分)` : ''}　${row.juText || ''}`; },
+			tail: (total, cap)=>`(其余 ${total - cap} 条略)`,
+			truncated, truncatedText: '(已达命中上限截断,请缩小时间段)',
+			maxRows, explainRows, explainAt, uiTree: tree, leafSummary: qimenLeafSummary,
+		});
+	}
+	return lines.join('\n');
+}

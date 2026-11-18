@@ -1,0 +1,106 @@
+properties:
+  file.name:
+    displayName: 文件
+  file.folder:
+    displayName: 文件夹
+  type:
+    displayName: 类型
+  status:
+    displayName: 状态
+  truth_status:
+    displayName: 可信状态
+  area:
+    displayName: 区域
+  summary:
+    displayName: 摘要
+  route_target:
+    displayName: 位置
+  project_status:
+    displayName: 项目状态
+  extract_status:
+    displayName: 提炼状态
+  extract_depth:
+    displayName: 提炼深度
+  last_reviewed:
+    displayName: 最近整理
+  last_verified:
+    displayName: 最近验证
+  valid_until:
+    displayName: 有效期
+  file.mtime:
+    displayName: 修改时间
+views:
+  - type: table
+    name: 正式可调用
+    filters:
+      and:
+        - 'file.inFolder("10_正式库")'
+        - 'file.hasTag("入库/已入库")'
+        - 'file.hasTag("归类/已归类")'
+    order:
+      - file.name
+      - file.folder
+      - type
+      - status
+      - truth_status
+      - area
+      - summary
+      - last_verified
+      - valid_until
+      - file.mtime
+  - type: table
+    name: 待提炼记录
+    filters:
+      and:
+        - 'file.inFolder("10_正式库/02_思辨区/01_思辨记录")'
+        - 'file.hasTag("对话/待提炼")'
+    order:
+      - file.name
+      - file.folder
+      - area
+      - summary
+      - extract_status
+      - extract_depth
+      - file.mtime
+  - type: table
+    name: 已提炼记录
+    filters:
+      and:
+        - 'file.inFolder("10_正式库/02_思辨区/01_思辨记录")'
+        - 'file.hasTag("对话/已提炼")'
+    order:
+      - file.name
+      - file.folder
+      - area
+      - summary
+      - extract_status
+      - extract_depth
+      - file.mtime
+  - type: table
+    name: 待确认污染风险
+    filters:
+      or:
+        - 'truth_status == "unverified"'
+        - 'file.hasTag("入库/待确认")'
+    order:
+      - file.name
+      - file.folder
+      - type
+      - status
+      - truth_status
+      - area
+      - summary
+      - file.mtime
+  - type: table
+    name: 已废弃
+    filters:
+      or:
+        - 'file.inFolder("99_垃圾区")'
+        - 'truth_status == "discarded"'
+    order:
+      - file.name
+      - file.folder
+      - type
+      - status
+      - truth_status
+      - file.mtime

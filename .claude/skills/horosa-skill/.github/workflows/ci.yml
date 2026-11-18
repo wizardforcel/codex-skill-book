@@ -1,0 +1,301 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+# 测试作业只读仓库；不需要写任何东西（v0.41.1）。
+permissions:
+  contents: read
+
+# 同一个 PR 连推只留最新一次（旧的取消）；main 上每个提交各占一组——共用一组时 GitHub 会让后来的排队、
+# 并取消排队中的那次，main 就会丢掉某些提交的验证结果（tests/test_ci_workflow_shape.py 锁）。
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # v0.46.0：15 → 25。v0.45.1 时整个 job 已用 14:34 / 15（97%，单元测试 12:13）；v3.13.0 同步加了约 200 条测试后单元测试
+    # 12:51，job 在零安装步被超时取消（41115172448，所有已跑步骤全绿）。按 LESSONS v0.45.1「占比 > 90% 就提前加」留足余量。
+    # v0.51.0：25 → 40。v3.14.0 同步后整 job 19–24 分钟（ec626fa1 用了 24:19 / 25 = 97%），e83b6450 在单元测试一步被超时取消。
+    timeout-minutes: 40
+    steps:
+      # v0.51.0：两个 job 都在 95–97% 才被超时取消时才发现——末步 ci_job_budget.py 超 85% 打注解（与发版 lane 同一阈值）。
+      - name: Record job start
+        shell: bash
+        run: echo "HOROSA_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+      # 审计平台待决项 13 / PF-20：按契约里的提交号浅取公开上游（约 86 MB 工作树），设 HOROSA_SOURCE_ROOT——
+      # 55 条 [upstream-checkout] 对照测试与跨树守卫以前在 CI 里整段跳过。上游再改写历史时这里红（该知道的事）。
+      - name: Read the pinned public upstream (contracts/upstream_provenance.json)
+        id: upstream
+        shell: bash
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          state = json.load(open("horosa-skill/contracts/upstream_provenance.json", encoding="utf-8"))
+          print("repo=" + state["upstream_repository"])
+          print("sha=" + state["upstream_git_sha"])
+          PY
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          repository: ${{ steps.upstream.outputs.repo }}
+          ref: ${{ steps.upstream.outputs.sha }}
+          path: .upstream/horosa-public
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Point the upstream-checkout tests at it
+        shell: bash
+        run: |
+          test "$(git -C .upstream/horosa-public rev-parse HEAD)" = "${{ steps.upstream.outputs.sha }}"
+          echo "HOROSA_SOURCE_ROOT=$GITHUB_WORKSPACE/.upstream/horosa-public" >> "$GITHUB_ENV"
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5
+        with:
+          node-version: "22"
+      # canping/heluo compute their four pillars in-process via horosa-core-js's vendored bazi chain,
+      # which imports the `lunar-javascript` npm package. node_modules is gitignored, so a fresh CI
+      # checkout must install it or the (non-runtime-gated) canping/heluo tests fail with
+      # ERR_MODULE_NOT_FOUND. Mirrors the runtime builders' `npm install --omit=dev`.
+      - name: Install horosa-core-js deps (lunar-javascript)
+        working-directory: ./horosa-skill/horosa-core-js
+        run: npm ci --omit=dev
+      - name: Run horosa-core-js JS golden self-check (horary/election/balbillus)
+        working-directory: ./horosa-skill/horosa-core-js
+        run: npm test
+      - name: Install dependencies
+        working-directory: ./horosa-skill
+        run: uv sync --dev
+      - name: Run unit tests
+        working-directory: ./horosa-skill
+        run: uv run pytest -q
+      - name: Verify README links
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_readme_links.py
+      - name: Verify server.json
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_server_json.py
+      - name: Verify docs sync (version lockstep / tool coverage / links / frontmatter)
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_docs_sync.py
+      # ⚠️ 这两个 step 在 GitHub runner 上**做不了本行的核心比对**：`vendor/runtime-source` 是
+      # gitignored、也没有上游 checkout。以前注释声称棘轮「在这里就能红」，实际是整段 skip，
+      # 于是两个守卫在 CI 里零断言（2026-08 连同 release.yml 从未执行一并发现）。
+      # 现在各自退而断言仓内可判的部分：基线键 vs registry 自洽 / state 文件是否已落后于镜像常量。
+      # 真正的跨树比对是维护机上的 pre-tag 步骤：scripts/preflight_release.py（AGENTS §7）。
+      - name: Verify export-section baseline coherence (section diff needs a vendored tree)
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_export_section_baseline.py
+      - name: Verify upstream-sync state currency (cross-tree diff needs an upstream checkout)
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_upstream_sync.py
+      # v0.51.0：以前只在发版 preflight 跑（要 gitignored 的 vendored 树），审计新加的 skill 侧导出键 ziwei_rules 漏登白名单，
+      # PR CI 与本机 25 道门禁都绿、到 preflight 才红。CI 上没有 vendored 树时读上面钉住的公开上游（同一份 aiExport.js）。
+      - name: Verify export-contract mirror (skill export keys ↔ upstream aiExport, both directions)
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_export_contract_mirror.py
+      - name: Verify technique compute-source declarations
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_technique_provenance.py
+      - name: Verify MCP advertised schemas are portable across clients
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_mcp_client_compat.py
+      - name: Verify runtime launcher never kills foreign processes
+        working-directory: ./horosa-skill
+        run: |
+          uv run python scripts/verify_runtime_scripts.py
+          uv run python scripts/verify_runtime_scripts.py --self-test
+      - name: Verify committed client configs actually connect (.mcp.json / plugin)
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_client_configs.py
+      - name: Verify MCPB bundle manifest and contents
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_mcpb_manifest.py
+      - name: Zero-install path works (uvx --from git+…#subdirectory)
+        # 🔴 `#subdirectory=` 是 README 与 server.json 里给用户的唯一零安装命令（PyPI 未开通）。
+        # 用 file:// 指向本 checkout：不上网、不依赖 tag 已推送，但把「subdirectory 语法解析得对吗」
+        # 这一条真的跑一遍 —— 写错时的症状是用户端一句 `Distribution not found`。
+        # 🔴 URL 里必须钉一个 rev。actions/checkout 的工作树没有 `refs/remotes/origin/HEAD`，
+        # uv 解析 file:// 仓库的默认分支时会 `git rev-parse refs/remotes/origin/HEAD` 失败
+        # （CI 实测：`failed to find default branch HEAD`）。钉 SHA 同时也更贴近用户拿到的
+        # `@v<tag>` 形式 —— 那一条本来就带 rev。
+        run: HOME=$(mktemp -d) uvx --from "git+file://$GITHUB_WORKSPACE@$GITHUB_SHA#subdirectory=horosa-skill" horosa-skill --version
+      - name: Zero-install path from the wheel works (uvx --from <wheel>)
+        # v0.38.0 B3：发布页附带的纯 Python wheel 是免 git / 免 PyPI 的零安装通路。这里用本 checkout 构建的
+        # wheel 走 file:// 把「uvx 能从一个 .whl URL 起 horosa-skill」这条真跑一遍；线上 URL 由
+        # release-completeness.yml 对已发布的 latest 断言。
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/horosa-whl && mkdir -p /tmp/horosa-whl
+          (cd horosa-skill && uv build --wheel --out-dir /tmp/horosa-whl)
+          whl="$(ls /tmp/horosa-whl/horosa_skill-*-py3-none-any.whl)"
+          HOME=$(mktemp -d) uvx --from "file://${whl}" horosa-skill --version
+          # v0.38.0 B4：wheel 装出来的包旁边没有 pyproject.toml —— `setup` 必须自动选 uvx-wheel 启动器（而不是 BadParameter）。
+          # v0.38.1 R9：不再 dry-run —— 用 wheel 里的包**真起一次 stdio server**（claude-code = 全量面，工具数从 contracts/mcp_list_budget.json 的 full_tools 读，别再写死）。
+          # dry-run 只证明「计划能算出来」，证明不了 wheel 少了哪个数据文件会让 server 起不来。
+          # 🔴 探针跑的是**客户端将要执行的命令**：uvx-wheel 形态默认写发布页的 wheel URL —— 而 CI 上这个版本还没发布（首推 v0.38.1
+          # 时 uvx 对 …/v0.38.1/…whl 报 Failed to download）。走 C15 的本地缓存：把刚构建的 wheel 放进 ~/.horosa/wheels/，setup 便把
+          # `--from <本地 wheel>` 写进配置（离线可起），探针照样真起一次 stdio。
+          export HOME=$(mktemp -d); mkdir -p "$HOME/.horosa/wheels"; cp "${whl}" "$HOME/.horosa/wheels/"
+          uvx --from "file://${whl}" horosa-skill setup --client claude-code --config /tmp/horosa-setup-smoke/mcp.json --no-write --no-probe-network --skip-install \
+            | python3 -c 'import json,sys; r=json.load(sys.stdin); probe=r["steps"]["stdio_probe"]; assert r["ok"] and r["launcher"]["kind"] == "uvx-wheel", r["launcher"]; assert r["launcher"].get("wheel_cached_path"), r["launcher"]; full=json.load(open("horosa-skill/contracts/mcp_list_budget.json"))["full_tools"]; assert probe["tools"] == full == probe["expected_tools"], (probe, full); print("setup via cached wheel, real stdio probe:", probe["tools"], "tools")'
+      - name: Verify JS tool→engine boundary contracts (the issue #15 dead-key shape)
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_js_boundary_contracts.py
+      - name: Verify value-level golden coverage (presence-level assertions are blind to values)
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_value_goldens.py
+      - name: Verify silent-empty-return ratchet
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_silent_returns.py
+      - name: Verify silent-degrade ratchet (a bare logger.warning tells the log, not the caller)
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_silent_degrades.py
+      - name: Verify MCP tools/list byte budget (advertised-layer schema ratchet)
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_mcp_list_budget.py
+      - name: Verify dispatch router corpus (zh+en queries → expected tools; min_pass only goes up)
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_router_corpus.py
+      - name: Verify error-code recovery (every code classifies; bilingual messages only increase)
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_error_recovery.py
+      - name: Verify no undefined names (F821/F822/F823 - a NameError parked in a branch no test runs)
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_undefined_names.py --self-test && uv run python scripts/verify_undefined_names.py
+      - name: Verify wheel contents (what `uvx horosa-skill` will actually install)
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_wheel_contents.py
+      - name: Verify every schema knob has a consumer
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_schema_knob_wiring.py
+      - name: Verify the seed-derived runtime Python lock (dep set is a pure function of the seed)
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_runtime_python_lock.py
+      - name: Verify macOS/Windows runtime-builder parity
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_builder_parity.py
+      - name: Verify bundled knowledge index
+        working-directory: ./horosa-skill
+        run: uv run python scripts/build_knowledge_index.py --check
+      - name: Run HorosaBench local-only smoke
+        working-directory: ./horosa-skill
+        run: uv run python scripts/run_benchmark.py --skip-runtime
+      - name: Job time vs its timeout
+        if: ${{ !cancelled() }}
+        run: python horosa-skill/scripts/ci_job_budget.py --job test
+
+  windows-smoke:
+    runs-on: windows-latest
+    # 单元测试一步在 windows-latest 上 30–42 分钟（2026-11 近 12 次），前后固定步骤（core-js 自检、OpenClaw smoke）约 6 分钟：
+    # 45 时已在 87–100% 之间，bb12577f 的 smoke 开跑 2 分钟就被整 job 超时取消（所有已跑步骤全绿）。
+    # v0.51.0：60 → 90。v3.14.0 同步后整 job 45–57 分钟（95%），030d8784 在单元测试一步被 60 分钟超时取消、重跑才绿。
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      # v0.51.0：两个 job 都在 95–97% 才被超时取消时才发现——末步 ci_job_budget.py 超 85% 打注解（与发版 lane 同一阈值）。
+      - name: Record job start
+        shell: bash
+        run: echo "HOROSA_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5
+        with:
+          node-version: "22"
+      # See the test job: canping/heluo need horosa-core-js's lunar-javascript dep (node_modules is
+      # gitignored). `npm ci` is cross-platform; setup-node provides npm on the Windows runner too.
+      - name: Install horosa-core-js deps (lunar-javascript)
+        working-directory: ./horosa-skill/horosa-core-js
+        run: npm ci --omit=dev
+      - name: Run horosa-core-js JS golden self-check (horary/election/balbillus)
+        working-directory: ./horosa-skill/horosa-core-js
+        run: npm test
+      - name: Install dependencies
+        working-directory: ./horosa-skill
+        run: uv sync --dev
+      - name: Run unit tests
+        working-directory: ./horosa-skill
+        run: uv run pytest -q
+      # Same step as the Linux test job, on the only runner whose stdout is not UTF-8: the report is
+      # json.dumps(…, ensure_ascii=False) and benchmark cases carry CJK — a script that prints it without
+      # reconfiguring stdout dies here with UnicodeEncodeError (cp1252) while ubuntu stays green.
+      - name: Run HorosaBench local-only smoke
+        working-directory: ./horosa-skill
+        run: uv run python scripts/run_benchmark.py --skip-runtime
+      - name: Run Windows OpenClaw smoke
+        timeout-minutes: 35
+        working-directory: ./horosa-skill
+        run: |
+          # pwsh 多行 step 只把**最后一条**命令的退出码当 step 结果；开了这个开关，任何原生命令非零即失败
+          # （tests/test_ci_workflow_shape.py 守；v0.38.0 前 `tool run --output` 这个不存在的参数在这里安静失败了 N 轮）。
+          $PSNativeCommandUseErrorActionPreference = $true
+          $root = Join-Path $env:RUNNER_TEMP 'horosa-openclaw'
+          if (Test-Path $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+          $workspace = Join-Path $root 'workspace'
+          $config = Join-Path $workspace 'config\mcporter.json'
+          $manualHome = Join-Path $root 'manual-home'
+          New-Item -ItemType Directory -Path $workspace -Force | Out-Null
+          uv run horosa-skill client openclaw-config --format mcporter --isolate-home $manualHome --write $config
+          uv run horosa-skill client openclaw-setup --workspace $workspace
+          uv run horosa-skill client openclaw-check --workspace $workspace
+          $configJson = Get-Content -Raw -LiteralPath $config | ConvertFrom-Json
+          $serverEnv = $configJson.mcpServers.horosa.env
+          foreach ($entry in $serverEnv.PSObject.Properties) {
+            Set-Item -Path "Env:$($entry.Name)" -Value ([string]$entry.Value)
+          }
+          # 闸门字段必须带：没有 agent_confirmed_settings 的 qimen 调用会被 agent_guidance.required 拒（exit 2）——B0 让这一步诚实之前，
+          # 这条命令其实已经这样红了几十轮而没人看见。
+          '{"date":"2028-04-06","time":"09:33:00","zone":"+08:00","lat":"31n13","lon":"121e28","gpsLat":31.2167,"gpsLon":121.4667,"agent_confirmed_settings":true,"clarification_notes":"windows smoke: defaults accepted"}' | uv run horosa-skill tool run qimen --stdin --output "$root\qimen-smoke.json"
+          if (-not (Test-Path -LiteralPath "$root\qimen-smoke.json")) { throw "qimen smoke wrote no --output file" }
+          # -AsHashtable：pwsh 的 ConvertFrom-Json 默认大小写不敏感，信封里 xunKong / xunkong 并存会直接抛错（CI 实测）
+          $smoke = Get-Content -Raw -LiteralPath "$root\qimen-smoke.json" | ConvertFrom-Json -AsHashtable
+          if (-not $smoke['ok']) { throw "qimen smoke returned ok=false: $($smoke['error'] | ConvertTo-Json -Compress -Depth 5)" }
+          uv run horosa-skill memory query --tool qimen --limit 1
+          # v0.38.0 B4：`setup` 在 Windows 真机上写配置 → 回读体检 → 用客户端将要执行的命令真起一次 stdio server（cursor = 精简面，工具数从 contracts/mcp_list_budget.json 的 compact_tools 读）
+          uv run horosa-skill setup --client cursor --config "$root\cursor-mcp.json" --skip-install --no-probe-network > "$root\setup-cursor.json"
+          if (-not (Test-Path -LiteralPath "$root\cursor-mcp.json")) { throw "setup wrote no cursor config" }
+          $setupReport = Get-Content -Raw -LiteralPath "$root\setup-cursor.json" | ConvertFrom-Json -AsHashtable
+          if (-not $setupReport['ok']) { throw "setup returned ok=false: $($setupReport['summary'])" }
+          $compactTools = [int](Get-Content -Raw -LiteralPath 'contracts\mcp_list_budget.json' | ConvertFrom-Json -AsHashtable)['compact_tools']
+          if ($setupReport['steps']['stdio_probe']['tools'] -ne $compactTools) { throw "stdio probe listed $($setupReport['steps']['stdio_probe']['tools']) tools, expected $compactTools" }
+          # v0.38.1 R18：全量面（--surface full）在 Windows 上也真起一次；工具数从 contracts/mcp_list_budget.json 读（v0.40.0 首推时写死的 116 已过时 → 红）
+          $budget = Get-Content -Raw -LiteralPath 'contracts\mcp_list_budget.json' | ConvertFrom-Json -AsHashtable
+          $fullTools = [int]$budget['full_tools']
+          uv run horosa-skill setup --client claude-code --config "$root\cc-full.json" --skip-install --no-probe-network --surface full > "$root\setup-full.json"
+          $fullReport = Get-Content -Raw -LiteralPath "$root\setup-full.json" | ConvertFrom-Json -AsHashtable
+          if (-not $fullReport['ok']) { throw "setup --surface full returned ok=false: $($fullReport['summary'])" }
+          if ($fullReport['steps']['stdio_probe']['tools'] -ne $fullTools) { throw "full-surface stdio probe listed $($fullReport['steps']['stdio_probe']['tools']) tools, expected $fullTools" }
+          # v0.38.1 R9：wheel 在 Windows 上也走一遍 —— uvx 从本地 .whl 起 server，真 stdio 探针（全量面工具数同上）
+          $whlDir = Join-Path $root 'whl'
+          uv build --wheel --out-dir $whlDir
+          $whl = (Get-ChildItem $whlDir -Filter 'horosa_skill-*-py3-none-any.whl' | Select-Object -First 1).FullName
+          # 同 test job：发布页的 wheel URL 在 CI 上还不存在 → 预置 C15 的本地缓存（Path.home() 在 Windows 取 USERPROFILE，runner 一次性）
+          $wheelCache = Join-Path $env:USERPROFILE '.horosa\wheels'
+          New-Item -ItemType Directory -Force -Path $wheelCache | Out-Null
+          Copy-Item -LiteralPath $whl -Destination $wheelCache -Force
+          uvx --from $whl horosa-skill setup --client claude-code --config "$root\wheel-cc.json" --no-write --no-probe-network --skip-install > "$root\setup-wheel.json"
+          $wheelReport = Get-Content -Raw -LiteralPath "$root\setup-wheel.json" | ConvertFrom-Json -AsHashtable
+          if (-not $wheelReport['ok']) { throw "setup via wheel returned ok=false: $($wheelReport['summary'])" }
+          if ($wheelReport['launcher']['kind'] -ne 'uvx-wheel') { throw "wheel setup picked launcher $($wheelReport['launcher']['kind']), expected uvx-wheel" }
+          if (-not $wheelReport['launcher']['wheel_cached_path']) { throw "wheel setup did not use the cached wheel (would probe the unpublished release URL)" }
+          if ($wheelReport['steps']['stdio_probe']['tools'] -ne $fullTools) { throw "wheel stdio probe listed $($wheelReport['steps']['stdio_probe']['tools']) tools, expected $fullTools" }
+          # v0.38.0 B5：codex 形状 TOML 生成 → 回读体检（client check）→ tomllib 断言超时字段在场、command 是绝对路径
+          uv run horosa-skill client config --format codex --write "$root\codex-config.toml" > $null
+          uv run horosa-skill client check --client codex --config "$root\codex-config.toml" > "$root\codex-check.json"
+          $codexCheck = Get-Content -Raw -LiteralPath "$root\codex-check.json" | ConvertFrom-Json -AsHashtable
+          if (-not $codexCheck['ok']) { throw "codex client check found problems: $($codexCheck['summary'])" }
+          uv run python -c 'import sys, tomllib; s = tomllib.load(open(sys.argv[1], "rb"))["mcp_servers"]["horosa"]; assert s["startup_timeout_sec"] == 120 and s["tool_timeout_sec"] == 600, s; assert ":" in s["command"] and s["command"].lower().endswith("uv.exe"), s["command"]; print("codex toml ok:", s["command"])' "$root\codex-config.toml"
+      - name: Job time vs its timeout
+        if: ${{ !cancelled() }}
+        run: python horosa-skill/scripts/ci_job_budget.py --job windows-smoke

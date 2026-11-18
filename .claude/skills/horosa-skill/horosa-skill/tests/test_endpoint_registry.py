@@ -1,0 +1,87 @@
+"""端点路由登记闸。
+
+`service._call_remote` 按 `_PYTHON_CHART_ENDPOINTS` 决定请求发往 Python chart 服务还是 Java 后端。
+chart 服务独有的端点（astroextra/geomancy/jieqi/predict/modern/india/germany/ken 与神数 /pan 族）
+若新增调用时忘了登记，会被静默路由到 Java 端口并返回 need.login —— 这是历史上真实踩过的坑。
+本闸静态扫描 service.py 里的全部 `_call_remote("<literal>")` 字面量：凡命中 chart-only 前缀者必须
+已登记；同时反向校验登记集合里没有拼写漂移（集合成员必须仍被调用或显式豁免）。
+"""
+from __future__ import annotations
+
+import pathlib
+import re
+
+from horosa_skill.engine.registry import TOOL_DEFINITIONS
+from horosa_skill.service import _PYTHON_CHART_ENDPOINTS, _SHENSHU_ENDPOINTS
+
+# service 是包（v0.41.1 起）：扫包内全部模块。只扫 __init__.py 时「登记了却没调用」会误红，而「调用了却没登记」
+# 会安静地漏掉子模块里的字面量——后者正是本闸要抓的。
+SERVICE_DIR = pathlib.Path(__file__).resolve().parents[1] / "src" / "horosa_skill" / "service"
+
+
+def _service_source() -> str:
+    return "\n".join(path.read_text(encoding="utf-8") for path in sorted(SERVICE_DIR.rglob("*.py")))
+
+# 须经 chart 服务的路由前缀：Python 端点缺登记就会被静默发往 Java。⚠ 不等于「Java 不挂载」——`/jieqi/year`
+# 两端都有且数据不同（Java 聚合层给 jieqi24 逐节气补 bazi.fourColumns 与 chart.nongli，Python 端无），要 Java
+# 那份时用 `_call_remote(..., backend="java")` 显式指定（上游节气页的种子请求走的正是 Java）。
+CHART_ONLY_PREFIXES = (
+    "/astroextra/",
+    "/geomancy/",
+    "/location/",
+    "/jieqi/",
+    "/predict/",
+    "/modern/",
+    "/india/",
+    "/germany/",
+    "/qimen/",
+    "/taiyi/",
+    "/jinkou/",
+    "/wangji/",
+    "/wuzhao/",
+    "/taixuan/",
+    "/jingjue/",
+    "/shenyishu/",
+    "/shaozi/",
+    "/tieban/",
+    "/fendjing/",
+    "/beiji/",
+    "/nanji/",
+    "/chunzi/",
+    "/xianqin/",
+    "/cetian/",
+    "/qizhengkin/",
+)
+
+def _call_site_endpoints() -> set[str]:
+    # 调用点 = service.py 字面量调用 ∪ ToolDefinition 声明式端点（经 `_call_remote(definition.endpoint, …)`）
+    # ∪ 神数端点映射表（经 `_call_remote(_SHENSHU_ENDPOINTS[name], …)`）。
+    text = _service_source()
+    literals = set(re.findall(r"_call_remote\(\s*[\"']([^\"']+)[\"']", text))
+    # 分发表形态的调用点：xuanshi 一类「action → 端点全路径」表把字面量存在表里、_call_remote 传变量。
+    # 表里存的就是全路径字面量，等价于调用点——一并采集，端点守卫才不把它们误判成死项。
+    literals |= set(re.findall(r"[\"'](/xuanshi/[a-z_]+)[\"']", text))
+    # 同一形状（v0.34.0）：择日十技法的两个后端扫描成员把 scan/explain/conditiontypes 三条全路径
+    # 存在 _ZERI_BACKEND_TOOLS 里、_call_remote 传 spec["scan"]。写成字面量而不是 f"{prefix}/scan"
+    # 正是为了让这条守卫看得见 —— 拼接会让「登记了却没接线」和「拼写漂移」两类问题一起隐身。
+    literals |= set(re.findall(r"[\"'](/(?:qizheng|india)electionscan/[a-z]+)[\"']", text))
+    declared = {d.endpoint for d in TOOL_DEFINITIONS.values() if d.endpoint}
+    return literals | declared | set(_SHENSHU_ENDPOINTS.values())
+
+
+def test_chart_only_endpoints_are_registered() -> None:
+    called = _call_site_endpoints()
+    missing = sorted(
+        endpoint
+        for endpoint in called
+        if endpoint.startswith(CHART_ONLY_PREFIXES) and endpoint not in _PYTHON_CHART_ENDPOINTS
+    )
+    assert not missing, (
+        f"这些 chart-only 端点被 _call_remote 调用但未登记进 _PYTHON_CHART_ENDPOINTS（会被误路由到 Java→need.login）：{missing}"
+    )
+
+
+def test_registered_endpoints_have_call_sites() -> None:
+    called = _call_site_endpoints()
+    stale = sorted(endpoint for endpoint in _PYTHON_CHART_ENDPOINTS if endpoint not in called)
+    assert not stale, f"登记集合中的这些端点已无任何调用点（拼写漂移或死项，请更新集合）：{stale}"

@@ -1,0 +1,151 @@
+name: release-completeness
+
+# Guards against the recurring "latest release is missing its Windows half" failure: v0.10.0 shipped
+# as `latest` with NO runtime-manifest.json (install broke on both platforms), and v0.11.0 / v0.12.0
+# shipped with a darwin-only manifest + no win32 zip (Windows install broke). The Windows runtime is
+# built off-CI on a real Windows box and uploaded by hand, so a mac-only publish silently omits it and
+# nothing caught it until a human noticed. This job re-inspects the PUBLISHED `latest` release and fails
+# loudly if it is not a complete, dual-platform release.
+
+on:
+  schedule:
+    - cron: "0 */6 * * *" # every 6 hours
+  workflow_dispatch:
+  release:
+    types: [published, edited, released]
+
+permissions:
+  contents: read
+
+jobs:
+  # v0.38.1 R2: the weekly runtime-matrix cron is best-effort on GitHub's side (the 2026-09-14 slot fired 5.5 h late;
+  # a busy Monday can drop it). This 6-hourly job — which does fire reliably — dispatches the matrix when no run of it
+  # exists in the last 6 days, so a week never passes without the three-machine proof against the public latest.
+  weekly-matrix-kick:
+    if: github.event_name == 'schedule' && github.repository_owner == 'Horace-Maxwell'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Dispatch runtime-matrix.yml when the last run is older than 6 days
+        run: |
+          set -euo pipefail
+          SINCE="$(date -u -d '6 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+          RECENT="$(gh run list --repo "${REPO}" --workflow runtime-matrix.yml --created ">=${SINCE}" --json databaseId --jq 'length')"
+          echo "runtime-matrix runs since ${SINCE}: ${RECENT}"
+          if [ "${RECENT}" = "0" ]; then
+            echo "no matrix run in 6 days — dispatching one against the public latest"
+            gh workflow run runtime-matrix.yml --repo "${REPO}"
+          fi
+
+  check-latest-release-complete:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      # v0.38.0 A3: the expected platform set comes from horosa-skill/contracts/release_platforms.json
+      # (`since`-gated), so this guard needs the repo checked out.
+      # v0.46.1: always the default branch. On `release` events the default checkout is the TAG's commit, whose
+      # server.json still carries the previous mcpb sha (the backfill commit lands on main after the tag) — editing a
+      # release's notes then failed the sha check by construction (41144995786). The sha check means "main's server.json".
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Resolve the published `latest` release
+        id: latest
+        run: |
+          set -euo pipefail
+          tag="$(gh api "repos/${REPO}/releases/latest" --jq '.tag_name')"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Published latest release: ${tag}"
+
+      # OPERATIONS.md 的「必要资产」清单里，manifest/两平台包由下一步逐项校验；SBOM 此前只活在文档里
+      # ——v0.27.0 首发时就漏了它，靠人看 v0.26.1 的资产列表对比才发现。文档列的资产必须有 CI 断言。
+      - name: Assert the SBOM asset is present
+        env:
+          TAG: ${{ steps.latest.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if ! gh api "repos/${REPO}/releases/tags/${TAG}" --jq '.assets[].name' | grep -qx "horosa-skill-sbom.json"; then
+            echo "::error::latest release ${TAG} is missing horosa-skill-sbom.json — OPERATIONS.md lists it as a required asset; generate with scripts/generate_sbom.py and upload (publish_release.sh does this automatically)."
+            exit 1
+          fi
+          echo "OK: horosa-skill-sbom.json present on ${TAG}."
+
+      # v0.37.0：`.mcpb` 是 Claude Desktop 的一键安装通道，也是 server.json 里 mcpb package 指向的
+      # 那个资产。文档列了它就必须有断言 —— SBOM 当年正是「只活在文档里」才在首发时漏传。
+      - name: Assert the MCPB bundle asset is present
+        env:
+          TAG: ${{ steps.latest.outputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          NAME="horosa-skill-${VERSION}.mcpb"
+          if ! gh api "repos/${REPO}/releases/tags/${TAG}" --jq '.assets[].name' | grep -qx "${NAME}"; then
+            echo "::error::latest release ${TAG} is missing ${NAME} — build it with horosa-skill/scripts/build_mcpb.sh and upload it; server.json's mcpb package points at this exact URL."
+            exit 1
+          fi
+          echo "OK: ${NAME} present on ${TAG}."
+          # v0.38.0 A6 实踩：mcpb 打包不可复现（字节随打包时刻变），`publish_release.sh --draft` 重打了一份并上传，而
+          # server.json 里回填的还是上一次 no-upload 构建的 sha —— 注册表客户端装前校验 fileSha256 必失败。
+          # 这里把发布上的真实 sha 与 main 上 server.json 的 mcpb 条目对齐（仅 ≥ 0.37.0，更早的 release 没有 mcpb 条目）。
+          if [ "$(printf '%s\n0.37.0' "${VERSION}" | sort -V | head -n1)" = "0.37.0" ]; then
+            gh release download "${TAG}" --repo "${REPO}" -p "${NAME}" -D "${RUNNER_TEMP}/mcpb" --clobber
+            # v0.38.1 R8: unpack the published bundle and assert its contents (manifest + required paths, no vendor/)
+            python3 horosa-skill/scripts/verify_mcpb_manifest.py --bundle "${RUNNER_TEMP}/mcpb/${NAME}"
+            ACTUAL="$(sha256sum "${RUNNER_TEMP}/mcpb/${NAME}" | cut -d' ' -f1)"
+            DECLARED="$(python3 -c 'import json,sys; d=json.load(open("server.json")); print(next((p.get("fileSha256","") for p in d.get("packages",[]) if p.get("registryType")=="mcpb"), ""))')"
+            if [ "${ACTUAL}" != "${DECLARED}" ]; then
+              echo "::error::server.json mcpb fileSha256 (${DECLARED:-empty}) != sha256 of the published ${NAME} (${ACTUAL}) — commit the backfill from the SAME publish_release.sh --draft run that uploaded the bundle (mcpb packing is not byte-reproducible)."
+              exit 1
+            fi
+            echo "OK: server.json mcpb fileSha256 matches the published bundle."
+          fi
+
+      # v0.38.0 B3：wheel 资产是免 git / 免 PyPI 的零安装通路（`uvx --from <wheel URL>`），README / SKILL /
+      # server.json 里钉版本的命令直指它。资产要在场，而且那条命令要真的跑通——「文档写了」不算证据。
+      # 只对 ≥ 0.38.0 的发布断言：更早的 release 本来就没有这件资产，不该让它们回头变红。
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+      - name: Assert the wheel asset is present and the zero-install command works
+        env:
+          TAG: ${{ steps.latest.outputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          if [ "$(printf '%s\n%s\n' "0.38.0" "${VERSION}" | sort -V | head -n1)" != "0.38.0" ]; then
+            echo "skip: ${TAG} predates the wheel asset (since 0.38.0)"; exit 0
+          fi
+          NAME="horosa_skill-${VERSION}-py3-none-any.whl"
+          if ! gh api "repos/${REPO}/releases/tags/${TAG}" --jq '.assets[].name' | grep -qx "${NAME}"; then
+            echo "::error::latest release ${TAG} is missing ${NAME} — publish script step [6/9] builds it with \`uv build --wheel\`; the zero-install commands in README/SKILL/server.json point at this exact URL."
+            exit 1
+          fi
+          URL="https://github.com/${REPO}/releases/download/${TAG}/${NAME}"
+          got="$(HOME=$(mktemp -d) uvx --from "${URL}" horosa-skill --version)"
+          echo "${got}"
+          case "${got}" in *"${VERSION}"*) echo "OK: zero-install from ${NAME} reports ${VERSION}." ;;
+            *) echo "::error::uvx --from ${URL} reports '${got}', expected ${VERSION}"; exit 1 ;; esac
+
+      - name: Assert the latest runtime-manifest.json is complete for every contracted platform
+        env:
+          TAG: ${{ steps.latest.outputs.tag }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/${REPO}/releases/download/${TAG}"
+          manifest_url="${base}/runtime-manifest.json"
+          echo "Fetching ${manifest_url}"
+          if ! curl -fsSL "${manifest_url}" -o manifest.json; then
+            echo "::error::runtime-manifest.json is MISSING from latest release ${TAG} — install is broken on all platforms (this was the v0.10.0 failure)."
+            exit 1
+          fi
+          cat manifest.json
+          curl -fsSL "${base}/SHA256SUMS.txt" -o SHA256SUMS.txt || : > SHA256SUMS.txt
+          # v0.41.1：检查逻辑搬进有单测的脚本（此前约 75 行 heredoc Python 住在这里，没有任何测试能碰到它）；判据与报错原文不变。
+          python3 horosa-skill/scripts/verify_published_release.py --tag "$TAG" --repo "$REPO" --manifest manifest.json --sums SHA256SUMS.txt

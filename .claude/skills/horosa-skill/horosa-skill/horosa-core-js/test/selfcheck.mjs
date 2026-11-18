@@ -1,0 +1,2395 @@
+// Node golden self-check for the vendored 星阙 JS engines (no jest): runs horary / election /
+// progextra(balbillus) on a fixed traditional-chart fixture and asserts the snapshot shape. This is
+// the only test that exercises the ~40-file divination/ tree + balbillus.js at the JS layer; the
+// Python @requires_chart tests only reach them via a live chart service. Exit non-zero on any failure
+// so `npm test` / CI fails loudly.
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { runHoraryTool } from '../src/tools/horary.js';
+import { runElectionTool } from '../src/tools/election.js';
+import { runProgExtra } from '../src/tools/progextra.js';
+import { runAstroExtra } from '../src/tools/astroextra.js';
+import { runLiureng, normalizeChart } from '../src/tools/liureng.js';
+import { buildLiuRengReferenceContext } from '../src/vendor/liureng/liurengRefContext.js';
+import { matchBiFa } from '../src/vendor/liureng/LRBiFaDoc.js';
+import { ZiLiuQin } from '../src/vendor/liureng/LRConst.js';
+import { runGuolaoMoira } from '../src/tools/guolaoMoira.js';
+import { checkConditionValues, invalidValuesMessage } from '../src/tools/zeriParamCheck.js';
+import { runXiaoLiuRen } from '../src/tools/xiaoliuren.js';
+import { runFeiGong } from '../src/tools/feigong.js';
+import { runXiaoChengTu } from '../src/tools/xiaochengtu.js';
+import { runGuice } from '../src/tools/guice.js';
+import { runZhengChuan } from '../src/tools/zhengchuan.js';
+import { runLingqi } from '../src/tools/lingqi.js';
+import { runTianxing } from '../src/tools/tianxing.js';
+import { runQizhengElection } from '../src/tools/qizhengElection.js';
+import { runBaziGeju } from '../src/tools/baziGeju.js';
+import { runTiebanFramework } from '../src/tools/tiebanFramework.js';
+import { buildTiebanFramework } from '../src/vendor/tieban/tiebanFrameworkLocal.js';
+import { computeQimenScanPan, buildQimenScanSeeds } from '../src/vendor/divination/zeri/qimenScanEngine.js';
+import { jieqiSeedFromYearResult } from '../src/tools/qimen.js';
+import { buildLocalBaziResult } from '../src/vendor/bazi/baziLunarLocal.js';
+import { runCanping } from '../src/tools/canping.js';
+import { runHeluo } from '../src/tools/heluo.js';
+import { runYizhangjing } from '../src/tools/yizhangjing.js';
+import { runDongya } from '../src/tools/dongya.js';
+import { runZhufang } from '../src/tools/zhufang.js';
+import { runTongSheFa } from '../src/tools/tongshefa.js';
+import { runTarot } from '../src/tools/tarot.js';
+import { runYanqinYanfa } from '../src/tools/yanqinYanfa.js';
+import { runHuangli } from '../src/tools/huangli.js';
+import { runLiuyao } from '../src/tools/liuyao.js';
+import { personBazi } from '../src/vendor/calendar/riziEngine.js';
+import { runZeriScan, ZERI_TECHNIQUES } from '../src/tools/zeriScan.js';
+import { runMundaneCards } from '../src/tools/mundaneCards.js';
+import { zeriRowOpts, withLeafKind } from '../src/tools/zeriSnapshotOpts.js';
+import { runAcgSection } from '../src/tools/acgSection.js';
+import { runBabylon } from '../src/tools/babylon.js';
+import { runBaziLocal } from '../src/tools/baziLocal.js';
+import { alignJavaBaziAges } from '../src/vendor/bazi/baziSnapshot.js';
+import { isSouthLatitude } from '../src/vendor/bazi/baziLunarLocal.js';
+import { heluoSolarTermOfDate } from '../src/vendor/heluo/heluoLocal.js';
+import { jianYaoPositions, jianYaoSpanText } from '../src/vendor/gua/LiuYaoConst.js';
+import { flagEnabled } from '../src/vendor/utils/perfFlags.js';
+import { bjShiftMinutes } from '../src/vendor/utils/beijingTimeShift.js';
+import { Solar as LunarSolar } from 'lunar-javascript';
+import { runZiweiBirth } from '../src/tools/ziweiBirth.js';
+import { runSuzhan } from '../src/tools/suzhan.js';
+import { runCalendarExtras } from '../src/tools/calendarExtras.js';
+import { runQimenZeri } from '../src/tools/qimenzeri.js';
+import { runTongshu } from '../src/tools/tongshu.js';
+import { runEgyptSection } from '../src/tools/egyptSection.js';
+import { runChartDetails } from '../src/tools/chartDetails.js';
+import { runClassicalDerived } from '../src/tools/classicalDerived.js';
+import { runJinkou } from '../src/tools/jinkou.js';
+import { runUranianExtra } from '../src/tools/uranianExtra.js';
+import { runSanshiUnited } from '../src/tools/sanshiUnited.js';
+import { calcDunJia } from '../src/vendor/dunjia/DunJiaCalc.js';
+import { buildLocalJieqiYearSeed } from '../src/vendor/utils/localNongliAdapter.js';
+import { makeFields } from '../src/shared/fields.js';
+import { buildLiuRengLayout as lrmLayout, buildKeData as lrmKe, buildSanChuanData as lrmSanChuan } from '../src/vendor/liureng/LiuRengMain.js';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const chart = JSON.parse(readFileSync(join(HERE, 'fixtures', 'chart_traditional.json'), 'utf8'));
+const liurengFix = JSON.parse(readFileSync(join(HERE, 'fixtures', 'chart_liureng.json'), 'utf8'));
+const guolaoFix = JSON.parse(readFileSync(join(HERE, 'fixtures', 'chart_guolao.json'), 'utf8'));
+
+let failures = 0;
+// 🔴 check() 必须认异步：早先它只 `fn()` 不看返回值，async 断言体的失败会变成
+// unhandled rejection —— 打印 `ok`、退出码 0、CI 全绿，而断言其实根本没验。这与本轮清剿的
+// 「presence 级绿灯掩盖值级错误」是同一形状，只不过发生在 harness 自己身上。
+const pending = [];
+process.on('unhandledRejection', (err) => {
+  failures += 1;
+  console.error(`  FAIL <unhandled rejection>: ${err && err.message ? err.message : err}`);
+});
+function check(name, fn) {
+  try {
+    const out = fn();
+    if (out && typeof out.then === 'function') {
+      pending.push(out.then(
+        () => console.log(`  ok   ${name}`),
+        (err) => { failures += 1; console.error(`  FAIL ${name}: ${err.message}`); },
+      ));
+      return;
+    }
+    console.log(`  ok   ${name}`);
+  } catch (err) {
+    failures += 1;
+    console.error(`  FAIL ${name}: ${err.message}`);
+  }
+}
+function assert(cond, msg) {
+  if (!cond) throw new Error(msg);
+}
+
+check('horary(marriage) emits a verdict snapshot', () => {
+  const r = runHoraryTool({ chart, category: 'marriage' });
+  assert(r.data.ok === true, 'data.ok should be true');
+  const s = r.snapshot_text || '';
+  for (const sec of ['[起卦信息]', '[根本性]', '[征象星指派]', '[裁决]']) {
+    assert(s.includes(sec), `missing section ${sec}`);
+  }
+  assert(s.split('\n').length >= 10, 'snapshot too short');
+  assert(typeof r.data.verdict === 'string' && r.data.verdict.length > 0, 'missing verdict');
+});
+
+check('horary unknown category falls back to general', () => {
+  const r = runHoraryTool({ chart, category: 'no_such_category' });
+  assert(r.category === 'general', `expected general, got ${r.category}`);
+  assert((r.snapshot_text || '').includes('[起卦信息]'), 'missing 起卦信息');
+});
+
+check('election(surgery) emits a scored snapshot', () => {
+  const r = runElectionTool({ chart, topicId: 'surgery' });
+  assert(r.data.ok === true, 'data.ok should be true');
+  const s = r.snapshot_text || '';
+  for (const sec of ['[起盘信息]', '[总评]', '[红线]', '[建议]']) {
+    assert(s.includes(sec), `missing section ${sec}`);
+  }
+  assert(r.data.overall && typeof r.data.overall.score === 'number', 'missing overall.score');
+});
+
+check('election unknown topic falls back to marriage', () => {
+  const r = runElectionTool({ chart, topicId: 'no_such_topic' });
+  assert(r.topicId === 'marriage', `expected marriage, got ${r.topicId}`);
+});
+
+check('progextra(balbillus) emits the 旺距削减 table', () => {
+  const r = runProgExtra({ technique: 'balbillus', chart });
+  const s = r.snapshot_text || '';
+  assert(s.includes('[Balbillus]'), 'missing [Balbillus]');
+  assert(s.includes('旺距削减'), 'missing 旺距削减 description');
+  assert(s.includes('| 主限 | 子限 |'), 'missing period table header');
+  assert(s.split('\n').filter((l) => l.startsWith('|')).length >= 5, 'too few table rows');
+});
+
+// v3.11 同步（F7）：上游挂载齿轮 → builder opts（aiAnalysisContext.js:2998-3013）必须真的到达 vendored builder。
+// 权威：balbillus.js / keypoints120.js / triplicityRulers.js 是上游 utils/*.js 的 verbatim vendor（manifest 校验），
+// 这里钉的是「选项改变结果」的具体值：起始星名、年制/口径标签、释放点标签、两分段年龄段。
+check('progextra options reach the vendored builders (balbillus/keypoints/triplicityrulers)', () => {
+  const dflt = runProgExtra({ technique: 'balbillus', chart }).snapshot_text;
+  // 上游 AstroText.AstroTxtMsg 行星为单字（日/月…）：progConst shim 曾写成「太阳」，与上游逐字不符。
+  assert(dflt.includes('七星按本命黄经序从 日 起铺开'), 'balbillus default must start from 日 (upstream AstroTxtMsg)');
+  assert(!dflt.includes('太阳'), 'balbillus must print upstream single-char planet names');
+  const moon = runProgExtra({ technique: 'balbillus', chart, options: { startPlanet: 'Moon', yearType: 'hellenistic', mode: 'forward' } }).snapshot_text;
+  assert(moon.includes('七星按本命黄经序从 月 起铺开'), 'startPlanet=Moon must start from 月');
+  // 上游 v3.13.0：Balbillus 年制与 129 年系统共用 utils/timeLordYears 年长表，标签改为「埃及 / 希腊化年（360 日）」。
+  assert(moon.includes('年制=埃及 / 希腊化年（360 日）、距离口径=顺黄道距（forward）'), 'yearType/mode must reach builder');
+  assert(moon.split('\n').some((l) => l.startsWith('| 月(')), 'first main period must be 月');
+  const body = runProgExtra({ technique: 'keypoints', chart, options: { mode: 'body' } }).snapshot_text;
+  assert(body.includes('释放点=命（上升起）'), 'keypoints mode=body must release from Asc');
+  const halves = runProgExtra({ technique: 'triplicityrulers', chart, options: { division: 'halves', lifespan: 90 } }).snapshot_text;
+  assert(halves.includes('两分（上半生 / 下半生 + 协作贯穿）'), 'division=halves must reach builder');
+  assert(halves.includes('| 次三分主星（下半生） | 水 | 45–90岁 |'), 'lifespan=90 must split at 45');
+});
+
+// 上游 buildCurrentMomentLines(chartObj, extraLines)：builder 自算的 [当前时点] 定位行经 stub 回传（不产段）。
+// fixture 出生 2026-06-02 → 此后 15 年内都处在首个主限「日」、三分主星首段「土」（0–25 岁）。
+check('progextra returns the builders\' current-moment locator lines', () => {
+  const bal = runProgExtra({ technique: 'balbillus', chart });
+  assert(bal.moment_lines.some((l) => l.startsWith('当前主限：日（起 2026-06-02，时长 15.35 年）')), `balbillus moment ${JSON.stringify(bal.moment_lines)}`);
+  assert(!bal.snapshot_text.includes('[当前时点]'), 'stub must not emit the section itself (Python owns it)');
+  const tri = runProgExtra({ technique: 'triplicityrulers', chart });
+  assert(tri.moment_lines[0] === '当前所处阶段：主三分主星·土（0–25岁）', `triplicity moment ${JSON.stringify(tri.moment_lines)}`);
+  assert(runProgExtra({ technique: 'keypoints', chart }).moment_lines.length === 0, 'keypoints passes no locator line upstream');
+});
+
+// F15：[寿命格局] 取主法 + 太阳三态阈值随调用方/本盘回显（上游 astroAiSnapshot.js:1123-1136）。
+check('astroextra lifespan honours method option and params solar orbs', () => {
+  const ptolemy = runAstroExtra({ chart }).data.lifespan;
+  const doro = runAstroExtra({ chart, options: { lifespanMethod: 'dorotheus' } }).data.lifespan;
+  assert(ptolemy.method === 'ptolemy' && doro.method === 'dorotheus', 'method must echo the requested 取主法');
+  // 同一盘：托勒密取日为生命主，多罗修斯取上升（引擎 = 上游 lifespanEngine.js verbatim）。
+  assert(ptolemy.hyleg.key === 'sun' && doro.hyleg.key === 'asc', `hyleg must differ by method (got ${ptolemy.hyleg.key}/${doro.hyleg.key})`);
+  const merc = (ls) => (ls.states.rows.find((r) => r.planet === 'mercury') || {}).sunState;
+  assert(merc(ptolemy) === null, 'mercury 19.5° from Sun is free under the 17° default');
+  const wide = JSON.parse(JSON.stringify(chart));
+  wide.params = { ...(wide.params || {}), underBeamsOrb: 20 };
+  assert(merc(runAstroExtra({ chart: wide }).data.lifespan) === 'under_beams', 'params.underBeamsOrb must reach buildFacts');
+});
+
+check('progextra unknown technique returns empty, not a crash', () => {
+  const r = runProgExtra({ technique: 'no_such', chart });
+  assert(r.data.ok === false, 'unknown technique should be ok=false');
+  assert(r.snapshot_text === '', 'unknown technique should have empty snapshot');
+});
+
+// 印占四张新表（上游 v3.14.0 utils/indiaExtraTables.js）经 tools/indiaJyotish.js 的接线金标。输入与期望值取自上游自己的 jest 用例
+// （utils/__tests__/indiaExtraTables.test.js 的 YOGA / EXTRA / KOOTA 夹具与 toContain 断言、
+//  indiaTablesSnapshotSettings.test.js 的穿界 ROW / entry 与两条段头 / 行断言），不是把本仓输出抄成期望。
+// 负向对照（实跑过）：把 jyotishSnapshot.js 里 `out['Yoga 判定表'] = …` / `out['印占补充表'] = …` 两行删掉 → 前两条 assert 红；
+// 把 runIndiaJyotish 的 transitLines 换成 [] → 穿界两条红；把 SIGN_CN_S / scS 挪回 Argala 块前（上游 v3.13 的写法）→ 三旗盘一条红。
+{
+  const { runIndiaJyotish, runIndiaTables } = await import('../src/tools/indiaJyotish.js');
+  const ROW = { id: 7, name: 'Ardha Chandra', zh: '半月', group: '形状', nature: 'good', hit: true, classicHit: false, cond: '甲', classicCond: '乙' };
+  const YOGA = { available: true, hits: 1, classicHits: 0, rows: [ROW, { ...ROW, id: 8, hit: false, classicHit: false }] };
+  const EXTRA = {
+    available: true,
+    samaya: [{ planet: 'Sun', value: 24 }],
+    dirah: [{ planet: 'Sun', scores: { 2: 45, 11: -15 }, sum: 30 }],
+    dirahTypes: { 2: '擢升', 8: '死敌', 11: '宫位' },
+    sphuta: [{ name: 'Trisphuta', lon: 248.12, sign: 8 }],
+  };
+  const TRANSIT_ROW = { jd: 1, date: '2026-11-08', time: '10:20:30', planet: 'Mars', kind: 'sign', sign: 3, relation: 'enemy' };
+  const transitEntry = (rows, total) => ({
+    start: '2026/11/08', transitPlanet: 'Mars', transitKind: 'sign', transitDays: 366, ayanamsa: 'lahiri', result: { rows, total: total === undefined ? rows.length : total },
+  });
+  check('indiaJyotish：Yoga 判定表 / 印占补充表 两段进 jyotish 段集，穿界时刻随 params.transit', () => {
+    const out = runIndiaJyotish({ chart: { jyotish: { yogaTable: YOGA, extraTables: EXTRA } }, params: { transit: transitEntry([TRANSIT_ROW]) } });
+    const yoga = (out.sections['Yoga 判定表'] || []).join('\n');
+    assert(yoga.includes('成立 1 条(经典写法 0 条)') && yoga.includes('半月(Ardha Chandra)') && yoga.includes('| 成立 | 不成立 |'), `yoga: ${yoga}`);
+    const extra = (out.sections['印占补充表'] || []).join('\n');
+    assert(extra.includes('| 擢升 | 宫位 | 合计 |') && extra.includes('三合点(Trisphuta)') && extra.includes('射手 8.12°'), `extra: ${extra}`);
+    // 段序 = 上游 buildJyotishSnapshotLines：两段紧跟在 [瑜伽格局 Yogas] 之后、[副星 Upagraha] 之前；dataSections 同序带出。
+    assert(JSON.stringify(Object.keys(out.dataSections)) === JSON.stringify(['Yoga 判定表', '印占补充表']), `dataSections: ${Object.keys(out.dataSections)}`);
+    const transit = (out.transitLines || []).join('\n');
+    // 岁差键 lahiri → 页面名 'Lahiri / Chitrapaksha'（INDIA_AYANAMSA_OPTIONS；上游用例传的是已写成 'Lahiri' 的字面量）。
+    assert(transit.includes('起始 2026/11/08,范围 一年,星 火星,事件 入星座;共 1 条,时刻按本盘时区,恒星黄道(岁差 Lahiri / Chitrapaksha)'), `transit head: ${transit}`);
+    assert(transit.includes('| 2026-11-08 10:20 | 火 | 巨蟹 | 敌 |'), `transit row: ${transit}`);
+  });
+  check('indiaJyotish：穿界表超过 200 行只列前 200 并写明；不给 params.transit 不出 transitLines；所选值不在上游选项表 → invalid_setting', () => {
+    const vocab = runIndiaTables({ action: 'transit_vocab' });
+    assert(vocab.maxRows === 200, `maxRows ${vocab.maxRows}`);
+    const many = Array.from({ length: 250 }, (_, i) => ({ ...TRANSIT_ROW, jd: i }));
+    const lines = runIndiaJyotish({ chart: { jyotish: {} }, params: { transit: transitEntry(many, 600) } }).transitLines;
+    assert(lines.filter((l) => l.startsWith('| 2026')).length === 200, `rows ${lines.length}`);
+    assert(lines[lines.length - 1].includes('只列前 200 条(共 600 条)'), lines[lines.length - 1]);
+    assert(runIndiaJyotish({ chart: { jyotish: {} }, params: {} }).transitLines === undefined, 'no transit → no key');
+    const bad = runIndiaJyotish({ chart: { jyotish: {} }, params: { transit: { ...transitEntry([TRANSIT_ROW]), transitPlanet: 'Pluto', transitDays: 45 } } });
+    assert(bad.error === 'invalid_setting' && bad.invalid.map((i) => i.key).join(',') === 'transitPlanet,transitDays', JSON.stringify(bad.invalid));
+    assert(JSON.stringify(vocab.defaults) === JSON.stringify({ transitPlanet: 'all', transitKind: 'sign', transitDays: 90 }), JSON.stringify(vocab.defaults));
+  });
+  check('indiaJyotish：开三旗盘照常出段（上游 indiaTripatakiSnapshot.test.js 夹具；月序键 index 与后端真键 month 都认）', () => {
+    const tri = (key) => ({ jyotish: { yogaTable: YOGA, tripataki: { available: true, byCenter: {
+      moon: { available: true, centerSign: 'Aries', months: [{ [key]: 1, score: { net: 2 } }, { [key]: 2, score: { net: -1 } }] },
+      saturn: { available: true, centerSign: 'Libra', months: [{ [key]: 1, score: null }] },
+    } } } });
+    for (const key of ['index', 'month']) {
+      const sections = runIndiaJyotish({ chart: tri(key), params: {} }).sections;
+      const text = (sections['Tripataki 三旗盘逐月净分'] || []).join('\n');
+      assert(text.includes('白羊') && text.includes('天秤') && text.includes('1:2 2:-1') && text.includes('1:-'), `${key}: ${text}`);
+      assert((sections['Yoga 判定表'] || []).length === 4, `${key}: 三旗盘之后的段也在（整份快照没被抛掉）：概述 1 行 + 表 3 行`);
+    }
+  });
+  check('indiaJyotish：八重合男方按性别（上游 maleSideOf 七例）与正文（上游 KOOTA 夹具）', () => {
+    const side = (a, b) => runIndiaTables({ action: 'ashtakoota_side', genderInner: a, genderOuter: b }).maleSide;
+    const got = [side(1, 0), side(0, 1), side('女', undefined), side(undefined, 1), side(undefined, undefined), side(1, 1), side(0, 0)];
+    assert(JSON.stringify(got) === JSON.stringify(['inner', 'outer', 'outer', 'outer', 'inner', 'inner', 'inner']), JSON.stringify(got));
+    const KOOTA = { rows: [{ name: 'Nadi', max: 8, score: 0, classic: 0 }], total: 28, classicTotal: 26, max: 36, maleSide: 'outer', groomSign: 0, brideSign: 11, groomNakshatra: 1, brideNakshatra: 27 };
+    const text = runIndiaTables({ action: 'ashtakoota', result: KOOTA }).lines.join('\n');
+    assert(text.includes('合计 28 / 36(另一套传统表 26)') && text.includes('男方:星盘 B') && text.includes('脉(Nadi)'), text);
+    assert(runIndiaTables({ action: 'ashtakoota', result: {} }).lines.length === 0, '回包没有 rows → 不出行');
+    assert(runIndiaTables({ action: 'nope' }).error === 'unknown_action', '未知动作要说出来');
+  });
+}
+
+// 六壬毕法 (星阙 v2.5.x Phase4)：buildLiuRengReferenceContext + matchBiFa verbatim 抽取，
+// 在固定盘上应组装出有效 ~75 字段 context 并机械命中若干毕法。
+check('liureng refContext builds + matchBiFa hits', () => {
+  const chartObj = normalizeChart(liurengFix);  // unwrap raw /chart response → nongli/objects at top
+  const ctx = buildLiuRengReferenceContext(liurengFix.liureng, chartObj, 2, null, null);
+  assert(ctx && ctx.dayGanZi && ctx.dayGanZi.length === 2, 'context missing dayGanZi');
+  assert(Array.isArray(ctx.sanChuanBranches) && ctx.sanChuanBranches.length === 3, 'sanChuan should have 3 branches');
+  assert(Array.isArray(ctx.keUpBranches) && ctx.keUpBranches.length >= 1, 'keUp branches missing');
+  const hits = matchBiFa(ctx);
+  assert(Array.isArray(hits) && hits.length >= 1, 'matchBiFa should hit ≥1 毕法 on this 盘');
+  assert(hits.every((h) => h.no && h.name && h.verse), 'each 毕法 hit needs no/name/verse');
+});
+
+check('liureng 三传六亲走 vendor ZiLiuQin（消费点金标——手抄表时代 vendor 金标看不见它）', () => {
+  const r = runLiureng({ ...liurengFix });
+  const chartObj = normalizeChart(liurengFix);
+  const daygan = `${chartObj.nongli.dayGanZi}`.charAt(0);
+  const find = (o) => {
+    if (!o || typeof o !== 'object') return null;
+    if (Array.isArray(o.cuang) && Array.isArray(o.liuQin)) return o;
+    for (const v of Object.values(o)) { const hit = find(v); if (hit) return hit; }
+    return null;
+  };
+  const sanchuan = find(r.data);
+  assert(sanchuan && sanchuan.liuQin.length === 3, 'sanchuan object with cuang/liuQin not found in data');
+  sanchuan.cuang.forEach((gz, i) => {
+    const zi = `${gz}`.slice(-1);
+    const want = (ZiLiuQin[zi] || {})[daygan] || '无';
+    assert(sanchuan.liuQin[i] === want, `三传 ${gz} 六亲 ${sanchuan.liuQin[i]} ≠ vendor ${want}（日干 ${daygan}）`);
+  });
+});
+
+check('liureng snapshot carries 毕法 + 占断向导 sections', () => {
+  const r = runLiureng({ ...liurengFix, zhanCategory: 'hunyin' });
+  const s = r.snapshot_text || '';
+  assert(s.includes('[常用神煞]'), 'missing 常用神煞');
+  assert(s.includes('[毕法（已命中）]'), 'missing 毕法 section');
+  assert(/\n\d+\.\s/.test(s), 'no numbered 毕法 entries');
+  assert(s.includes('[占断向导]') && s.includes('占事：婚姻'), 'missing 占断向导 for hunyin');
+});
+
+// 🔴 v0.35.0 值级金标：六亲表 ≡ 五行生克公式，120 格逐格对拍（上游 v3.9.4 真值校准同法）。
+// LRConst.js 是 curated 手工件，`--from-manifest` 不碰它：乙日巳/午两格「父母」（应为「子孙」：
+// 乙木生巳午火＝我生者）在四轮同步里静默滞留。负向对照：把任一格改回去，本检查必红。
+check('liureng ZiLiuQin 六亲表与五行生克公式 120 格逐格一致', () => {
+  const WX_GAN = { 甲: '木', 乙: '木', 丙: '火', 丁: '火', 戊: '土', 己: '土', 庚: '金', 辛: '金', 壬: '水', 癸: '水' };
+  const WX_ZHI = { 子: '水', 亥: '水', 寅: '木', 卯: '木', 巳: '火', 午: '火', 申: '金', 酉: '金', 辰: '土', 戌: '土', 丑: '土', 未: '土' };
+  const SHENG = { 木: '火', 火: '土', 土: '金', 金: '水', 水: '木' };  // 我生
+  const KE = { 木: '土', 土: '水', 水: '火', 火: '金', 金: '木' };     // 我克
+  const expect = (gan, zhi) => {
+    const me = WX_GAN[gan], it = WX_ZHI[zhi];
+    if (me === it) return '兄弟';
+    if (SHENG[me] === it) return '子孙';
+    if (SHENG[it] === me) return '父母';
+    if (KE[me] === it) return '妻财';
+    return '官鬼';
+  };
+  const bad = [];
+  let cells = 0;
+  for (const zhi of Object.keys(WX_ZHI)) {
+    for (const gan of Object.keys(WX_GAN)) {
+      cells += 1;
+      const got = ZiLiuQin[zhi] && ZiLiuQin[zhi][gan];
+      if (got !== expect(gan, zhi)) bad.push(`${zhi}.${gan}=${got}(应${expect(gan, zhi)})`);
+    }
+  }
+  assert(cells === 120, `expected 120 cells, walked ${cells}`);
+  assert(bad.length === 0, `六亲表与公式不符: ${bad.join(' ')}`);
+  assert(ZiLiuQin['巳']['乙'] === '子孙' && ZiLiuQin['午']['乙'] === '子孙', '乙日巳/午 must be 子孙 (upstream v3.9.4)');
+});
+
+// 七政四余 政余格局 (星阙 v2.6.x Moira DSL)：buildLocalMoiraPatterns verbatim 抽取。固定盘
+// 1985-03-21 应命中喜格「金水相涵」+ 忌格「孛犯太阳」(盘面物象格局，不依赖 七政神煞)。
+check('guolaoMoira evaluates 政余格局 patterns', () => {
+  const r = runGuolaoMoira(guolaoFix);
+  const names = (r.data.patterns || []).map((p) => p.name);
+  assert(!r.data.error, `should not error: ${r.data.error}`);
+  assert(names.includes('金水相涵'), `expected 金水相涵, got ${names.join(',')}`);
+  assert(names.includes('孛犯太阳'), `expected 孛犯太阳, got ${names.join(',')}`);
+  const s = r.snapshot_text || '';
+  assert(s.includes('喜格：') && s.includes('忌格：'), 'snapshot missing 喜格/忌格 lines');
+});
+
+// 🔴 v0.33.1 值级金标：params 必须是**起盘时刻**，不是 /chart 信封。
+// 引擎读 params.time 判昼夜（:390）、params.date 判冬令（:397）；信封里两者都没有
+// （只有 birth），于是 isDay 恒真、isWinter 恒假 —— 夜生盘拿天贵而非玉贵、孤月独明永不触发、
+// 冬令排除永不生效。段照出、格局照列，只有判据是错的。
+// 负向对照：把 params 换回整个信封，「12月 冬令」这条即红（金水相涵 会重新出现）。
+check('guolaoMoira params 是起盘时刻：冬令排除真的生效', () => {
+  const names = (params) => (runGuolaoMoira({ ...guolaoFix, params }).data.patterns || []).map((p) => p.name);
+  const spring = names({ date: '1985-03-21', time: '10:00:00' });
+  const winter = names({ date: '1985-12-21', time: '10:00:00' });
+  assert(spring.includes('金水相涵'), `非冬令应命中金水相涵，实得 ${spring.join(',')}`);
+  assert(!winter.includes('金水相涵'), `冬令须排除金水相涵（引擎 :203 的 !isWinter），实得 ${winter.join(',')}`);
+  // 传整个信封 = 修复前的形状：date 取不到 → 恒非冬 → 冬令盘也会误报金水相涵
+  const envelope = names(guolaoFix.chart || guolaoFix);
+  assert(envelope.includes('金水相涵'), '信封形状应复现旧行为（此断言记录 bug 形状，勿删）');
+});
+
+// 🔴 v0.33.1 值级金标：起局三开关（timeAlg / after23NewDay / lateZiHourUseNextDay）是 QimenInput
+// 继承来的**顶层**字段，扫描引擎却只从 options 读（qimenScanEngine.js:124-126）。Python 侧此前只传
+// payload["options"] → 顶层写法静默丢弃，命中区间用默认起局算，而同一次调用的展示盘（走
+// _run_qimen_tool）是 honor 顶层的 → 两者不同局，配置段还打出一个没用上的设置标签。
+// ⚠️ 真太阳时校正需要 `lon`（不是只有 gpsLon）——测本条时 geo 必须带 lon，否则 timeAlg 看不出差异。
+// 负向对照：Python 侧改回只读 options 并用顶层 timeAlg 调用，命中集即与 timeAlg=0 相同。
+check('qimenzeri 起局口径真的生效：timeAlg 改变时柱', () => {
+  const seeds = buildQimenScanSeeds(2028, 2028, 8);
+  const geo = { zone: 8, lon: '119e18', lat: '26n05', gpsLon: 119.3, gpsLat: 26.08 };
+  const at = (timeAlg) => computeQimenScanPan(geo, { timeAlg }, seeds, '2028-04-01', '19:02:00').ganzhi.time;
+  assert(at(0) === '丁酉', `timeAlg=0 应为平太阳时 丁酉，实得 ${at(0)}`);
+  assert(at(1) === '戊戌', `timeAlg=1 应为真太阳时 戊戌，实得 ${at(1)}`);
+});
+
+// 🔴 v0.33.1 值级金标：cfg 必须带黄道口径。[征象搜索配置] 的「搜索盘面」行读 cfg.zodiacal
+// （tianxingSnapshot.js:76），Python 此前没往 ctx.cfg 里送 → 恒星盘搜索也恒打「回归黄道」，
+// 而同一份输出里 [起盘信息] 的「黄道：」行读 fields（已正确填充）→ 一份交付物两行自相矛盾。
+// 负向对照：从 cfg 里拿掉 zodiacal，本条即红。
+check('tianxing 搜索盘面口径与实际搜索一致（恒星黄道不再被打成回归）', () => {
+  const fields = { date: { value: '2029-03-01' }, time: { value: '00:00:00' }, zone: { value: 8 },
+    zodiacal: { value: 1 }, siderealAyanamsa: { value: 'fagan_bradley' } };
+  const line = (cfg) => (runTianxing({ action: 'snapshot', fields,
+    ctx: { cfg, tree: { kind: 'group', joiner: 'all', children: [] }, results: [], truncated: false } }).snapshot_text || '')
+    .split('\n').find((l) => l.startsWith('搜索盘面')) || '';
+  const withZod = line({ startDate: '2029-03-01', endDate: '2029-03-10', hsys: 3, zodiacal: 1, siderealAyanamsa: 'fagan_bradley' });
+  assert(withZod.includes('恒星黄道(fagan_bradley)'), `恒星盘应打恒星黄道，实得 ${withZod}`);
+  // 缺 zodiacal = 修复前形状：恒打回归（此断言记录 bug 形状，勿删）
+  assert(line({ startDate: '2029-03-01', endDate: '2029-03-10', hsys: 3 }).includes('回归黄道'), 'bug 形状复现失败');
+});
+
+// 🔴 v0.33.1 值级金标：铁板「考刻」。引擎读 opts.ke（tiebanFrameworkLocal.js:253）。
+// sync311 F8 改口径：考刻是占者按六亲佐证「考」定后手填的刻位，上游无头挂载 ke = ov.tiebanKe（空=1 初刻），
+// 刻制/流派读 tiebanKeSystem / tiebanSchool（KinAstroMain.buildKinAstroSnapshotForFields :329-346）——
+// 钟点不参与考刻。v0.33.1 那版「按时分折算清八刻」是 skill 自创口径（且十二刻·斗宫 9–12 刻永远到不了），
+// 原断言「同时辰不同分钟须落不同刻」随之作废，改钉上游口径。
+// 负向对照：把工具改回 keFromClock(hour, minute)，下面「20:47 仍初刻」即红；改回读 school/keSystem，dou12 那条即红。
+check('tiebanFramework 考刻取 tiebanKe（上游缺省初刻），刻制上限随 tiebanKeSystem', () => {
+  const fp = { year: '己巳', month: '壬申', day: '丁卯', hour: '庚子' };
+  const ju = (ke) => buildTiebanFramework(fp, { birthYear: 1989, gender: 1, ke }).ju;
+  assert(ju(1).label === '子时初刻＝全日第1刻', `ke=1 → ${ju(1).label}`);
+  assert(ju(8).label === '子时八刻＝全日第8刻', `ke=8 → ${ju(8).label}`);
+  const run = (extra) => runTiebanFramework({ pillars: [
+    { key: 'year', ganzhi: '己巳' }, { key: 'month', ganzhi: '壬申' },
+    { key: 'day', ganzhi: '丁卯' }, { key: 'hour', ganzhi: '庚子' }], birthYear: 1989, gender: 1, ...extra });
+  const keOf = (extra) => { const m = /全日第(\d+)刻/.exec(run(extra).text || ''); return m && m[1]; };
+  assert(keOf({ hour: 20, minute: 47 }) === '1', `未给 tiebanKe 应为初刻（钟点不参与），实得 ${keOf({ hour: 20, minute: 47 })}`);
+  assert(keOf({ tiebanKe: 8 }) === '8', `tiebanKe=8 → ${keOf({ tiebanKe: 8 })}`);
+  // 十二刻·斗宫收 1–12（清八刻超 8 按初刻）：刻位上限随 tiebanKeSystem。
+  const dou = run({ tiebanKeSystem: 'dou12', tiebanKe: 11 });
+  assert(dou.data && dou.data.keSystem === 'dou12' && dou.data.ke === 11, `dou12/11 → ${JSON.stringify(dou.data)}`);
+  assert(run({ tiebanKe: 11 }).data.ke === 1, 'qing8 下 11 刻应按初刻');
+  assert(/北派/.test(run({ tiebanSchool: 'north' }).text || ''), 'tiebanSchool=north 应出北派');
+  assert(run({ school: 'north', keSystem: 'dou12' }).data.keSystem === 'qing8', '旧键 school/keSystem 不该生效（上游名 tiebanSchool/tiebanKeSystem）');
+});
+
+check('calendarExtras 当事人时辰真的进盘（time 只喂时刻）', () => {
+  // 值级：同日不同时辰的当事人，喜忌必须不同。修复前 calendarExtras 把
+  // `YYYY-MM-DD HH:MM:SS` 整串塞给 time，parseDateTime 做 `time.split(':')` 后
+  // Number('1990-05-15 03') = NaN → hour 恒 0 → 每个当事人都按子时起盘。
+  const xi = (clock) => JSON.stringify(personBazi({ date: '1990-05-15', time: clock, gender: 1 }).xi);
+  assert(xi('03:00:00') === '["水","木","火"]', `03:00 喜用实得 ${xi('03:00:00')}`);
+  assert(xi('21:00:00') === '["水"]', `21:00 喜用实得 ${xi('21:00:00')}`);
+  // 负向对照：把旧的整串形状喂回去，两个时辰会重新塌成同一盘（bug 复现）。
+  const old = (clock) => JSON.stringify(personBazi({ date: '1990-05-15', time: `1990-05-15 ${clock}`, gender: 1 }).xi);
+  assert(old('03:00:00') === old('21:00:00'), '旧整串形状本应塌盘，负向对照失效说明引擎已改口径');
+});
+
+// ---- v0.36.0 A4 半成品收官：三个「引擎已就绪、旋钮未接」的工具各加**能翻转**的值金标（改参数结果必变 + 负向对照）----
+check('heluo liunianStep2/ziShuMode 走到引擎：2 岁流年 应爻法≠逐爻上行；写错键名不得翻转；立春前生者干支年基准', () => {
+  const base = { date: '2026-02-17', time: '21:50:07', zone: '+08:00', lon: '120e00', gender: 1, timeAlg: 1 };
+  const ying = runHeluo(base);
+  const seq = runHeluo({ ...base, liunianStep2: 'sequential' });
+  assert(ying.input_normalized.liunianStep2 === 'ying' && seq.input_normalized.liunianStep2 === 'sequential', 'liunianStep2 must be echoed');
+  const row = (r) => r.snapshot_text.split('\n').find((l) => l.startsWith('| 2岁 |')) || '';
+  // 权威：vendored heluoLocal.js liuNian() —— 'ying' 应爻法★（opts.step2 默认，line 244）/ 'sequential' 逐爻上行
+  // （line 262），与桌面 HeLuoMain 同一引擎；先天火風鼎的 2 岁流年：应爻法落 雷風恆·上六，逐爻上行落 山風蠱·六四。
+  assert(row(ying).includes('雷風恆') && row(ying).includes('上六'), `ying 2岁 row: ${row(ying)}`);
+  assert(row(seq).includes('山風蠱') && row(seq).includes('六四'), `sequential 2岁 row: ${row(seq)}`);
+  // 负向对照：旋钮名写成 step2（v0.35 的死键）必须**不**翻转——死键就是这样溜过去的。
+  const dead = runHeluo({ ...base, step2: 'sequential' });
+  assert(row(dead) === row(ying), 'unknown knob name must not change the result');
+  // ziShuMode 'single'（heluoLocal.js line 146 每支阴阳取一数）改取数 → 天地数/先天卦必变：pair 火風鼎 19/44 → single 山風蠱 18/24
+  const single = runHeluo({ ...base, ziShuMode: 'single' });
+  assert(ying.data.chart.xian.name === '火風鼎' && ying.data.chart.tian === 19 && ying.data.chart.di === 44, 'pair baseline');
+  assert(single.data.chart.xian.name === '山風蠱' && single.data.chart.tian === 18 && single.data.chart.di === 24, `single: ${single.data.chart.xian.name} ${single.data.chart.tian}/${single.data.chart.di}`);
+  // 流年年基准 = 干支年（vendor/utils/ganzhiYearBase.js）：2026-02-03 在立春（2026-02-04）前，年柱乙巳 → 基准 2025
+  const pre = runHeluo({ ...base, date: '2026-02-03' });
+  assert(pre.data.fourPillars.year === '乙巳' && pre.data.birthYear === 2025 && ying.data.birthYear === 2026, `birthYear: ${pre.data.birthYear}/${ying.data.birthYear}`);
+});
+
+check('yizhangjing gradeSet/leapRule 走到引擎：天驛 中品→下品；闰二月十五 00:xx 夜半折半作下月；23:xx 不作', () => {
+  const base = { date: '1998-02-20', time: '20:48:00', zone: '+08:00', lat: '31n13', lon: '121e28', gender: 1 };
+  const std = runYizhangjing(base);
+  const variant = runYizhangjing({ ...base, gradeSet: 'variant' });
+  const cell = (r) => r.data.renshi.find((row) => row.palace === '迁移');
+  // 权威：vendored yizhangjingReport.js gradeOf(star, gradeSet) 两套品级表（标准表 天驛=中品，变体表 天驛=下品）
+  assert(cell(std).star === '天驛' && cell(std).grade === '中品', `standard: ${JSON.stringify(cell(std))}`);
+  assert(cell(variant).star === '天驛' && cell(variant).grade === '下品', `variant: ${JSON.stringify(cell(variant))}`);
+  assert(std.data.opts.gradeSet === 'standard' && variant.data.opts.gradeSet === 'variant', 'gradeSet must be echoed in opts');
+  // 权威：yizhangjingReport.js 闰月归属分支——leapRule='midnight' && 十五 && 生时子且 00:xx → 作下月。
+  // 2023-04-05 = 闰二月十五；十五折半★作本月（month 2），夜半折半作下月（month 3）。
+  const leap = { ...base, date: '2023-04-05', time: '00:30:00' };
+  const half = runYizhangjing(leap);
+  const midnight = runYizhangjing({ ...leap, leapRule: 'midnight' });
+  assert(half.data.input.leap === true && half.data.input.day === 15 && half.data.input.month === 2, `half: ${JSON.stringify(half.data.input)}`);
+  // 上游 v3.11.0 [Q-265/SO-20⑧ 术语校正]：钟面 00:xx 是夜半后的「早子」，全局「晚子时」专指 23 时档 → 注记改「(早子)」，判定不变。
+  assert(midnight.data.input.month === 3 && midnight.data.input.monthNote === '闰月·十五夜半(早子)作下月', `midnight: ${JSON.stringify(midnight.data.input)}`);
+  // 负向对照：23:30 不满足引擎的 00:xx 条件，夜半折半不得作下月。
+  // 显式 after23NewDay:0 —— 一掌经日界缺省已随上游改为 1（23 点算次日，YiZhangJingMain.js:127），
+  // 那样 23:30 的农历日先进位成十六、按「十五后作下月」走的是另一条分支；本对照只考 00:xx 条件本身。
+  const notLate = runYizhangjing({ ...leap, time: '23:30:00', leapRule: 'midnight', after23NewDay: 0 });
+  assert(notLate.data.input.month === 2, `23:30 must stay month 2: ${JSON.stringify(notLate.data.input)}`);
+});
+
+// ── 命 · 其他（上游 v3.14.0）：东亚诸术 / 诸方杂术，每个子术一条值级金标（期望值的独立来源写在各断言上）────────────
+const DONGYA_BASE = { date: '1975-02-10', time: '21:15:00', zone: '-08:00', lat: '47n36', lon: '122w20', gender: 0 };
+const DONGYA_NOW = Date.UTC(2026, 10, 7, 12);   // 上游 eastAsiaSnapshot.test.js 的 NOW
+const dongyaLine = (r, head) => (r.snapshot_text || '').split('\n').find((l) => l.startsWith(head)) || '';
+
+check('dongya 藏历：藏历新年 2024-02-10 / 2025-02-28 / 2026-02-18 都是正月初一；年的五行生肖与胜生周', () => {
+  // 独立来源：公开历表的洛萨（藏历新年）日期，与上游 eastAsiaArts.test.js「藏历新年(2019~2026)」同一组；
+  // 2024 木阳龙、2025 木阴蛇、2026 火阳马；第十七胜生周始于 1987 火阴兔年 → 2024 是第 38 年。拉萨正午（当地 5 点已过）。
+  const lhasa = { time: '12:00:00', zone: '+08:00', lat: '29n39', lon: '91e06', gender: 1, now_ms: DONGYA_NOW };
+  const cases = [['2024-02-10', '木阳龙年', 38], ['2025-02-28', '木阴蛇年', 39], ['2026-02-18', '火阳马年', 40]];
+  for (const [date, yearText, rabjungYear] of cases) {
+    const r = runDongya({ ...lhasa, date });
+    assert(r.data.ok === true, `${date}: ${JSON.stringify(r.data)}`);
+    const y = Number(date.slice(0, 4));
+    assert(dongyaLine(r, '出生藏历') === `出生藏历:${y} 年 1 月 1 日,${dongyaLine(r, '出生藏历').split(',')[1]}`, `${date} 应是正月初一：${dongyaLine(r, '出生藏历')}`);
+    const t = r.data.model.tibetan;
+    assert(t.date.year === y && t.date.month === 1 && t.date.day === 1 && t.date.leap === false, `${date} → ${JSON.stringify(t.date)}`);
+    assert(dongyaLine(r, '年:').startsWith(`年:${yearText},第 17 胜生周第 ${rabjungYear} 年`), `${date} 年行：${dongyaLine(r, '年:')}`);
+  }
+  // 新年前一天还在旧年：上游 eastAsiaSnapshot.test.js 的夹具盘（1975-02-10 西雅图，藏历新年 2 月 11 日的前一天）= 1974 年 12 月、木阳虎年。
+  const eve = runDongya({ ...DONGYA_BASE, now_ms: DONGYA_NOW });
+  assert(dongyaLine(eve, '出生藏历') === '出生藏历:1974 年 12 月 30 日,月曜日', `除夕：${dongyaLine(eve, '出生藏历')}`);
+  assert(dongyaLine(eve, '年:').startsWith('年:木阳虎年,第 16 胜生周第 48 年'), dongyaLine(eve, '年:'));
+  // 经度进了藏历日界（当地平太阳时 5 点起算）：同一钟面时刻，西雅图已是除夕，换到 0° 经线则已过日界进了正月初一。
+  const greenwich = runDongya({ ...DONGYA_BASE, lon: '0e00', now_ms: DONGYA_NOW });
+  assert(greenwich.data.model.tibetan.date.month === 1 && greenwich.data.model.tibetan.date.day === 1, `lon 应改日界：${JSON.stringify(greenwich.data.model.tibetan.date)}`);
+});
+
+check('dongya 藏占：流年八卦男命起离顺行 / 女命起坎逆行（性别真的改结果）；1963 年本命九宫一白', () => {
+  // 独立来源：上游 eastAsiaArts.test.js「两条对照序列」——女命一岁起 坎乾兑坤离巽震艮，男命一岁起 离坤兑乾坎艮震巽。
+  // 夹具盘藏历生年 1974 → 流年 1974…1981 = 1…8 岁。
+  const seq = (gender) => [0, 1, 2, 3, 4, 5, 6, 7].map((i) => {
+    const r = runDongya({ ...DONGYA_BASE, gender, flowYear: 1974 + i, now_ms: DONGYA_NOW });
+    assert(r.data.model.parkha.age === i + 1, `age ${r.data.model.parkha.age}`);
+    return r.data.model.parkha.year.gua;
+  }).join('');
+  assert(seq(0) === '坎乾兑坤离巽震艮', `女命：${seq(0)}`);
+  assert(seq(1) === '离坤兑乾坎艮震巽', `男命：${seq(1)}`);
+  const female = runDongya({ ...DONGYA_BASE, gender: 0, flowYear: 2026, now_ms: DONGYA_NOW });
+  const male = runDongya({ ...DONGYA_BASE, gender: 1, flowYear: 2026, now_ms: DONGYA_NOW });
+  // 2026 年 53 岁：53 ≡ 5 (mod 8) → 女命第 5 位「离」、男命第 5 位「坎」。
+  assert(dongyaLine(female, '2026 年') === '2026 年 53 岁(女命):流年八卦 离(Li,南,火);出生日八卦 乾(Khen,西北,天(铁))', dongyaLine(female, '2026 年'));
+  assert(dongyaLine(male, '2026 年').startsWith('2026 年 53 岁(男命):流年八卦 坎(Kham,北,水)'), dongyaLine(male, '2026 年'));
+  // 上游 eastAsiaArts.test.js：1963 年本命一白，生命力 −3 = 七、个人力 +3 = 四。
+  const mewa = runDongya({ date: '1963-06-15', time: '12:00:00', zone: '+08:00', lat: '29n39', lon: '91e06', gender: 1, flowYear: 2026, now_ms: DONGYA_NOW });
+  assert(mewa.data.model.tibetan.date.year === 1963, `藏历年 ${mewa.data.model.tibetan.date.year}`);
+  assert(dongyaLine(mewa, '九宫:').startsWith('九宫:本命 1白 · 当年 1白 · 生命力 7红 · 个人力 4绿'), dongyaLine(mewa, '九宫:'));
+  // 流年早于出生：不按一岁算（上游「流年早于出生」用例）。
+  const before = runDongya({ ...DONGYA_BASE, flowYear: 1900, now_ms: DONGYA_NOW });
+  assert(dongyaLine(before, '1900 年').startsWith('1900 年早于出生(藏历生年 1974 年):没有流年八卦'), dongyaLine(before, '1900 年'));
+});
+
+check('dongya 蒙古 Zurkhai / 算命学 / 九星气学：乙卯年戊寅月丁亥日、天中杀午未、藏干表两版、七赤八白、甲子日七赤', () => {
+  const r = runDongya({ ...DONGYA_BASE, flowYear: 2026, now_ms: DONGYA_NOW });
+  // 独立推算：1975 立春（2 月 4 日）后 = 乙卯年；乙庚之岁寅月起戊 = 戊寅月；2000-01-01 戊午日往回数 9091 日（≡ 31 mod 60）= 丁亥日。
+  assert(dongyaLine(r, '三柱:') === '三柱:日柱 丁亥 · 月柱 戊寅 · 年柱 乙卯;节入 立春 后 6.8 日', dongyaLine(r, '三柱:'));
+  // 年支卯、月支寅相距一位 → 相位 2（上游 Zurkhai 对照例「卯 辰 2」同距）。
+  assert(dongyaLine(r, '年支') === '年支 卯 · 月支 寅 · 相位 2(相邻)', dongyaLine(r, '年支'));
+  // 丁亥在甲申旬（甲申…癸巳），旬空午未；2026 丙午、2027 丁未起的天中杀年。
+  assert(dongyaLine(r, '天中杀:') === '天中杀:午未;近年 2026(午)、2027(未)、2038(午)、2039(未)', dongyaLine(r, '天中杀:'));
+  // 上游 eastAsiaSnapshot.test.js：寅月节后第 6 日，通行版余气戊、法诀版余气己。
+  assert(r.data.model.sanmei.hidden[1].ruler === '戊', `common: ${r.data.model.sanmei.hidden[1].ruler}`);
+  const fajue = runDongya({ ...DONGYA_BASE, flowYear: 2026, fenyeVersion: 'fajue', now_ms: DONGYA_NOW });
+  assert(fajue.data.model.sanmei.hidden[1].ruler === '己', `fajue: ${fajue.data.model.sanmei.hidden[1].ruler}`);
+  assert(dongyaLine(fajue, '藏干') !== dongyaLine(r, '藏干'), 'fenyeVersion 必须改 [算命学] 藏干行');
+  // 九星气学公开年月表：1975 立春年七赤金；一四七之年寅月八白。日命星随上游「2026-02-19 甲子 = 七赤(阳遁中元)」。
+  assert(dongyaLine(r, '本命星').startsWith('本命星 七赤 · 月命星 八白'), dongyaLine(r, '本命星'));
+  const jiazi = runDongya({ date: '2026-02-19', time: '12:00:00', zone: '+08:00', lat: '39n54', lon: '116e23', gender: 1, flowYear: 2026, now_ms: DONGYA_NOW });
+  assert(jiazi.data.model.ninestar.nichimei === 7 && jiazi.data.model.ninestar.nichimeiDun === '阳遁中元', JSON.stringify(jiazi.data.model.ninestar));
+});
+
+check('dongya 洛书流年 / 易卦星盘：流年可指定、今年按盘时区取；乾 89.9° 合上卦得泰、合下卦得否；推运环位', () => {
+  // 洛书：公历生年 1975，2026 年 51 岁 ≡ 3 (mod 8) → 中宫 7、当年数 9；九格 = 中宫 + 偏移、过 9 减 9（头 +7 → 5，左肩 +2 → 9 ★）。
+  const r = runDongya({ ...DONGYA_BASE, flowYear: 2026, now_ms: DONGYA_NOW });
+  assert(dongyaLine(r, '2026 年(51 岁)') === '2026 年(51 岁):中宫 7,当年数 9;头 5 左肩 9★ 右肩 6 胸 3 左手 4 右手 2 腹 7 左脚 1 右脚 8', dongyaLine(r, '2026 年(51 岁)'));
+  const y2030 = runDongya({ ...DONGYA_BASE, flowYear: 2030, now_ms: DONGYA_NOW });
+  assert(y2030.data.settings.flowYear === 2030 && y2030.data.settings.flowYearGiven === true && y2030.data.model.loshu[0].year === 2030, JSON.stringify(y2030.data.settings));
+  // 流年缺省 = 今年，按盘时区取（上游用例）：UTC 2025-12-31 17:00 = 东八区 2026-01-01 01:00，西八区仍是 2025。
+  const eve = Date.UTC(2025, 11, 31, 17, 0);
+  const cn = runDongya({ ...DONGYA_BASE, zone: '+08:00', lon: '116e23', lat: '39n54', now_ms: eve });
+  const us = runDongya({ ...DONGYA_BASE, now_ms: eve });
+  assert(cn.data.model.loshu[0].year === 2026 && us.data.model.loshu[0].year === 2025, `${cn.data.model.loshu[0].year}/${us.data.model.loshu[0].year}`);
+  assert(cn.data.settings.flowYearGiven === false, '没给 flowYear 要如实标');
+  // 易卦星盘（先天圆图：乾止于夏至 90°）：太阳 89.9° 的度卦是 1 乾；太阳的三爻是乾（111），逐爻异或——
+  // 10 宫在地平上合上卦：乾上变坤 → 坤上乾下 = 11 泰；恒合下卦：乾下变坤 → 乾上坤下 = 12 否。座卦：89.9° 在双子 → 37 家人。
+  const chart = { chart: { objects: [{ id: 'Sun', lon: 89.9, house: 'House10' }, { id: 'Uranus', lon: 211, house: 'House1' }] } };
+  const horizon = runDongya({ ...DONGYA_BASE, chart, now_ms: DONGYA_NOW });
+  assert(dongyaLine(horizon, '太阳(乾)').startsWith('太阳(乾):度卦 1 乾为天 → 11 地天泰;座卦 37 风火家人'), dongyaLine(horizon, '太阳(乾)'));
+  assert(!(horizon.snapshot_text || '').includes('天王星'), '易卦星盘只排七政');
+  const lower = runDongya({ ...DONGYA_BASE, chart, ichingMerge: 'lower', now_ms: DONGYA_NOW });
+  assert(dongyaLine(lower, '太阳(乾)').startsWith('太阳(乾):度卦 1 乾为天 → 12 天地否'), dongyaLine(lower, '太阳(乾)'));
+  assert(dongyaLine(lower, '合卦规则') === '合卦规则:恒合下卦', dongyaLine(lower, '合卦规则'));
+  // 没有本命盘：只少七政合卦，照出推运（上游「没有时说明未出」）。
+  const none = runDongya({ ...DONGYA_BASE, now_ms: DONGYA_NOW });
+  assert(none.data.hasChart === false && (none.snapshot_text || '').includes('没有本命盘星位,易卦星盘未出。'), 'no-chart line');
+  // 推运环位 = (出生起日数 + 62) mod 64：出生后整 3 日 → 环位 1（上游 ichingProgression(3).position === 1），环上第 1 格是 41 损。
+  const birthUtc = Date.UTC(1975, 1, 11, 5, 15);   // 1975-02-10 21:15 -08:00
+  const plus3 = runDongya({ ...DONGYA_BASE, now_ms: birthUtc + 3 * 86400000 + 60000 });
+  assert(dongyaLine(plus3, '易卦推运') === '易卦推运:今日环位 1,41 山泽损', dongyaLine(plus3, '易卦推运'));
+});
+
+check('dongya 口径只认上游词表：认不出的值与公元前出生都报结构化原因，不回落缺省', () => {
+  const bad = runDongya({ ...DONGYA_BASE, ichingMerge: 'bogus' });
+  assert(bad.data.ok === false && bad.data.reason === 'invalid_option' && bad.data.error.field === 'ichingMerge', JSON.stringify(bad.data));
+  assert(JSON.stringify(bad.data.error.allowed) === JSON.stringify(['horizon', 'upper', 'lower']), JSON.stringify(bad.data.error.allowed));
+  const badYear = runDongya({ ...DONGYA_BASE, flowYear: 10000 });
+  assert(badYear.data.ok === false && badYear.data.error.field === 'flowYear', JSON.stringify(badYear.data));
+  const bc = runDongya({ ...DONGYA_BASE, date: '-0500-03-01', ad: -1 });
+  assert(bc.data.ok === false && bc.data.reason === 'bc_unsupported' && bc.snapshot_text === '', JSON.stringify(bc.data));
+});
+
+const zhufangFix = JSON.parse(readFileSync(join(HERE, 'fixtures', 'sync314_mingother_zhufang_live.json'), 'utf8')).scenarios;
+const ZHUFANG_BASE = { date: '1975-02-10', time: '21:15:00', zone: '-08:00', lat: '47n36', lon: '122w20', hsys: 3 };
+const zhufangLines = (r, head) => {
+  const lines = (r.snapshot_text || '').split('\n');
+  const at = lines.indexOf(`[${head}]`);
+  const out = [];
+  for (let i = at + 1; at >= 0 && i < lines.length && !/^\[.+\]$/.test(lines[i]); i += 1) out.push(lines[i]);
+  return out;
+};
+
+check('zhufang 玛雅历 / 十三月亮历：2012-12-21 = 13.0.0.0.0 4 Ajaw 3 K\'ank\'in G9；关联常数真的改结果；Kin 34 / Kin 207', () => {
+  // 独立来源：公认的玛雅长计历锚点（GMT 关联常数 584283）——2012-12-21 = 13.0.0.0.0，4 Ajaw 3 K'ank'in，第九位夜神。
+  const gmt = runZhufang({ ...ZHUFANG_BASE, date: '2012-12-21' });
+  assert(zhufangLines(gmt, '玛雅历')[0] === "长历 13.0.0.0.0(关联常数 584283);卓尔金 4 Ajaw 王;哈布 3 K'ank'in;九夜神 G9;十三日组 Kab'an 地 第 4 日", zhufangLines(gmt, '玛雅历')[0]);
+  // 584285（Lounsbury）把同一天往前挪两日：13.0.0.0.0 落在 2012-12-23；12-21 那天是 12.19.19.17.18、卓尔金 2 Etz'nab'（4 Ajaw 的前两日）。
+  const l85 = runZhufang({ ...ZHUFANG_BASE, date: '2012-12-21', mayanCorrelation: 584285 });
+  assert(zhufangLines(l85, '玛雅历')[0].startsWith("长历 12.19.19.17.18(关联常数 584285);卓尔金 2 Etz'nab' 燧石;哈布 1 K'ank'in;九夜神 G7"), zhufangLines(l85, '玛雅历')[0]);
+  const l85b = runZhufang({ ...ZHUFANG_BASE, date: '2012-12-23', mayanCorrelation: 584285 });
+  assert(zhufangLines(l85b, '玛雅历')[0].startsWith('长历 13.0.0.0.0(关联常数 584285);卓尔金 4 Ajaw 王'), zhufangLines(l85b, '玛雅历')[0]);
+  assert(l85.data.local.mayan.days === gmt.data.local.mayan.days - 2, 'correlation +2 → 长历日数 −2');
+  // 十三月亮历公认锚点：1987-07-26 = Kin 34（白银河巫师，历法起算年的元旦）；2012-12-21 = Kin 207 蓝水晶手（上游 zhufangArts.test.js 同锚）。
+  // 波符 = 调性 1 的那一天所在的图腾：Kin 34 调性 8 → 波符起于 Kin 27（蓝磁性手）→ 蓝手波符（Kin 27–39）。
+  const k34 = runZhufang({ ...ZHUFANG_BASE, date: '1987-07-26' });
+  assert(zhufangLines(k34, '十三月亮历')[0] === 'Kin 34:银河调性 8 · 白巫师;波符 蓝手;1987 年第 1 月第 1 日', zhufangLines(k34, '十三月亮历')[0]);
+  assert(zhufangLines(gmt, '十三月亮历')[0] === 'Kin 207:水晶调性 12 · 蓝手;波符 黄战士;2012 年第 6 月第 9 日', zhufangLines(gmt, '十三月亮历')[0]);
+  // 2 月 29 日不计数：与 2 月 28 日同 Kin；7 月 25 日是无时间日（上游用例）。
+  const feb28 = runZhufang({ ...ZHUFANG_BASE, date: '2024-02-28' }).data.local.dreamspell.kin;
+  const feb29 = runZhufang({ ...ZHUFANG_BASE, date: '2024-02-29' });
+  assert(feb29.data.local.dreamspell.kin === feb28 && zhufangLines(feb29, '十三月亮历')[0].endsWith('闰日(不计数)'), zhufangLines(feb29, '十三月亮历')[0]);
+  assert(zhufangLines(runZhufang({ ...ZHUFANG_BASE, date: '2025-07-25' }), '十三月亮历')[0].endsWith('无时间日'), '7 月 25 日 = 无时间日');
+  // 公元前：两种历都不排，段内写明（上游「公元前不排两种历」）。
+  const bc = runZhufang({ ...ZHUFANG_BASE, date: '-0500-01-01', ad: -1 });
+  assert(bc.data.bc === true && zhufangLines(bc, '玛雅历')[0] === '公元前日期不排玛雅历。' && zhufangLines(bc, '十三月亮历')[0] === '公元前日期不排十三月亮历。', bc.snapshot_text);
+});
+
+check('zhufang 人类图 / 灵名字母：后端真响应排版——投射者 4/6、太阳 49.4、通道 4-63 23-43 28-38；投字 4 / 9 / 22；平交点改北交爻', () => {
+  // 夹具 = 共享 vendored v3.14.0 引擎 /astroextra/zhufang 的真响应（1975-02-10 21:15 -08:00 西雅图，Placidus）。期望值按公开定义手推：
+  //   太阳黄经 321.85° → (321.85 − 302) ÷ 5.625 = 3.53 → 轮上第 4 个闸门 49；余 2.975° ÷ 0.9375 = 3.17 → 第 4 爻 → 49.4。
+  //   通道 4-63（头–脑）、23-43（喉–脑）、28-38（脾–根）：荐骨无定义、唯一有定义的动力中心（根）不通喉 → 投射者；
+  //   情绪 / 荐骨无定义、脾有定义 → 直觉(脾)权威；{头 脑 喉} 与 {脾 根} 两块 → 二分人；个人太阳 4 爻 / 设计太阳 6 爻 → 4/6。
+  const r = runZhufang({ ...ZHUFANG_BASE, remote: zhufangFix.default.response });
+  const hd = zhufangLines(r, '人类图');
+  assert(hd[0] === '类型 投射者 · 内在权威 直觉(脾) · 人生角色 4/6(机会主义者 / 角色模范) · 二分人', hd[0]);
+  assert(hd[1] === '轮回交叉 49/4 | 43/23;交点 真交点', hd[1]);
+  assert(hd[2] === '有定义中心:头顶、脑、喉、直觉(脾)、根部' && hd[3] === '通道:4-63、23-43、28-38', `${hd[2]} / ${hd[3]}`);
+  assert(hd[4].startsWith('个人(出生):太阳 49.4 · 地球 4.4 · 北交 9.2 · 南交 16.2 · 月亮 49.4'), hd[4]);
+  //   灵名字母：上升 185.22° → 整度 185；太阳整度 321 → (321 − 185) mod 22 = 4（Daleth）；上升自身 185 mod 22 = 9（Teth）；
+  //   夜生盘福点 = 上升 + 日 − 月 = 185.24° → 与上升同度 → 0 记 22（Tav）。
+  const sn = zhufangLines(r, '灵名字母');
+  assert(sn[0].startsWith('五要点:太阳 ד Daleth(4);月亮 ד Daleth(4);上升 ט Teth(9);福点 ת Tav(22)'), sn[0]);
+  assert(sn[2].startsWith('象限 1:1 宫 土星(4 分)'), sn[2]);
+  assert(r.data.remote_status.humanDesign === true && r.data.remote_status.spiritNames === true, JSON.stringify(r.data.remote_status));
+  // 平交点：只动交点（真交点 247.17° → 9.2；平交点落在同一闸门的第 1 爻），文字行随之变。
+  const mean = runZhufang({ ...ZHUFANG_BASE, hdTrueNode: false, remote: zhufangFix.mean_node.response });
+  assert(zhufangLines(mean, '人类图')[1] === '轮回交叉 49/4 | 43/23;交点 平交点', zhufangLines(mean, '人类图')[1]);
+  assert(zhufangLines(mean, '人类图')[4].includes('北交 9.1 · 南交 16.1'), zhufangLines(mean, '人类图')[4]);
+  // 象限 2 = 2·5·8·11 宫。
+  const q2 = runZhufang({ ...ZHUFANG_BASE, spiritQuadrant: 2, remote: zhufangFix.quadrant2.response });
+  assert(zhufangLines(q2, '灵名字母')[2].startsWith('象限 2:2 宫 火星(4 分)'), zhufangLines(q2, '灵名字母')[2]);
+});
+
+check('zhufang 请求体取上游映射；后端缺席 / 回 null 时两段写「未算出」并如实标 remote_status；口径只认上游词表', () => {
+  // 请求体 = 上游 zhufangParamsFromFields + zhufangRemote 的 body 映射：日期 YYYY/MM/DD、hdTrueNode 0/1、性别缺省 '1'。
+  const probe = runZhufang({ ...ZHUFANG_BASE, hdTrueNode: 'mean', spiritQuadrant: '3', request_only: true });
+  assert(JSON.stringify(probe.request) === JSON.stringify({ date: '1975/02/10', time: '21:15:00', zone: '-08:00', ad: 1, lat: '47n36', lon: '122w20', hsys: 3, gender: '1', hdTrueNode: 0, spiritQuadrant: 3 }), JSON.stringify(probe.request));
+  assert(JSON.stringify(runZhufang({ ...ZHUFANG_BASE, request_only: true }).request) === JSON.stringify(zhufangFix.default.request), '缺省请求体 = 夹具录下的那一份');
+  // 没取到后端（null）与后端内部出错（两块都回 null、HTTP 200）同一处理：本地两段照出，后两段「未算出」。
+  for (const remote of [null, zhufangFix.bad_date.response]) {
+    const r = runZhufang({ ...ZHUFANG_BASE, date: '2012-12-21', remote });
+    assert(zhufangLines(r, '玛雅历')[0].startsWith('长历 13.0.0.0.0'), 'local sections still computed');
+    assert(zhufangLines(r, '人类图')[0] === '人类图未算出。' && zhufangLines(r, '灵名字母')[0] === '灵名字母未算出。', r.snapshot_text);
+    assert(r.data.remote_status.humanDesign === false && r.data.remote_status.spiritNames === false, JSON.stringify(r.data.remote_status));
+  }
+  // 只算出一块：缺的那块写未算出、标 false。
+  const half = runZhufang({ ...ZHUFANG_BASE, remote: { humanDesign: zhufangFix.default.response.humanDesign, spiritNames: null } });
+  assert(half.data.remote_status.humanDesign === true && half.data.remote_status.spiritNames === false && zhufangLines(half, '灵名字母')[0] === '灵名字母未算出。', JSON.stringify(half.data.remote_status));
+  const bad = runZhufang({ ...ZHUFANG_BASE, mayanCorrelation: 584284 });
+  assert(bad.data.ok === false && bad.data.reason === 'invalid_option' && JSON.stringify(bad.data.error.allowed) === JSON.stringify([584283, 584285, 584286]), JSON.stringify(bad.data));
+  assert(runZhufang({ ...ZHUFANG_BASE, spiritQuadrant: 4 }).data.error.field === 'spiritQuadrant', 'spiritQuadrant 4 refused');
+  assert(runZhufang({ ...ZHUFANG_BASE, hdTrueNode: 'maybe' }).data.error.field === 'hdTrueNode', 'hdTrueNode maybe refused');
+});
+
+check('tongshefa 纳甲逐爻/世应/左右爻变入 data：风雷益 子寅辰未巳卯、世三应六、益→晋 变在 1/4/5 爻', () => {
+  const r = runTongSheFa({ taiyin: '巽', taiyang: '离', shaoyang: '震', shaoyin: '坤' });
+  assert(r.data.baseLeft.name === '风雷益' && r.data.baseRight.name === '火地晋', 'fixture pair');
+  // 权威：京房纳甲（震内卦 子寅辰、巽外卦 未巳卯）+ 巽宫木六亲生克（水父母/木兄弟/土妻财/火子孙）+ 益为巽宫三世卦（世三应六）
+  const branches = r.data.leftLines.map((l) => l.branch).join('');
+  const kin = r.data.leftLines.map((l) => l.kin).join('/');
+  assert(branches === '子寅辰未巳卯', `branches: ${branches}`);
+  assert(kin === '父母/兄弟/妻财/妻财/子孙/兄弟', `kin: ${kin}`);
+  assert(r.data.leftLines[2].shiYing === '世' && r.data.leftLines[5].shiYing === '应', 'shi/ying');
+  assert(r.data.main_relation === '实克思' && r.data.main_relation_label === '实践改造思想', `label: ${r.data.main_relation_label}`);
+  // 益 (自下 1,0,0,0,1,1) vs 晋 (0,0,0,1,0,1) → 变在 1/4/5 爻
+  const changed = r.data.yaoChanges.filter((y) => y.changed).map((y) => y.line).sort((a, b) => a - b).join(',');
+  assert(changed === '1,4,5', `changed lines: ${changed}`);
+});
+
+check('guolao moira rules_sections：[虚实]/[本命化曜]/[流年流曜] 三段与上游 jest 夹具逐行一致', () => {
+  // 权威：上游 astrostudyui/src/components/guolao/__tests__/guolaoWeakSolidBirthStars.test.js（v44 硬缺修）
+  // 的夹具与断言；transit 侧同一 builder 形状（GuoLaoChartMain.buildGuolaoTransitStarsSection）。
+  const rules = {
+    weakSolid: { houses: [
+      { house: '命宫', label: '实', solid: true, weakPillars: [], solidPillars: ['年', '日'] },
+      { house: '财帛', label: '虚', weak: true, weakPillars: ['月'], solidPillars: [] },
+    ] },
+    yearStars: {
+      birth: { yearPole: '丙午', planetRows: [{ star: '木', changeTo: '天贵', items: ['岁星'] }, { star: '火', changeTo: '天刑', items: [] }] },
+      transit: { yearPole: '', planetRows: [{ star: '火', changeTo: '天刑', items: [] }] },
+    },
+    transitYearStars: [{ name: '岁星', star: '木', shortName: '岁', quality: '旺', zi: '寅', signName: '析木' }],
+  };
+  const { sections } = runGuolaoMoira({ action: 'rules_sections', moiraRules: rules, transitYearGz: '丙午' });
+  const ws = sections.weakSolid.split('\n');
+  assert(ws[0] === '| 宫位 | 虚实 | 虚柱 | 实柱 |' && ws[1] === '| --- | --- | --- | --- |', 'weakSolid header');
+  assert(ws[2] === '| 命宫 | 实 | 无 | 年、日 |', `row1: ${ws[2]}`);
+  assert(ws[3] === '| 财帛 | 虚 | 月 | 无 |', `row2: ${ws[3]}`);
+  assert(ws[4] === '口径：虚宫按四柱旬空推虚；实宫按年、月、日、时四柱地支定实。', 'weakSolid footer');
+  const bs = sections.birthStars.split('\n');
+  assert(bs[0] === '本命年柱：丙午' && bs[1] === '◆ 本命化曜', 'birthStars head');
+  assert(bs[2] === '木：化天贵（同归：岁星）' && bs[3] === '火：化天刑', `birthStars rows: ${bs[2]} / ${bs[3]}`);
+  assert(bs[4] === '◆ 十神序（参考）' && bs[5].startsWith('原十神序：天禄、') && bs[6].startsWith('替代十神序：比肩、'), 'ten-god seq');
+  assert(bs[7] === '◆ 天禄至天权（年曜主项）' && bs[8] === '天禄：科名、天马、生官' && bs[bs.length - 1] === '天权：爵星、产星、伤官', 'year info groups');
+  const ts = sections.transitStars.split('\n');
+  assert(ts[0] === '流年干支：丙午' && ts[1] === '◆ 流年化曜' && ts[2] === '火：化天刑', `transit head: ${ts.slice(0, 3)}`);
+  assert(ts[3] === '◆ 流曜落宫' && ts[4] === '岁星：木（岁；旺 · 寅 · 析木）', `transit sign row: ${ts[4]}`);
+  // 无数据 → 空串不产段（上游「零字节变化」契约）
+  const empty = runGuolaoMoira({ action: 'rules_sections', moiraRules: {} }).sections;
+  assert(empty.weakSolid === '' && empty.birthStars === '' && empty.transitStars === '', 'empty rules → empty sections');
+  // 缺省入口（patterns）不受影响
+  assert(typeof runGuolaoMoira({ chart: { chart: {} } }).snapshot_text === 'string', 'patterns entry still works');
+});
+
+// ---- v0.36.0 C3：三个本地 JS 引擎的值金标（此前只有存在性断言）----
+check('huangli 2000-01-01：干支/农历/生肖 = 万年历公开事实', () => {
+  // 权威：公开万年历——2000-01-01 为 己卯年 丙子月 戊午日，农历一九九九年冬月廿五，生肖兔（lunar-javascript 与万年历一致）。
+  const text = runHuangli({ year: 2000, month: 1, day: 1, hour: 12 }).text;
+  assert(text.includes('干支：己卯年 丙子月 戊午日'), `ganzhi line: ${text.split('\n').find((l) => l.startsWith('干支'))}`);
+  assert(text.includes('农历：一九九九年冬月廿五'), 'lunar date');
+  assert(text.includes('生肖：兔'), 'zodiac');
+  // 负向对照：换一天，日柱必变（1999-12-31 = 丁巳日）
+  const prev = runHuangli({ year: 1999, month: 12, day: 31, hour: 12 }).text;
+  assert(prev.includes('丁巳日') && !prev.includes('戊午日'), 'previous day must be 丁巳');
+});
+
+check('liuyao 乾为天静卦：乾宫本宫世六应三、六冲、纳甲六亲六神 = 京房纳甲/六亲生克/六神起例', async () => {
+  // 权威：京房纳甲（乾内卦 子寅辰）+ 六亲生克（乾宫属金：水=子孙、木=妻财、土=父母、火=官鬼、金=兄弟）
+  // + 六神起例（甲乙日青龙起初爻）+ 八宫卦序（乾为天=乾宫本宫卦，世六应三，六冲）。
+  // wave 3：[断卦结构] = vendored 上游 liuyaoStructLines，逐爻为 GFM 表（GuaZhanMain.js:168-181）。
+  const nongli = { dayGanZi: '甲子', monthGanZi: '丙寅', yearGanZi: '甲辰' };
+  const text = (await runLiuyao({ lines: [1, 1, 1, 1, 1, 1].map((v) => ({ value: v, change: false })), nongli })).snapshot_text;
+  assert(text.includes('卦序：乾宫·本宫(世6应3)'), 'palace / shi-ying');
+  assert(text.includes('卦象：六冲卦'), 'liuchong');
+  const row = (n) => text.split('\n').find((l) => l.startsWith(`| 第${n}爻 |`)) || '';
+  assert(row(1).startsWith('| 第1爻 | 青龙 | 子 | 水 | 子孙 |'), `row1: ${row(1)}`);
+  assert(row(2).startsWith('| 第2爻 | 朱雀 | 寅 | 木 | 妻财 |'), `row2: ${row(2)}`);
+  assert(row(3).startsWith('| 第3爻 | 勾陈 | 辰 | 土 | 父母 | 应 |'), `row3: ${row(3)}`);
+  assert(row(4).startsWith('| 第4爻 | 螣蛇 | 午 | 火 | 官鬼 |'), `row4: ${row(4)}`);
+  assert(row(5).startsWith('| 第5爻 | 白虎 | 申 | 金 | 兄弟 |'), `row5: ${row(5)}`);
+  // 负向对照：初爻动 → 成局/动变段出现（静卦没有）
+  const moving = (await runLiuyao({ lines: [1, 1, 1, 1, 1, 1].map((v, i) => ({ value: v, change: i === 0 })), nongli })).snapshot_text;
+  assert(moving.includes('成局：') && !text.includes('成局：'), 'moving line changes the structure section');
+});
+
+// sync311 wave 3 值级金标：以时起卦 = vendored 上游 buildTimeGua（GuaZhanMain.js:74-98：上卦 (年支序+农历月数+农历日数)%8、
+// 下卦 +时柱支序、动爻 %6，Gua8 先天序）。权威：把上游文件里 buildTimeGua 的源码原样切出在 Node 里跑（2026-09-24）：
+// 丙午年 八月(8) 十四(14) 甲午时 → 风雷益、上爻动；同日癸巳时 → 风火家人、五爻动。负向对照：旧 Python 手写式
+// 取月/日**地支序** + 钟表时辰（年午7+月酉10+日丑2=19、巳6）→ 火天大有、初爻动。
+check('liuyao 以时起卦 = 上游 buildTimeGua（农历月日数 + 时柱支序）', async () => {
+  const base = { year: '丙午', yearJieqi: '丙午', monthGanZi: '丁酉', dayGanZi: '辛丑', monthInt: 8, dayInt: 14 };
+  const cast = async (time) => runLiuyao({ nongli: { ...base, time } });
+  const a = await cast('甲午');
+  assert(a.time_cast === true && a.current_gua.name === '风雷益', `甲午时: ${JSON.stringify(a.current_gua)}`);
+  assert(JSON.stringify(a.lines.map((y) => `${y.value}${y.change ? '*' : ''}`)) === JSON.stringify(['1', '0', '0', '0', '1', '1*']), `甲午 lines: ${JSON.stringify(a.lines)}`);
+  assert(a.lines[2].name === '辰土妻财世' && a.lines[0].god === null, '爻名取 Gua64.yaoname、无六神（上游无头卦无 god）');
+  const b = await cast('癸巳');
+  assert(b.current_gua.name === '风火家人' && b.lines.findIndex((y) => y.change) === 4, `癸巳时: ${JSON.stringify(b.current_gua)}`);
+});
+
+// [断诀命中]/[占类断语] = vendored liuyaoSnapshotEx（buildGuaSnapshotText:381-388）；[占类断语] 的「断语·占类门」行
+// 证明断语库先载入（ensureLiuyaoDoctrineLoaded :1735-1737）。权威：vendored 上游引擎对同一卦的输出（段首行逐字）。
+// 负向对照：旧 liuyao.js 不产这两段；不 await loadDoctrine 则断语行缺席。
+// （wave 3b：两段随整份 buildGuaSnapshotText 快照回在 snapshot_text，不再另出 duanjue_text/zhanlei_text 键。）
+check('liuyao [断诀命中]/[占类断语] 由上游 liuyaoSnapshotEx 产出、断语库已载入', async () => {
+  const nongli = { year: '丙午', yearJieqi: '丙午', monthGanZi: '丁酉', dayGanZi: '辛丑', monthInt: 8, dayInt: 14, time: '甲午' };
+  const block = (text, title) => {
+    const all = (text || '').split('\n');
+    const at = all.indexOf(`[${title}]`);
+    if (at < 0) { return []; }
+    const end = all.findIndex((l, i) => i > at && /^\[.+\]$/.test(l));
+    return all.slice(at, end < 0 ? all.length : end).filter((l, i, arr) => !(i === arr.length - 1 && l === ''));
+  };
+  const r = await runLiuyao({ nongli });
+  const dj = block(r.snapshot_text, '断诀命中');
+  assert(dj[0] === '[断诀命中]' && dj[1] === '三层环境：太岁午(岁破子)　月建酉(月破卯)　日建丑(日破未)', `断诀首行: ${dj.slice(0, 2)}`);
+  assert(dj.includes('世应关系：世3(妻财辰)应克世应6(兄弟卯)·彼制我、受制难谋'), '世应关系行');
+  const zl = block(r.snapshot_text, '占类断语');
+  assert(zl[0] === '[占类断语]' && zl[1] === '历史占例：冉伯牛有疾卜得,乃知谩师之过也', `占类首行: ${zl.slice(0, 2)}`);
+  assert(zl.includes('断语·总断门第一·孙膑：孙膑总断歌') && r.data.doctrine_loaded === true, '断语库未载入');
+  // 六键（旧版回执为 unsurfaced 死键）现改输出：世身 / 古法十六变。
+  const tuned = await runLiuyao({ nongli, liuyaoSettings: { shishen: 'standard', gufa: 1 } });
+  assert(block(tuned.snapshot_text, '断诀命中').some((l) => l.startsWith('世身：第')) && !dj.some((l) => l.startsWith('世身：')), 'shishen 未生效');
+  assert(block(tuned.snapshot_text, '占类断语').some((l) => l.startsWith('十六变：第')), 'gufa 未生效');
+});
+
+// sync311 wave 3b 值级金标：整份快照 = 上游 buildGuaSnapshotText(buildCaseSnapshotFields(record), st)（GuaZhanMain.js:201-391，
+// regenerateSixyaoSnapshot:1756）。权威：旬空按六十甲子旬手核（丁酉/辛丑同属甲午旬 → 辰巳）；互/错/综按爻值变换手核
+// （风雷益 100011 → 互 000001 山地剥、错 011100 雷风恒、综 110001 山泽损）；伏神卦 = 本宫首卦巽为风（初爻丑土妻财）；
+// 求测人性别缺省 = buildCaseSnapshotFields gender ?? 1（aiAnalysisContext.js:791）。
+// 负向对照：旧 liuyao.js 的 snapshot_text 只有 [断卦结构] 一段（其余段由 Python 自写）→ 以下各行全缺。
+check('liuyao 整份快照 = 上游 buildGuaSnapshotText：旬空 / X时 / 互错综 / 关联卦逐爻 / 求测人性别', async () => {
+  const nongli = { birth: '2026-09-24 11:09:58', year: '丙午', yearJieqi: '丙午', monthGanZi: '丁酉', dayGanZi: '辛丑', monthInt: 8, dayInt: 14, time: '甲午' };
+  const record = { date: '2026-09-24', time: '10:58:00', zone: '+08:00', lon: '121e28', lat: '31n13' };
+  const t = (await runLiuyao({ nongli, record })).snapshot_text.split('\n');
+  assert(t[0] === '[起盘信息]' && t.includes('日期：2026-09-24 10:58:00') && t.includes('求测人性别：男'), `起盘信息: ${t.slice(0, 8)}`);
+  assert(t.includes('起卦时间：2026-09-24 11:09:58 甲午时') && t.includes('旬空：月空辰巳 日空辰巳'), '起卦时间「X时」/ 旬空');
+  assert(t.includes('互卦：山地剥  乾宫金') && t.includes('错卦(阴阳全变)：雷风恒  震宫木') && t.includes('综卦(上下颠倒)：山泽损  艮宫土'), '互错综');
+  const fu = t.indexOf('伏神卦(本宫首卦)逐爻（初→上）：');
+  assert(fu > 0 && t[fu + 1] === '第1爻：阴爻，爻名:丑土妻财', `伏神卦: ${t[fu + 1]}`);
+  assert(t.indexOf('[卦辞与断语]') + 1 === t.indexOf('[判语库·参考诀表]'), '无头卦无 guaDesc：[卦辞与断语] 只有段头');
+  const female = (await runLiuyao({ nongli, record: { ...record, gender: 0 } })).snapshot_text;
+  assert(female.includes('求测人性别：女'), 'gender=0 → 女');
+});
+
+check('tarot 种子洗牌确定性：同种子同牌阵逐牌相同、换种子必变', () => {
+  // 权威：vendored 上游塔罗引擎的种子洗牌（同 seed 同 reading 是设计契约）；三牌值为本 vendor sha 下的回归钉。
+  const rows = (seed) => runTarot({ spread: 'three', deck: 'rws', seed, question: '测试', usesReversals: true })
+    .snapshot_text.split('\n').filter((l) => /^\| 位置\d/.test(l));
+  const a = rows('horosa-golden-1');
+  assert(a.length === 3, `three rows: ${a.length}`);
+  assert(a[0].includes('宝剑骑士') && a[0].includes('| 逆位 |'), `pos1: ${a[0]}`);
+  assert(a[1].includes('宝剑五') && a[1].includes('| 逆位 |'), `pos2: ${a[1]}`);
+  assert(a[2].includes('宝剑四') && a[2].includes('| 逆位 |'), `pos3: ${a[2]}`);
+  assert(JSON.stringify(rows('horosa-golden-1')) === JSON.stringify(a), 'same seed → identical reading');
+  assert(JSON.stringify(rows('horosa-golden-2')) !== JSON.stringify(a), 'different seed → different reading');
+});
+
+// sync311 F9/F11 值级金标：引擎设置经 options 送达（键集锚 resolveSettings），verdictMode 八法全开，
+// 牌阵/牌组锚引擎词表（SPREADS / deck caps.spreads）。权威：vendored 上游 engine/reading.js resolveSettings、
+// verdict.js YESNO_MODES、timingMethods.js TIMING_METHODS、deckRegistry.js caps。
+// 负向对照：把 tarot.js 退回只透传 5 键的旧形状，「计时(大牌数字)」与「答案锚位」两条即红；退回静默回落，报错三条即红。
+check('tarot 引擎设置/定局八法/牌阵词表经 runTarot 送达引擎', () => {
+  const base = { spread: 'three', deck: 'rws', seed: 'horosa-golden-1', question: '测试' };
+  const text = (extra) => runTarot({ ...base, ...extra }).snapshot_text || '';
+  const timingLine = (t) => t.split('\n').find((l) => l.startsWith('计时(')) || '';
+  assert(timingLine(text({})).startsWith('计时(花色单位)'), `缺省计时法：${timingLine(text({}))}`);
+  const major = timingLine(text({ options: { timingMethod: 'major_number', timingUnit: '月' } }));
+  assert(major.startsWith('计时(大牌数字)') && major.includes('个月'), `timingMethod/timingUnit 未达引擎：${major}`);
+  assert(text({ verdictMode: 'anchor' }).includes('答案锚位'), 'verdictMode=anchor 应走 YESNO_MODES 第七法');
+  const err = (extra) => ((runTarot({ ...base, ...extra }).data || {}).error || {}).code;
+  assert(err({ options: { timingUnit: '年' } }) === 'invalid_setting', '引擎不认的值须报错，不许回落');
+  assert(err({ spread: 'one' }) === 'unknown_spread', '不存在的牌阵须报错（旧形状静默换 three）');
+  assert(err({ deck: 'lenormand', spread: 'celtic' }) === 'unsupported_spread_for_deck', '牌组允许表外的牌阵须报错');
+  assert(runTarot({ ...base, deck: 'lenormand', spread: undefined }).spread === 'single', '缺省牌阵不开放 → 允许表首项');
+  assert(JSON.stringify(runTarot({ ...base, options: { nope: 1 } }).data.params_ignored) === '["nope"]', '未识别键回执 params_ignored');
+});
+
+// sync311 F7 值级金标：演法流派/六开关逐次传入（上游 yanqinSchools YANQIN_PRESETS / YANQIN_OPTION_META），
+// 快照首段按上游 yanqinSnapshot 口径出流派名与我彼口诀。负向对照：退回不调 setYanqinSchool，fenghuang 那条即红。
+check('yanqinYanfa 流派/开关经 payload 送达引擎（headless 无 localStorage）', () => {
+  const run = (extra) => runYanqinYanfa({ year: 1998, month: 2, day: 20, hour: 20, ...extra });
+  const school = (extra) => ((run(extra).text || '').split('\n')[1] || '');
+  assert(school({}).startsWith('池本理《禽星易见》;翻禽=我/倒将=彼'), `缺省流派：${school({})}`);
+  assert(school({ school: 'fenghuang' }).startsWith('凤凰演禽(现代占课);时禽=我/翻禽=彼'), `fenghuang：${school({ school: 'fenghuang' })}`);
+  const custom = school({ woBi: 'shi', monthVerse: 'B' });
+  assert(custom.startsWith('custom;时禽=我') && custom.includes('月禽口诀B版'), `偏离预设应标 custom：${custom}`);
+  // 同一进程再跑缺省：前一调用的开关不许串味（每次先 applyPreset）。
+  assert(school({}).startsWith('池本理《禽星易见》'), '开关串味：缺省调用须回到池本理');
+  const bad = run({ huoYaoVariant: 'nope' }).data;
+  assert(bad.ok === false && bad.error.code === 'invalid_setting', '词表外取值须报错');
+});
+
+check('canping 起运岁走农历真源，不再恒 1 岁', async () => {
+  // 值级锚定：baziStyle 档的起运岁必须等于八字盘 direction[0].age（同源判据，
+  // 不是自证）；默认《参评诀》档由农历月日推算，同盘得 3 岁。修复前 lunarMonth/
+  // lunarDay 没转发 → 引擎守卫判非法 → 起运岁恒回落 1，九个大运区间整体平移。
+  const birth = { date: '1998-02-20', time: '20:48:00', zone: 8, lon: '121e28', gender: '男' };
+  const firstDayunAge = buildLocalBaziResult({ ...birth, gender: 1, timeAlg: 1 }).bazi.direction[0].age;
+  assert(firstDayunAge === 5, `八字盘首运虚岁应为 5，实得 ${firstDayunAge}`);
+  const qiyunOf = async (dayunRule) => (await runCanping({ ...birth, dayunRule })).data.qiyunAge;
+  assert(await qiyunOf(undefined) === 3, `默认档起运岁应为 3，实得 ${await qiyunOf(undefined)}`);
+  assert(await qiyunOf('baziStyle') === firstDayunAge,
+    `baziStyle 档须与八字盘同源（${firstDayunAge}），实得 ${await qiyunOf('baziStyle')}`);
+});
+
+// sync311 wave 3b 值级金标：数算三技法 timeAlg 缺省 0（真太阳时）、参评/河洛日界缺省 1 —— 上游 AI 挂载无头 buildFieldObject
+// timeAlg ?? 0 / after23NewDay ?? 出厂 1（aiAnalysisContext.js:603,606），页面全局字段出厂种子同值。权威（独立源）：live 9977
+// /nongli/time 1998-02-20 上海 —— 11:05 真太阳时 10:55:19 时柱丁巳、钟表戊午；23:30 钟表 日柱己亥（23 点换日）/戊戌（24 点）。
+// 负向对照：旧缺省 timeAlg=1 → 缺省即午时；旧 canping/heluo 不传日界 → undefined 当 24 点换日 → 戊戌。
+check('数算 timeAlg 缺省真太阳时 / 日界缺省 23 点换日（参评·河洛·一掌经随上游无头挂载）', async () => {
+  const base = { date: '1998-02-20', time: '11:05:00', zone: '+08:00', lon: '121e28', gender: 1 };
+  const cp = await runCanping(base);
+  assert(cp.input_normalized.timeAlg === 0 && cp.input_normalized.fourPillars.hourBranch === '巳', `canping: ${JSON.stringify(cp.input_normalized.fourPillars)}`);
+  assert(runHeluo(base).data.fourPillars.hour === '丁巳', 'heluo 缺省时柱应为丁巳');
+  assert(runYizhangjing(base).data.input.hourBranch === '巳', 'yizhangjing 缺省生时支应为巳');
+  assert((await runCanping({ ...base, timeAlg: 1 })).input_normalized.fourPillars.hourBranch === '午', '钟表时对照应为午');
+  assert(runHeluo({ ...base, timeAlg: 1 }).data.fourPillars.hour === '戊午', 'heluo 钟表时对照应为戊午');
+  const late = { ...base, time: '23:30:00', timeAlg: 1 };
+  assert((await runCanping(late)).input_normalized.fourPillars.dayBranch === '亥', 'canping 23:30 缺省日支应为亥');
+  assert(runHeluo(late).data.fourPillars.day === '己亥' && runHeluo({ ...late, after23NewDay: 0 }).data.fourPillars.day === '戊戌', 'heluo 日界');
+});
+
+check('zhengchuan 大定男女分行，性别不再被 NaN 吃掉', async () => {
+  // 值级：同盘男女的 大运／小运／岁君 必须不同。修复前传的是裸 gender，
+  // 而 baziLunarLocal 做 `Number(params.gender) === 0 ? 0 : 1` —— Number('女') = NaN
+  // ≠ 0 → 一律判男顺行 → 女命的大定死限年整体错位，且照常自信输出。
+  const base = { school: 'dading', pillars: ['戊寅', '甲寅', '壬戌', '庚戌'], date: '1998-02-20',
+    time: '20:48:00', zone: 8, lon: '121e28', lunarMonth: 1, lunarDay: 24, dadingYear: 2030 };
+  const textOf = async (gender) => (await runZhengChuan({ ...base, gender })).snapshot_text || '';
+  const male = await textOf('男');
+  const female = await textOf('女');
+  const yunLine = (s) => (s.split('\n').find((l) => l.includes('大运／小运／岁君')) || '').trim();
+  assert(yunLine(male) && yunLine(female), '大定快照应含 大运／小运／岁君 行');
+  assert(yunLine(male) !== yunLine(female),
+    `男女须分行，实得同一行：${yunLine(male)}`);
+  // 数字形式与中文形式必须等价（'女' 与 0 同盘）。
+  assert(yunLine(await textOf(0)) === yunLine(female), '性别 0 应与 “女” 同盘');
+});
+
+// sync311 wave 3：大定推运表与四柱同一时间算法。上游一次 buildLocalBaziResult 同出四柱与推运表
+// （aiAnalysisContext.buildChartShusuanBazi:1948-1979；无头 timeAlg = record.timeAlg ?? 0，buildFieldObject:603）。
+// 1998-02-20 11:05 +08:00 121e28：真太阳时 10:57 → 时柱丁巳（后端 /nongli/time 缺省同为丁巳），2030 小运庚寅；
+// 钟表时 → 戊午、小运辛卯。负向对照：旧缺省 timeAlg=1 → 四柱丁巳而小运按戊午推 = 辛卯。
+check('zhengchuan 大定推运表缺省按真太阳时，与四柱同口径', async () => {
+  const base = { school: 'dading', pillars: ['戊寅', '甲寅', '戊戌', '丁巳'], date: '1998-02-20', time: '11:05:00',
+    zone: '+08:00', lon: '121e28', gender: 1, lunarMonth: 1, lunarDay: 24, dadingYear: 2030 };
+  const yun = async (extra) => ((await runZhengChuan({ ...base, ...extra })).snapshot_text || '').split('\n').find((l) => l.includes('大运／小运／岁君')) || '';
+  assert(await yun({}) === '| 大运／小运／岁君 | 丁巳 ／ 庚寅 ／ 庚戌 |', `缺省: ${await yun({})}`);
+  assert(await yun({ timeAlg: 1 }) === '| 大运／小运／岁君 | 丁巳 ／ 辛卯 ／ 庚戌 |', `钟表时: ${await yun({ timeAlg: 1 })}`);
+});
+
+check('baziGeju 分野口径真的进五行力量 + 缺柱不再无声', async () => {
+  // 值级：cangVersion='fenye' 必须改变百分比分布（修复前 fy 在 st 之后才算，
+  // 分野档结构上不可达 —— [月令司令（分野）] 报着司令干，[五行力量] 却按通行版加权）。
+  const birth = { date: '1989-08-15', time: '23:30:00', zone: 8, lon: '121e28', gender: 1, timeAlg: 1 };
+  const fc = buildLocalBaziResult(birth).bazi.fourColumns;
+  const distOf = async (cangVersion) => {
+    const s = (await runBaziGeju({ fourColumns: fc, birth, cangVersion })).snapshot_text || '';
+    return (s.split('\n').find((l) => l.startsWith('分布：')) || '').trim();
+  };
+  const common = await distOf(undefined);
+  const fenye = await distOf('fenye');
+  // 上游 v3.12.0（dayBoundaryResolve 日界单一解析）：未显式给 after23NewDay 时按全局缺省「23 点算第二天」，
+  // 23:30 出生日柱进位为 戊申（此前未给即当 0，日柱停在 丁未——与显式给缺省值 1 的结果不一致，是上游修掉的缺陷）。
+  assert(common === '分布：木0%　火8.6%　土26.2%　金26.6%　水38.6%', `通行档实得 ${common}`);
+  assert(fenye === '分布：木0%　火9.1%　土26.4%　金23.6%　水40.9%', `分野档实得 ${fenye}`);
+  assert(common !== fenye, '分野档必须改变加权，相同即说明 siLingGan 没接上');
+  // 说明行须与实算口径一致（两段自相矛盾正是修复前的症状）。
+  const fenyeText = (await runBaziGeju({ fourColumns: fc, birth, cangVersion: 'fenye' })).snapshot_text;
+  assert(fenyeText.includes('（分野加权：'), '分野档说明行未切换');
+  // 守卫查的是引擎真读的字段：柱在、stemInBranch 缺时必须结构化报错，而不是无声空段。
+  const noCang = await runBaziGeju({ fourColumns: { ...fc, time: { stem: fc.time.stem } } });
+  assert(noCang.data && noCang.data.ok === false && noCang.data.reason === 'incomplete_four_pillars',
+    `藏干缺应结构化报错，实得 ${JSON.stringify(noCang.data)}`);
+  assert(noCang.data.message.includes('time'), '错误须点名缺哪一柱');
+});
+
+check('horary/election 判读层旋钮真的接进引擎（锚定引擎自带词表）', () => {
+  // 值级：覆写判读层参数必须改变快照。修复前 horary 只喂 horaryJudgeOpts 第 1 层、
+  // election 干脆 runElection(chart, topicId) 两参调用 —— 46+13 个真参数结构上不可达，
+  // 而 schema 上挂着一排旋钮（其中 receptionMode/almutenScheme/dignityScheme 等
+  // 在引擎词表里根本不存在，是发明的名字）。
+  const base = runHoraryTool({ chart, category: 'marriage' });
+  const over = runHoraryTool({ chart, category: 'marriage', considerationsMode: 'ignore', lotsSet: 'core15' });
+  assert(JSON.stringify(over.data.params_applied) === '["considerationsMode","lotsSet"]',
+    `覆写未被采纳：${JSON.stringify(over.data.params_applied)}`);
+  assert(base.snapshot_text !== over.snapshot_text, 'horary 判读层覆写必须改变快照');
+  // 认不出的键要**回执**，不能像整包 opts 那样无声吞掉。
+  const bogus = runHoraryTool({ chart, category: 'marriage', options: { notARealKnob: 1 } });
+  assert(JSON.stringify(bogus.data.params_ignored) === '["notARealKnob"]',
+    `未知键须回执，实得 ${JSON.stringify(bogus.data.params_ignored)}`);
+  const e1 = runElectionTool({ chart, topicId: 'marriage' });
+  const e2 = runElectionTool({ chart, topicId: 'marriage', school: 'hellenistic', options: { orbProfile: 'classic' } });
+  assert(e1.data.school === 'modern_main' && e2.data.school === 'hellenistic',
+    `流派档未生效：${e1.data.school} / ${e2.data.school}`);
+  assert(e1.snapshot_text !== e2.snapshot_text, 'election 流派/参数覆写必须改变快照');
+});
+
+check('zeriScan 择日六技法：命中区间锚定到独立算出的真值', async () => {
+  // 值级锚定：八字择时搜「甲子日」，61 天窗内必须恰好命中一次，且那一天由**另一条链**
+  // （buildLocalBaziResult）独立确认确实是甲子日。这不是自证 —— 扫描引擎与八字排盘是两套代码。
+  const geo = { zone: 8, lon: '121e28', lat: '31n14' };
+  const jiazi = await runZeriScan({
+    technique: 'bazizeri', action: 'scan',
+    cfg: { startDate: '2026-03-01', startTime: '00:00', endDate: '2026-04-30', endTime: '23:59' },
+    geo, options: { timeAlg: 1 },
+    tree: { kind: 'group', joiner: 'all', negate: false, children: [
+      { kind: 'leaf', type: 'day_ganzhi', negate: false, joiner: 'all', params: { values: ['甲子'] } }] },
+  });
+  assert(jiazi.data.ok === true, `扫描失败：${JSON.stringify(jiazi.data.error)}`);
+  assert(jiazi.data.hit_count === 1, `61 天窗内甲子日应恰好 1 次，实得 ${jiazi.data.hit_count}`);
+  const hit = jiazi.data.intervals[0];
+  assert(hit.start === '2026-04-19 23:00' && hit.end === '2026-04-20 23:00',
+    `命中区间应是子时为界的甲子日，实得 ${hit.start} ~ ${hit.end}`);
+  // 独立锚：那一天的日柱由八字引擎自己算，必须是甲子。
+  const dayGz = (d) => buildLocalBaziResult({ date: d, time: '12:00:00', zone: 8, lon: '121e28', gender: 1, timeAlg: 1 })
+    .bazi.fourColumns.day.ganZhi;
+  assert(dayGz('2026-04-20') === '甲子', `锚定日应为甲子，实得 ${dayGz('2026-04-20')}`);
+  assert(dayGz('2026-04-19') === '癸亥' && dayGz('2026-04-21') === '乙丑', '前后日应为癸亥/乙丑');
+
+  // 六个成员都必须能跑通并给出**结构化**结果（零命中也是合法结果，但错误绝不能降级成零命中）。
+  // 叶参数取**引擎自带的 defaults**（newXLeaf 的产物），不是手编 —— 手编的参数会被 validate 拒掉，
+  // 而「拒掉」在这条金标里恰好也会红，于是很难分清是接线坏了还是我参数写错了。
+  const probes = {
+    huanglizeri: { type: 'yi_has', params: { values: ['嫁娶'], matchMode: 'any' } },
+    taiyizeri: { type: 'yinyang_ju', params: { value: '阳' } },
+    ziweizeri: { type: 'wuxing_ju', params: { values: ['3'] } },
+    liurengzeri: { type: 'ke_name', params: { values: ['元首课'] } },
+    sanshizeri: { type: 'lr_ke_name', params: { values: ['元首课'] } },
+  };
+  for (const [technique, leaf] of Object.entries(probes)) {
+    const r = await runZeriScan({
+      technique, action: 'scan',
+      cfg: { startDate: '2026-03-01', startTime: '00:00', endDate: '2026-03-08', endTime: '23:59' },
+      geo, options: { timeAlg: 1 },
+      tree: { kind: 'group', joiner: 'all', negate: false, children: [{ kind: 'leaf', negate: false, joiner: 'all', ...leaf }] },
+    });
+    assert(r.data.ok === true, `${technique} 扫描失败：${JSON.stringify(r.data.error)}`);
+    assert(Number.isFinite(r.data.hit_count), `${technique} 未给出 hit_count`);
+  }
+  // 认不出的条件类必须**报错**，不能静默零命中（那读起来是一个有效的空结果）。
+  const bogus = await runZeriScan({
+    technique: 'bazizeri', action: 'scan',
+    cfg: { startDate: '2026-03-01', startTime: '00:00', endDate: '2026-03-02', endTime: '23:59' },
+    geo, tree: { kind: 'group', joiner: 'all', children: [{ kind: 'leaf', type: 'notARealConditionType', params: {} }] },
+  });
+  assert(bogus.data.ok === false && bogus.data.error.code === 'invalid_conditions',
+    `未知条件类应结构化报错，实得 ${JSON.stringify(bogus.data)}`);
+  assert(Object.keys(ZERI_TECHNIQUES).length === 6, '本地扫描成员应为 6 个');
+});
+
+check('liurengzeri 六壬择时真的起课：三传引擎 ChuangChart 接线 + 贵人流派改命中集', async () => {
+  // 回归锚：vendored LiuRengMain.js 曾把 ChuangChart（三传引擎类）当 React 元素桩掉 → buildSanChuanData 抛
+  // ReferenceError 被吞成 null → 每个时刻都「起盘失败」→ 六壬择时恒零命中（上面那条探针只断言 hit_count 有限，看不见）。
+  // 真值：2028-04-01 福州，贵人流派 2（星阙默认）贵人临寅于 01:07–03:07、05:55–07:07；流派 0 只在 05:07–05:55。
+  // 权威：同刻 live 后端 liureng_gods（guirengType 2，01:02 起盘）二课「地盘寅→天盘亥→贵神贵人」= 贵人临寅
+  // （2026-09-24 vendored v3.11.1+ 实例实测）；两流派贵人歌诀不同故命中集不同。
+  const geo = { zone: '+08:00', lon: '119e18', lat: '26n05', gpsLon: 119.3, gpsLat: 26.08 };
+  const cfg = { startDate: '2028-04-01', startTime: '00:00', endDate: '2028-04-01', endTime: '23:59' };
+  const tree = { kind: 'group', joiner: 'all', children: [{ kind: 'leaf', type: 'guiren_pos', params: { values: ['寅'], dir: 'any' } }] };
+  const rows = async (guirengType) => (await runZeriScan({ technique: 'liurengzeri', action: 'scan', cfg, geo, options: { guirengType }, tree }))
+    .data.intervals.map((r) => `${r.start}~${r.end}`);
+  assert(JSON.stringify(await rows(2)) === JSON.stringify(['2028-04-01 01:07~2028-04-01 03:07', '2028-04-01 05:55~2028-04-01 07:07']),
+    `流派 2 应在两段临寅，实得 ${JSON.stringify(await rows(2))}`);
+  assert(JSON.stringify(await rows(0)) === JSON.stringify(['2028-04-01 05:07~2028-04-01 05:55']),
+    `流派 0 应只在一段临寅，实得 ${JSON.stringify(await rows(0))}`);
+});
+
+check('huanglizeri 九星值日条件按日紫白判（上游 v3.14.0）：2020 夏至闰期里的一白日', async () => {
+  // 上游 v3.14.0 把黄历「九星值日」统一到日紫白（calendar/huangliDay.js dayNineStarOf → fengshui/zibai.js dayCenter）：
+  // 离冬至 / 夏至最近的甲子换遁，阳遁顺行、阴遁逆行，遇闰在甲午换遁。lunar-javascript 的 getDayNineStar 在闰期那 30 日不同。
+  // 期望值是手算，不取自被测代码：2020 夏至 6-21（乙未日）；前后两个甲子日 5-21（早 31 天）与 7-20（晚 29 天），近的是 7-20，
+  // 它起阴遁上元九紫；闰期后半（甲午 6-20 起）已按阴遁逆行，所以 7-20 往前逐日加一：7-19 一白、7-10 一白、7-1 一白、6-22 一白。
+  // 旧口径（lunar）在 7-19 前仍顺行：7-1 六白、7-5 一白 —— 同一窗口旧代码命中 7-5，正是下面断言排除的那一天。
+  // 日干支核对：JDN(2020-07-20)=2459051，(JDN+49)%60=0 → 甲子。
+  const tree = (values) => ({ kind: 'group', joiner: 'all', children: [{ kind: 'leaf', type: 'nine_star', params: { values, matchMode: 'any' } }] });
+  const days = async (cfg, values) => {
+    const r = await runZeriScan({ technique: 'huanglizeri', action: 'scan', cfg: { startTime: '00:00', endTime: '23:59', ...cfg }, tree: tree(values) });
+    assert(r.data.ok === true, `扫描失败：${JSON.stringify(r.data.error)}`);
+    return r.data.intervals.map((row) => (row.start === row.end ? row.start : `${row.start}~${row.end}`));
+  };
+  const week = { startDate: '2020-06-28', endDate: '2020-07-05' };
+  assert(JSON.stringify(await days(week, ['一'])) === JSON.stringify(['2020-07-01']),
+    `闰期一周里一白日应只有 7-1（旧口径是 7-5），实得 ${JSON.stringify(await days(week, ['一']))}`);
+  // 换遁处：7-19 一白 → 7-20 九紫（甲子，阴遁上元起点）→ 7-21 八白。
+  const turn = { startDate: '2020-07-18', endDate: '2020-07-22' };
+  assert(JSON.stringify(await days(turn, ['一'])) === JSON.stringify(['2020-07-19']), `7-19 应为一白，实得 ${JSON.stringify(await days(turn, ['一']))}`);
+  assert(JSON.stringify(await days(turn, ['九'])) === JSON.stringify(['2020-07-20']), `7-20 应为九紫，实得 ${JSON.stringify(await days(turn, ['九']))}`);
+  assert(JSON.stringify(await days(turn, ['八'])) === JSON.stringify(['2020-07-21']), `7-21 应为八白，实得 ${JSON.stringify(await days(turn, ['八']))}`);
+  // 闰期以外不变（上游 huangliNineStarZibai.test.js 把 2000–2040 逐日对拍过，这里抽一段）：2026-03-01…09 九天里一白日只有一天，
+  // 与 lunar-javascript 的 getDayNineStar 同一天。
+  const { Solar } = await import('lunar-javascript').then((m) => m.default || m);
+  const lunarOne = [];
+  for (let d = 1; d <= 9; d += 1) {
+    if (Solar.fromYmd(2026, 3, d).getLunar().getDayNineStar().getNumber() === '一') { lunarOne.push(`2026-03-0${d}`); }
+  }
+  const scanOne = await days({ startDate: '2026-03-01', endDate: '2026-03-09' }, ['一']);
+  assert(lunarOne.length === 1 && JSON.stringify(scanOne) === JSON.stringify(lunarOne),
+    `闰期以外应与 lunar 的九星同日，扫描 ${JSON.stringify(scanOne)} / lunar ${JSON.stringify(lunarOne)}`);
+});
+
+check('zeriSnapshotOpts 命中清单两旋钮 + 前 N 行判读树（紫微择时木三局）', async () => {
+  // 权威：vendored utils/zeriSnapshotPrefs.js（上游 [Q-452 裁决 A / Q-453]）：maxRows 夹到 10–500（缺省 60），
+  // explainRows 0–20（缺省 3）；判读树 = 工作台「详情▼」同源 explainAt，设定文本按 UI 叶 DFS 配对（zeriExplainText）。
+  assert(JSON.stringify(zeriRowOpts({ maxRows: 1 })) === JSON.stringify({ maxRows: 10, explainRows: 3 }), 'maxRows 下限 10、判读缺省 3');
+  assert(withLeafKind({ kind: 'group', children: [{ type: 'x' }] }).children[0].kind === 'leaf', '裸叶补 kind:leaf');
+  const geo = { zone: '+08:00', lon: '119e18', lat: '26n05', gpsLon: 119.3, gpsLat: 26.08 };
+  const cfg = { startDate: '2028-04-01', startTime: '00:00', endDate: '2028-04-02', endTime: '23:59' };
+  const tree = { kind: 'group', joiner: 'all', children: [{ kind: 'leaf', type: 'wuxing_ju', params: { values: ['3'] } }] };
+  const scan = await runZeriScan({ technique: 'ziweizeri', action: 'scan', cfg, geo, options: {}, tree });
+  assert(scan.data.hit_count === 4, `两天窗木三局应 4 段，实得 ${scan.data.hit_count}`);
+  const snap = await runZeriScan({ technique: 'ziweizeri', action: 'snapshot', cfg, geo, options: {}, tree, results: scan.data.intervals });
+  const text = snap.snapshot_text;
+  assert(text.split('   判读:').length - 1 === 3, `缺省前 3 行附判读树，实得 ${text.split('   判读:').length - 1}`);
+  assert(text.includes('1. 2028-04-01 13:00 ~ 2028-04-01 15:00(120分) 命宫酉·空宫·木三局\n   判读:\n     · 设定 五行局·五行局:3 → 实际 木三局 ✓'),
+    '首行判读树：设定配到 UI 叶、实际来自同源求值');
+  const none = await runZeriScan({ technique: 'ziweizeri', action: 'snapshot', cfg, geo, options: {}, tree, results: scan.data.intervals, explainRows: 0 });
+  assert(none.snapshot_text.split('判读:').length - 1 === 0, 'explainRows=0 不附判读树');
+});
+
+check('xiaoliuren(dao) 三数起三传 + 生克/化解，determinism', () => {
+  const p = { nums: [5, 20, 7], school: 'dao', askEvent: '求财' };
+  const r = runXiaoLiuRen(p);
+  assert(r.snapshot_text, 'should emit a snapshot');
+  ['[问事]', '[起课]', '[三传]', '[生克]', '[九神]', '[化解]'].forEach((h) => assert(r.snapshot_text.includes(h), `missing ${h}`));
+  assert(JSON.stringify(r.data.chuan) === JSON.stringify(['小吉', '空亡', '速喜']), `unexpected 三传: ${r.data.chuan}`);
+  assert(r.snapshot_text.includes('拜'), 'dao school should carry 拜解');
+  const again = runXiaoLiuRen(p);
+  assert(again.snapshot_text === r.snapshot_text, '同三数须同盘（冻结起课）');
+  // 主流六宫无五行生克，段如实标注。
+  const main = runXiaoLiuRen({ nums: [5, 20, 7], school: 'main', askEvent: '求财' });
+  assert(main.snapshot_text.includes('主流六宫不调取五行生克'), 'main school should note no 生克');
+});
+
+check('feigong 时上起青龙飞九宫，7 段 + determinism', () => {
+  const p = { qiMode: 'manualZhi', zhi: '午', dayGan: '甲', dayZhi: '子', mingAge: 35, mingGender: 'male', liuYueMonth: 1, askEvent: '求财' };
+  const r = runFeiGong(p);
+  assert(r.snapshot_text, 'should emit a snapshot');
+  ['[问事]', '[起局]', '[干支]', '[命宫]', '[宫位]', '[运气]', '[应期]'].forEach((h) => assert(r.snapshot_text.includes(h), `missing ${h}`));
+  assert(r.data.qiZhi === '午', `unexpected 起支: ${r.data.qiZhi}`);
+  assert(r.snapshot_text.includes('甲乘龙飞九宫'), 'missing 甲乘龙飞九宫');
+  const again = runFeiGong(p);
+  assert(again.snapshot_text === r.snapshot_text, '同起支须同盘（冻结局）');
+});
+
+check('xiaochengtu 洛书九宫 + 股市段条件 + 大衍 seed 确定性', () => {
+  const manual = runXiaoChengTu({ qiguaFa: 'manual', up: '乾', lo: '兑', dongYaos: [3], yongGong: 1, askEvent: '求财' });
+  ['[问事]', '[起卦]', '[佈局]', '[推导]', '[四象]', '[应期]'].forEach((h) => assert(manual.snapshot_text.includes(h), `missing ${h}`));
+  assert(!manual.snapshot_text.includes('[股市]'), 'non-stock must not emit [股市]');
+  const stock = runXiaoChengTu({ qiguaFa: 'stock', open: '1563.60', close: '1571.10', yongGong: 1 });
+  assert(stock.snapshot_text.includes('[股市]'), 'stock mode must emit [股市]');
+  const noSeed = runXiaoChengTu({ qiguaFa: 'dayan' });
+  assert(noSeed.data.reason === 'dayan_seed_required', 'dayan without seed must refuse');
+  const a = runXiaoChengTu({ qiguaFa: 'dayan', seed: 12345 });
+  const b = runXiaoChengTu({ qiguaFa: 'dayan', seed: 12345 });
+  assert(a.snapshot_text === b.snapshot_text, '大衍同 seed 须同盘');
+});
+
+check('guice 报数起卦 + 演数四位 + 卦变断法 + determinism', () => {
+  const p = { qiguaFa: 'baoshu', nums: [7, 9], hourZhi: '午', yearZhi: '午', monthZhi: '巳', lunarMonth: 4, lunarDay: 5, year: 2026, dayGan: '甲', pillars: ['丙午', '癸巳', '甲子', '庚午'], askEvent: '问事业' };
+  const r = runGuice(p);
+  assert(r.snapshot_text, 'should emit a snapshot');
+  ['[占事直断]', '[起卦]', '[演数]', '[四位]', '[卦变]', '[断法]'].forEach((h) => assert(r.snapshot_text.includes(h), `missing ${h}`));
+  assert(r.data.gua.ben === '山天大畜', `unexpected 本卦: ${r.data.gua.ben}`);
+  assert(r.snapshot_text.includes('策数'), 'missing 策数');
+  const again = runGuice(p);
+  assert(again.snapshot_text === r.snapshot_text, '同起卦输入须同盘（冻结卦）');
+});
+
+// zhengchuan 铁板异步载条文正文库 → 用异步块（.mjs 顶层 await 可用）。
+try {
+  const tb = await runZhengChuan({ school: 'tieban', pillars: ['戊寅', '甲寅', '壬戌', '庚戌'], gender: 1, lunarMonth: 1, lunarDay: 24 });
+  ['[起盘信息]', '[起数]', '[本命条文]', '[流年条文]'].forEach((h) => assert(tb.snapshot_text.includes(h), `tieban missing ${h}`));
+  assert(tb.snapshot_text.length > 2000, 'tieban 本命条文正文应非空（verses 已链）');
+  const xy = await runZhengChuan({ school: 'xinyi', item: '财', gong: '乾' });
+  assert(xy.snapshot_text.includes('[起盘信息]'), 'xinyi 起盘信息 missing');
+  const lq = await runZhengChuan({ school: 'liuqin', pillars: ['戊寅', '甲寅', '壬戌', '庚戌'], gender: 1, lunarMonth: 1, lunarDay: 24 });
+  assert(lq.snapshot_text.includes('[十二宫与六亲宫]'), 'liuqin 十二宫与六亲宫 missing');
+  console.log('  ok   zhengchuan tieban(条文)/xinyi(查询)/liuqin(六亲) 三流派');
+} catch (err) {
+  failures += 1;
+  console.error(`  FAIL zhengchuan: ${err.message}`);
+}
+
+// 六壬三传 **值级** 钉死（v0.26.0）。此前只断言 `sanChuanBranches.length === 3` —— 那是形状不是值，
+// 三传重排能静默通过。上游 v3.7.1 的两处勘正各留了可复核的具名课式，正好当金标：
+//   #46 列举序≠判定序：八专须在遥克**之前**。旧序把「八专结构 + 遥克」误发蒿矢/弹射。
+//   #62 伏吟末传子卯互刑：丁卯/己卯/辛卯 三日伏吟，末传 卯 → 午。
+// 全域 8640 课（60 日干支 × 12 月将 × 12 时）穷举差分显示：改动仅落在这两桶内，桶外为 0。
+try {
+  const { buildLiuRengLayout, buildKeData } = await import('../src/vendor/liureng/liurengRefContext.js');
+  const ChuangChart = (await import('../src/vendor/liureng/ChuangChart.js')).default;
+  const baseObj = normalizeChart(liurengFix);
+  const cast = (dayGanZi, yue, timeZhi) => {
+    const chartObj = { ...baseObj, nongli: { ...baseObj.nongli, dayGanZi, time: `甲${timeZhi}` } };
+    const layout = buildLiuRengLayout(chartObj, 2, { yue, timeZhi });
+    const ke = buildKeData(layout, chartObj);
+    const h = new ChuangChart({
+      owner: null, chartObj, nongli: chartObj.nongli, ke: ke.raw,
+      liuRengChart: { upZi: layout.upZi, downZi: layout.downZi, houseTianJiang: layout.houseTianJiang },
+      x: 0, y: 0, width: 0, height: 0,
+    });
+    h.genCuangs();
+    return { name: h.cuangs.name, chuan: h.cuangs.cuang.join('→') };
+  };
+  // #46 —— 上游逐字点名的两课。旧（错）序在此发蒿矢课/弹射课。
+  const a = cast('甲寅', '戌', '丑');
+  assert(a.name === '八专课', `甲寅日戌将丑时 应为八专课(上游 #46)，实得 ${a.name}`);
+  assert(a.chuan === '空丑→癸亥→癸亥', `甲寅日戌将丑时 三传应为 空丑→癸亥→癸亥，实得 ${a.chuan}`);
+  const b = cast('甲寅', '戌', '午');
+  assert(b.name === '八专课', `甲寅日戌将午时 应为八专课(上游 #46)，实得 ${b.name}`);
+  assert(b.chuan === '庚申→戊午→戊午', `甲寅日戌将午时 三传应为 庚申→戊午→戊午，实得 ${b.chuan}`);
+  // #62 —— 伏吟(月将=时支)三卯日，末传取 午 而非 卯。
+  for (const day of ['丁卯', '己卯', '辛卯']) {
+    const r = cast(day, '子', '子');
+    assert(r.chuan.endsWith('午'), `${day}日伏吟 末传应为 午(上游 #62 子卯互刑)，实得 ${r.chuan}`);
+  }
+  console.log('  ok   liureng 三传值级金标：#46 八专序 + #62 伏吟末传子卯互刑');
+} catch (err) {
+  failures += 1;
+  console.error(`  FAIL liureng 三传值级金标: ${err.message}`);
+}
+
+// 灵棋经（上游 v3.9.0）值级金标 —— 段集恒定 + 同刻同卦幂等 + 卦是冻结值。
+// 这三条是上游 __tests__/lingqi*.test.js 的不变量，headless 侧必须同样成立：
+//   ① 七段恒出（注家开关只影响段内行，不改段集 —— 上游 parityAll 双向哨兵口径）；
+//   ② 同一占时两次调用字节幂等（占时种子；headless 不走 random 档，否则古法「不可再擲」失守）；
+//   ③ 给了 counts 就复排、绝不重掷（读档/事盘纪律）。
+check('lingqi 七段恒出 + 同刻幂等 + counts 冻结不重掷', () => {
+  const at = { year: 2028, month: 4, day: 6, hour: 9, minute: 33, question: '事业', category: 'career' };
+  const a = runLingqi(at);
+  const b = runLingqi({ ...at });
+  const titles = a.snapshot_text.split('\n').filter((l) => l.startsWith('[')).map((l) => l.trim());
+  assert(
+    JSON.stringify(titles) === JSON.stringify(['[起盘信息]', '[棋势]', '[卦象]', '[繇辞]', '[诸家注]', '[课断]', '[断诗]']),
+    `段集应恒为七段，实得 ${titles.join(' ')}`,
+  );
+  assert(a.snapshot_text === b.snapshot_text, '同一占时两次调用必须字节幂等（占时种子）');
+  assert(Array.isArray(a.counts) && a.counts.length === 3, 'counts 必须是三层');
+  assert(a.counts.every((n) => n >= 0 && n <= 4), `counts 各层应在 0..4，实得 ${a.counts}`);
+  // 关掉全部注家显示：段头仍在，只有段内行变 —— 这正是「开关不改段集」。
+  const hidden = runLingqi({ ...at, zhuVisible: { yan: 0, he: 0, chen: 0, liu: 0, ke: 0, shi: 0 } });
+  const hiddenTitles = hidden.snapshot_text.split('\n').filter((l) => l.startsWith('[')).map((l) => l.trim());
+  assert(JSON.stringify(hiddenTitles) === JSON.stringify(titles), '注家开关不得改变段集');
+  assert(hidden.snapshot_text !== a.snapshot_text, '注家开关必须改变段内文本（否则开关是死旋钮）');
+  // 冻结卦：显式 counts 必须被照单复排，而不是按种子重掷。
+  const frozen = runLingqi({ ...at, counts: [4, 0, 2] });
+  assert(
+    JSON.stringify(frozen.counts) === JSON.stringify([4, 0, 2]),
+    `冻结 counts 必须原样复排，实得 ${frozen.counts}`,
+  );
+});
+
+// 天星择日 [单时判读]（v0.33.0）：explain 树（编译形）+ UI 树 DFS 配对 → 设定/实际 文本段。
+check('tianxing explain_section renders 设定/实际 pairs with ✓✗', () => {
+  // 叶用 skill schema 的裸形（{type, params}，无 kind）——这是 agent 实际传入的形状。
+  const uiTree = {
+    kind: 'group', joiner: 'all', children: [
+      { type: 'in_sign', params: { planet: 'Venus', signs: [5] } },
+      { type: 'aspect', params: { planetA: 'Venus', planetB: 'Moon', angle: 120, orb: 6 }, negate: true },
+    ],
+  };
+  const explain = {
+    kind: 'group', op: 'all', pass: false, children: [
+      { kind: 'leaf', type: 'in_sign', pass: true, actual: '金 158°51′ 处女' },
+      { kind: 'leaf', type: 'aspect', pass: false, actual: '金-月 距 120° 差 8.2°(限 6°)' },
+    ],
+  };
+  const r = runTianxing({ action: 'explain_section', t: '2026/09/01 14:30:00', tree: uiTree, explain });
+  assert(r.data.ok === true, 'data.ok should be true');
+  const s = r.snapshot_text || '';
+  assert(s.startsWith('[单时判读]'), 'missing [单时判读] header');
+  assert(s.includes('判读时刻：2026/09/01 14:30:00'), 'missing 判读时刻 line');
+  assert(s.includes('且(全部满足) ✗'), 'missing group gate line');
+  assert(s.includes('✓') && s.includes('✗'), 'missing pass marks');
+  const settings = s.split('\n').filter((l) => l.trim().startsWith('设定 '));
+  const actuals = s.split('\n').filter((l) => l.trim().startsWith('实际 '));
+  assert(settings.length === 2 && actuals.length === 2, `expected 2 设定/实际 pairs, got ${settings.length}/${actuals.length}`);
+  assert(s.includes('(取反)'), 'negate leaf must carry (取反)');
+  assert(actuals[1].includes('金-月'), 'actual text must come from the explain tree');
+});
+
+// 七政择日动盘（v0.33.0 批 I-1b）：山位换算走 vendored electionCore（232.9° 罗盘 → 00申山24，
+// 与 GuoLaoElectionTable 同式）；黄道列为地支镜像度（白羊=戌）。
+check('qizhengelection pan renders 地支度+山位+地平号', () => {
+  const r = runQizhengElection({
+    kind: 'pan',
+    fields: { date: '2026-09-01', time: '14:30', zone: '+08:00', pos: '北京' },
+    options: { plate: 'di', ziZheng: 'true', eleLifeMode: 'sunrise' },
+    data: {
+      trueSolarTime: '14:15:31', equationOfTimeMin: -0.0809, lifeDeg: 157.578,
+      sunAzimuthSpeedDegPerMin: 0.2819,
+      rise: { sunrise: '05:42:11', sunset: '18:31:04', moonrise: '20:02:00', moonset: '08:11:00' },
+      planets: [
+        { id: 'Sun', label: '日', lonTropical: 158.855, retrograde: false, azimuth: 232.9188, altitudeTrue: 46.25 },
+        { id: 'Mercury', label: '水', lonTropical: 172.4, retrograde: true, azimuth: 245.1, altitudeTrue: -3.4 },
+      ],
+    },
+  });
+  assert(r.data.ok === true, `ok=false: ${JSON.stringify(r.data.error || {})}`);
+  const s = r.snapshot_text || '';
+  for (const sec of ['[起盘信息]', '[择日动盘]', '[天象要素]']) {
+    assert(s.includes(sec), `missing ${sec}`);
+  }
+  // 158.855° = 处女 8°51′ → 镜像地支 巳（白羊=戌序）；232.92° 罗盘 → 00申山25（vendored mountainPosition 实算）。
+  assert(s.includes('日：08巳51 | 00申山25+ | 方位 232.9° 高度 46.3° | 平'), `sun row wrong: ${s.split('\n').find((l) => l.startsWith('日：'))}`);
+  assert(s.includes('| 逆'), 'retrograde mark missing');
+  assert(s.includes('真太阳时：14:15:31') && s.includes('命度：07巳34（日出起）'), 'astronomy extras wrong');
+});
+
+check('qizhengelection eclipses decodes swisseph kind flags', () => {
+  const r = runQizhengElection({
+    kind: 'eclipses',
+    fields: { date: '2026-09-01', zone: '+08:00' },
+    options: { kind: 'solar' },
+    data: { rows: [
+      { date: '2027-02-06', time: '23:59:39', kindFlag: 9 },
+      { date: '2027-08-02', time: '18:06:41', kindFlag: 5 },
+    ] },
+  });
+  const s = r.snapshot_text || '';
+  assert(s.includes('未来日食'), 'missing title');
+  assert(s.includes('2027-02-06 23:59:39　环食·中心'), 'annular decode wrong');
+  assert(s.includes('2027-08-02 18:06:41　全食·中心'), 'total decode wrong');
+});
+
+check('qizhengelection azimuthsearch rows carry 山位', () => {
+  const r = runQizhengElection({
+    kind: 'azimuthsearch',
+    fields: { date: '2026-09-01', zone: '+08:00' },
+    options: { body: '日', targetAz: 180, days: 1 },
+    data: { rows: [{ date: '2026-09-01', time: '12:14:31', azimuth: 180.0 }] },
+  });
+  const s = r.snapshot_text || '';
+  assert(s.includes('日 到达 180.0°(未来 1 天)'), 'missing title (upstream verbatim)');
+  assert(s.includes('12:14:31　180.0°（07午山30）'), `row wrong: ${s}`);
+});
+
+check('tianxing explain_section without explain tree fails loudly', () => {
+  const r = runTianxing({ action: 'explain_section', t: 'x', tree: null, explain: null });
+  assert(r.data.ok === false, 'missing explain must be ok=false');
+  assert(r.data.error.code === 'missing_explain_tree', `code=${r.data.error.code}`);
+});
+
+// 八字格局 值级金标：固定盘 1989-09-04 00:30 男（己巳 壬申 丁卯 庚子）跑真引擎，逐字冻结四项。
+//
+// 🔴 为什么要值级、不只查段头：baziGeju.js 曾把时柱键写成 `hour`（三个引擎一律读 `time`），四柱
+// 静默变三柱 —— 段头照出、行数照够、任何「有没有 [格局·用神]」式断言全绿，只有值是错的：取格从
+// 正财格塌成正官格、日主同党 34.3%(真值 27.9%)、盲派 `时宾()` 空。四柱来源与生产同构
+// （buildLocalBaziResult 即上游本地引擎），所以这里冻的就是用户会看到的那串字。
+check('baziGeju 值级金标：时柱入算 + 取格/成败/盲派逐字', () => {
+  const birth = { date: '1989-09-04', time: '00:30:00', zone: 8, lon: 120, gender: 1, timeAlg: 1 };
+  const bazi = buildLocalBaziResult(birth).bazi;
+  const fc = bazi.fourColumns;
+  assert(fc.time && fc.time.ganzi === '庚子', `fixture 时柱 drifted: ${fc.time && fc.time.ganzi}`);
+  const s = runBaziGeju({ fourColumns: fc, birth }).snapshot_text || '';
+  for (const sec of ['[五行力量]', '[格局·用神]', '[盲派结构]', '[月令司令（分野）]']) {
+    assert(s.includes(sec), `missing ${sec}`);
+  }
+  // 取格：时柱缺席时会误判成「正官格（月令官·中气透干）」。
+  assert(s.includes('格局：正财格（月令财·本气透干）'), `geju wrong: ${s.split('\n').find((l) => l.startsWith('格局：'))}`);
+  // 成败/破格行（桌面 BaZi.js 有、快照层曾整行不渲染）。
+  assert(s.includes('成败：破格——月令申逢刑，忌神坏格无救。'), 'missing 成败 line');
+  // 五行力量：时柱庚子入算才是 27.9%（缺时柱 34.3%）。
+  assert(s.includes('日主火：身弱（同党印比 27.9%'), `dayMaster wrong: ${s.split('\n').find((l) => l.startsWith('日主'))}`);
+  // 盲派宾主四位齐全 —— 时柱缺席时这里是 `时宾()`。
+  assert(s.includes('宾主：年宾(己巳) 月宾(壬申) 日主(丁卯) 时宾(庚子)'), `mangpai wrong: ${s.split('\n').find((l) => l.startsWith('宾主：'))}`);
+  assert(!/时宾\(\)/.test(s), '时柱 dropped out of 盲派 (fourColumns key must be `time`, not `hour`)');
+});
+
+// ── 世运右栏卡片段（上游 v3.11 [Q-444/T-407]，vendored buildMundaneCardSections）───────────────────────
+// 期望值一律**独立算出**，不抄 builder 的输出：上升座主星（古典宫主表）、赤道上升点（坐标公式）、元素计数
+// （三分表）、KP 宿主/副主与 Vimshottari 余额（KP 定义：27 宿等分 13°20′、副主按 120 年大运比例细分）。
+// 这组金标守的是「vendored 闭包真的活着」：截断/桩/改写任何一步出错（例如 ingressGovernance 没接回来），
+// builder 的逐卡 try/catch 会把 ReferenceError 吞成「该卡不产」—— 只有值级断言能把它抓出来。
+check('mundaneCards 值级金标：入宫底盘卡 + 吠陀/周期/食卡（vendored buildMundaneCardSections）', () => {
+  const objs = Object.fromEntries(chart.chart.objects.map((o) => [o.id, o]));
+  const jobs = [
+    {
+      id: 'ingress', chart,
+      extra: { mundaneType: 'ingress', ingressTerm: '春分', ingressYear: 2025, ingressMoment: '2025-03-20 17:01:21' },
+      state: { seasonSeed: { 春分: { time: '2025-03-20 17:01:21' }, 夏至: { time: '2025-06-21 10:42:00' } }, seasonSeedYear: 2025,
+        patData: [{ type: 't_square', apex: 'Mars', points: ['Mars', 'Sun', 'Moon'] }] },
+    },
+    { id: 'vedic', chart, extra: { mundaneType: 'vedicmundane', vedicYear: 2025 }, state: { vedicMoment: '2025-04-14 05:53:45' } },
+    { id: 'cycles', chart, extra: { mundaneType: 'cycles' }, state: {
+      gcResults: [{ year: 2000, month: 5, sign: 1, lon: 52.7 }, { year: 2020, month: 12, sign: 10, lon: 300.5 }],
+      gcPair: 'jupiter-saturn', gcAspect: 0, gcMode: 'ages', gcStart: 1300, gcEnd: 2200,
+      bbData: { points: [{ year: 1990, month: 7, index: 512.4 }, { year: 1983, month: 1, index: 300.2 }, { year: 1901, month: 1, index: 1080 }] },
+      bbSet: 'slow5', bbStart: 1900, bbEnd: 2050 } },
+    { id: 'solecl', chart, extra: { mundaneType: 'solecl', selectedMoment: '2025-03-29 18:47:26', eclipseTypeText: 'partial', scanYear: 2025 },
+      state: { eclipseDetail: { kind: 'solar', durationHours: 3.88, influence: 3.9, influenceUnit: '年' } } },
+  ];
+  const out = runMundaneCards({ jobs });
+  assert(out.data.ok === true, 'every card job should be ok');
+  const card = (id, title) => {
+    const job = out.data.jobs.find((j) => j.id === id);
+    const hit = job && job.cards.find((c) => c.title === title);
+    assert(hit, `${id}: missing card [${title}]`);
+    return hit.text.split('\n');
+  };
+  // [年盘概要]：上升天秤（fixture Asc 196.98°）→ 年主星=天秤宫主金星（古典宫主表）。modern 规则集 aries_annual → 12 个月。
+  const ann = card('ingress', '年盘概要');
+  assert(ann[1] === '2025 年 · 春分 · 白羊入宫 · 入宫时刻 2025-03-20 17:01:21', `年盘概要 head: ${ann[1]}`);
+  assert(ann[2] === '上升 天秤 → 年主星(命主) 金星', `年盘概要 ruler: ${ann[2]}`);
+  assert(ann[3] === '本盘上升 基本星座 · 现代(Carter–Campion) → 主管约 12 个月', `年盘概要 governance: ${ann[3]}`);
+  // [四季入境盘]：时刻截到分（hit.time.slice(0,16)），缺的季写 —，当前节气标（当前）。
+  const four = card('ingress', '四季入境盘');
+  assert(JSON.stringify(four.slice(2)) === JSON.stringify(['- 春分·白羊：2025-03-20 17:01（当前）', '- 夏至·巨蟹：2025-06-21 10:42', '- 秋分·天秤：—', '- 冬至·摩羯：—']), `四季入境盘: ${four.slice(2)}`);
+  // [四轴特殊点] 赤道上升点：λ_EQ = atan2(cos RAMC, −sin RAMC·cos ε)，RAMC 由 λ_MC 反推，ε 取 23.4367°。
+  const D = Math.PI / 180; const eps = 23.4367 * D; const lm = objs.MC.lon * D;
+  const ramc = Math.atan2(Math.sin(lm) * Math.cos(eps), Math.cos(lm));
+  const ep = ((Math.atan2(Math.cos(ramc), -Math.sin(ramc) * Math.cos(eps)) / D) % 360 + 360) % 360;
+  const SIGN_CN = ['白羊', '金牛', '双子', '巨蟹', '狮子', '处女', '天秤', '天蝎', '射手', '摩羯', '水瓶', '双鱼'];
+  const axes = card('ingress', '四轴特殊点');
+  assert(axes[1] === `赤道上升点：${SIGN_CN[Math.floor(ep / 30)]} ${(ep % 30).toFixed(2)}°`, `east point: ${axes[1]} vs ${ep}`);
+  // [盘型格局] 元素计数：十体（七曜+三王星）按三分表计 —— fixture：日双子/月摩羯/水巨蟹/金巨蟹/火金牛/木巨蟹/土白羊/天双子/海白羊/冥水瓶。
+  const EL = { aries: '火', leo: '火', sagittarius: '火', taurus: '土', virgo: '土', capricorn: '土', gemini: '风', libra: '风', aquarius: '风', cancer: '水', scorpio: '水', pisces: '水' };
+  const tally = { 火: 0, 土: 0, 风: 0, 水: 0 };
+  ['Sun', 'Moon', 'Mercury', 'Venus', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune', 'Pluto'].forEach((id) => { tally[EL[objs[id].sign.toLowerCase()]] += 1; });
+  const pattern = card('ingress', '盘型格局');
+  assert(pattern.some((l) => l.includes(`（火${tally.火}·土${tally.土}·风${tally.风}·水${tally.水}）`)), `element tally: ${pattern[2]}`);
+  // 相位格局行只在 patData 属于本盘时出（st.patKey === chartRequestKey(chart)，headless 恒等键）：T 三角顶点火星。
+  assert(pattern.includes('相位格局：'), 'patData must reach [盘型格局] (patKey pairing with the AstroExtraCommon stub)');
+  assert(pattern.some((l) => l.startsWith('- T 三角（顶点 火星）：')), `T-square line: ${pattern.join(' | ')}`);
+  // KP / Vimshottari：月黄经 → 第 floor(λ/13°20′)+1 宿；宿主按 Vimshottari 序；副主按 120 年比例细分。
+  const NAK_LEN = 40 / 3; const SEQ = ['ketu', 'venus', 'sun', 'moon', 'mars', 'rahu', 'jupiter', 'saturn', 'mercury'];
+  const YEARS = { ketu: 7, venus: 20, sun: 6, moon: 10, mars: 7, rahu: 18, jupiter: 16, saturn: 19, mercury: 17 };
+  const CN_V = { sun: '日', moon: '月', mars: '火', mercury: '水', jupiter: '木', venus: '金', saturn: '土', rahu: '罗睺', ketu: '计都' };
+  const moonLon = objs.Moon.lon; const nak = Math.floor(moonLon / NAK_LEN); const frac = (moonLon - nak * NAK_LEN) / NAK_LEN;
+  const starLord = SEQ[nak % 9];
+  let acc = 0; let subLord = null;
+  for (let k = 0; k < 9 && !subLord; k += 1) { const lord = SEQ[(nak + k) % 9]; acc += YEARS[lord] / 120; if (frac < acc) subLord = lord; }
+  const kp = card('vedic', 'KP 副主链');
+  assert(kp.some((l) => l.startsWith(`| 月 | `) && l.endsWith(` | ${CN_V[starLord]} | ${CN_V[subLord]} |`)), `KP moon row: ${kp.find((l) => l.startsWith('| 月'))}`);
+  const dasha = card('vedic', '世运大运');
+  assert(dasha[1] === `（Vimshottari · 年长口径 365.2425（现代））起运主 ${CN_V[starLord]}（月在第 ${nak + 1} 宿,余额 ${((1 - frac) * 100).toFixed(1)}%）`, `dasha head: ${dasha[1]}`);
+  const vedic = card('vedic', '吠陀世运·年度盘');
+  assert(vedic[1] === '当前入境时刻：2025-04-14 05:53:45', `vedic moment: ${vedic[1]}`);
+  // [木土纪元]：木土合相 · 地心 · 1300–2200（页面缺省，同 builder 的 clampYear 回落）· 共 2 次。
+  const eras = card('cycles', '木土纪元');
+  assert(eras[1] === '（木 ✕ 土（时代纪元）合相 · 地心 · 1300–2200 · 共 2 次）', `木土纪元 head: ${eras[1]}`);
+  // [Barbault 聚散指数]：最深谷 = index 最小点（1983-01, 300.2→300°），最高峰 = 最大点（1901-01, 1080°）。
+  const bb = card('cycles', 'Barbault 聚散指数');
+  assert(bb[2] === '最深谷（聚集）1983-01（300°）；最高峰（四散）1901-01（1080°）', `barbault extrema: ${bb[2]}`);
+  // [日食图判读] 食时长定则：日食 3.88 小时 → 3.9 年（state.eclipseDetail 原样入段）。
+  const ecl = card('solecl', '日食图判读');
+  assert(ecl[1] === '时刻 2025-03-29 18:47:26 · partial', `eclipse head: ${ecl[1]}`);
+  assert(ecl.includes('时长：约 3.88 小时 → 影响约 3.9 年（食时长定则）'), 'eclipse duration rule line');
+  card('solecl', '食族 Saros');
+  card('solecl', '天象占参考');
+});
+
+// 择日 [回归与主限]（上游 v3.11 [Q-445]）：extra 由 Python 求根/取数后传入；JS 只 buildFacts + 上游排版。
+// 期望：fixture 盘上升天秤；角宫（1/4/7/10）吉星木金、凶星土 → ▲▲▼；主限行照
+// electionSnapshot.js:130-133 的「日期（±N 日）：应星 ← 迫星（法）」，method 为空时不带括号。
+check('election [回归与主限] 值级金标：回归盘利钝 + 主限命中排版', () => {
+  const r = runElectionTool({
+    chart, topicId: 'marriage', natalChart: chart,
+    extra: {
+      returnSet: { solar: { momentStr: '2027-06-15 07:03:11', chart }, lunar: null },
+      pdHits: [
+        { promissor: 'N_Mars_180', significator: 'N_Pluto_0', method: 'Z', date: '2028-02-18', deltaDays: -48 },
+        { promissor: 'S_Mars_60', significator: 'N_Jupiter_0', method: '', date: '2028-07-01', deltaDays: 86 },
+      ],
+    },
+  });
+  const s = r.snapshot_text || '';
+  const start = s.indexOf('[回归与主限]');
+  assert(start >= 0, 'missing [回归与主限]');
+  const body = s.slice(start, s.indexOf('\n[', start + 1)).split('\n');
+  assert(JSON.stringify(body) === JSON.stringify([
+    '[回归与主限]',
+    '- · 日返时刻 2027-06-15 07:03:11，上升 天秤。',
+    '- ▲ 日返盘吉星 木星 临角宫（本期得助）。',
+    '- ▲ 日返盘吉星 金星 临角宫（本期得助）。',
+    '- ▼ 日返盘凶星 土星 临角宫（本期承压）。',
+    '择日日期前后主限命中（±240 日内最近 2 条）：',
+    '- 2028-02-18（-48 日）：N_Pluto_0 ← N_Mars_180（Z）',
+    '- 2028-07-01（+86 日）：N_Jupiter_0 ← S_Mars_60',
+  ]), `回归与主限 body: ${JSON.stringify(body)}`);
+  assert(s.includes('[本命合参]'), 'natalChart must reach runElection (本命合参)');
+  assert(r.data.natal.integrated === true && r.data.returns.returnCharts === 1, `receipts: ${JSON.stringify(r.data)}`);
+  // 缺省路径（无本命/无 extra）：段不出、data 不多键。
+  const plain = runElectionTool({ chart, topicId: 'marriage' });
+  assert(!(plain.snapshot_text || '').includes('[回归与主限]') && !('natal' in plain.data) && !('returns' in plain.data), 'default path must stay byte-identical');
+  // 有效主限时间钥匙由引擎解析器给（流派档 × 覆写），Python 不手抄。
+  assert(runElectionTool({ chart, action: 'resolve_params', options: { pdTimeKey: 'Naibod' } }).data.effective.pdTimeKey === 'Naibod', 'override pdTimeKey');
+  assert(runElectionTool({ chart, action: 'resolve_params' }).data.effective.pdTimeKey === 'Ptolemy', 'default pdTimeKey');
+});
+
+// [占星地图]（上游 utils/acgSnapshot.js 逐字 vendored）：数字全来自后端 ACGraph 响应，builder 只做取点/去重/格式化。
+// 期望值按上游规则手推（acgSnapshot.js）：fmtLon 东经正 → MC 120.5 = 120.50°E、IC −59.5 = 59.50°W；ascAnchor 取 |纬| 最小点
+// （lat −2 那点，lon 48.25）；交映 lum 档滤掉无日月的对（火–木），Math.round(42.5)=43 与 Math.round(42.9)=43 同纬线去重只留首条
+// → 共 1 条；口径头行读 meta（topo=站心、draconic 'true'=真交点、harmonic 5）；uiState 缺省（无图层）时不出 ◆ 子块。
+check('acgSection 值级金标：角化线取点 + 交映去重 + 口径头行（vendored buildAcgSectionText）', () => {
+  const acgData = {
+    meta: { mode: 'mundo', coord: 'topo', draconic: 'true', harmonic: 5, lsMode: 'great' },
+    planets: {
+      Sun: { lines: { mc: { lon: 120.5 }, ic: { lon: -59.5 }, lsAz: { az: 247.2, alt: 6.9 },
+        asc: [{ lat: 10, lon: 50 }, { lat: -2, lon: 48.25 }, { lat: 30, lon: 60 }], desc: [] } },
+      Moon: { lines: { mc: { lon: 30 }, ic: { lon: -150 }, asc: [], desc: [] }, oob: true },
+    },
+    parans: [
+      { lat: 42.5, a: 'Sun', aEvent: 'mc', b: 'Moon', bEvent: 'rise' },
+      { lat: 42.9, a: 'Moon', aEvent: 'set', b: 'Sun', bEvent: 'ic' },
+      { lat: -12.25, a: 'Mars', aEvent: 'rise', b: 'Jupiter', bEvent: 'mc' },
+    ],
+  };
+  const lines = runAcgSection({ acgData, uiState: { paranMode: 'lum', showLS: true } }).text.split('\n');
+  assert(JSON.stringify(lines) === JSON.stringify([
+    '【占星地图】',
+    '口径 本体(in-mundo·真黄纬) · 坐标系 站心 · 龙黄道 真交点 · 谐波 H5',
+    '主要行星角化线(中天/天底=经线;上升/下降取赤道附近代表点):',
+    '- 太阳:MC 120.50°E / IC 59.50°W / ASC 48.25°E / DSC —',
+    '- 月亮:MC 30.00°E / IC 150.00°W / ASC — / DSC — · 超界OOB',
+    '◆ 本地空间线(画法 大圆;自出生地沿各星罗盘方位角延伸,方位角=正北起顺时针,高度角=出生时刻该星地平高度):',
+    '| 星 | 方位角 | 高度角 |',
+    '| --- | --- | --- |',
+    '| 太阳 | 247.2° | 6.9° |',
+    '◆ 行星交映(仅日月对,同图 1° 去重,共 1 条纬线):',
+    '| 星A | 事件 | 星B | 事件 | 纬度 |',
+    '| --- | --- | --- | --- | --- |',
+    '| 太阳 | 中天 | 月亮 | 升 | 42.50°N |',
+  ]), `acg lines: ${JSON.stringify(lines)}`);
+  // 全部行星对：火–木那条纬线（−12.25 → 12.25°S）也进，共 2 条。
+  const all = runAcgSection({ acgData, uiState: { paranMode: 'all' } }).text;
+  assert(all.includes('共 2 条纬线') && all.includes('| 火星 | 升 | 木星 | 中天 | 12.25°S |'), `paran all: ${all}`);
+  // 模块级「最近一次地图状态」每次调用前后清空：无 planets 的响应不许串出上一张图。
+  assert(runAcgSection({ acgData: { meta: {} } }).text === '', 'stale acg snapshot leaked across calls');
+});
+
+// ── 上游 v3.14.0：占星地图两层 / 世运周期表 / 巴比伦天象实算 ─────────────────────────────────────────
+// [占星地图] 的「◆ 日食路径」「◆ 气候带」（上游 utils/acgLayers.js 逐字 vendored，acgSnapshot.js 拼段）。期望值独立算：
+//   · 食甚处食带宽 = 食甚点到北界、南界的最短地面距离之和。合成数据：北界 / 南界是食甚点正北 / 正南 0.5° 的两条东西向线段，
+//     所以两侧各 0.5° 纬度弧长 = 0.5 × π/180 × 6371.0088 km = 55.597 km，合 111.19 → 「约 111 km」；
+//     食甚时刻 / 地点取 2017-08-21 日全食的公布值（18:25 UT，36°58′N 87°40′W；上游 astropy/tests/test_eclipse_path.py 同值）。
+//   · 气候带：tan φ = −cos(7.5° × 最长昼) / tan ε（acgLayers.js 头注的公式）。改进档 ε = 后端 meta.obliquity，
+//     经典档 ε = 托勒密值 23°51′20″ = 23.8556°；最长昼 24 时的纬圈即极圈 φ = 90° − ε = 66.14°。
+check('acgSection 值级金标：日食路径摘要 + 气候带 / 纬圈（vendored acgLayers）', () => {
+  const eps = 23.435;
+  const acgData = {
+    meta: { mode: 'mundo', obliquity: eps },
+    planets: { Sun: { lines: { mc: { lon: 0 }, ic: { lon: 180 }, asc: [], desc: [] } } },
+    eclipse: {
+      which: 'prenatal', filter: 'any', type: 'total', central: true, magnitude: 1.0306, daysFromBirth: -0.2326, widthKm: 114.7,
+      utc: '2017/08/21 18:25', local: '2017/08/21 13:25', greatest: { lat: 36.97, lon: -87.67 },
+      track: [{ lat: 39.74, lon: -171.58 }, { lat: 36.97, lon: -87.67 }, { lat: 11.0, lon: -27.4 }],
+      north: [{ lat: 37.47, lon: -88.67 }, { lat: 37.47, lon: -86.67 }],
+      south: [{ lat: 36.47, lon: -88.67 }, { lat: 36.47, lon: -86.67 }],
+    },
+  };
+  const lines = runAcgSection({ acgData, uiState: { climes: 'klimata', climesObliquity: 'date' } }).text.split('\n');
+  const at = lines.indexOf('◆ 日食路径:');
+  assert(at > 0, `missing ◆ 日食路径: ${JSON.stringify(lines)}`);
+  assert(JSON.stringify(lines.slice(at, at + 4)) === JSON.stringify([
+    '◆ 日食路径:',
+    '出生前最近一次日食:全食,食甚 2017/08/21 13:25(出生地时区)/ 2017/08/21 18:25(UT),出生前 0.2 日',
+    '食甚地点 36.97°N 87.67°W,食分 1.0306,食甚处食带宽约 111 km(两侧边界之间的地面距离)',
+    '中心线:39.74°N 171.58°W → 11.00°N 27.40°W',
+  ]), `eclipse block: ${JSON.stringify(lines.slice(at, at + 4))}`);
+  const D = Math.PI / 180;
+  const latFor = (hours, e) => Math.atan(-Math.cos(7.5 * hours * D) / Math.tan(e * D)) / D;
+  assert(lines[at + 4] === `◆ 七气候带(黄赤交角 ${eps.toFixed(4)}°,改进:出生时刻的值):`, `climes head: ${lines[at + 4]}`);
+  // 七带中线的最长昼：13 / 13½ / 14 / 14½ / 15 / 15½ / 16 时（托勒密七气候带）。第 3 带（下埃及，14 时）≈ 30.84°N。
+  const bands = lines[at + 5].split(';');
+  assert(bands.length === 7, `seven klimata: ${lines[at + 5]}`);
+  [13, 13.5, 14, 14.5, 15, 15.5, 16].forEach((hours, i) => {
+    assert(bands[i].startsWith(`第 ${i + 1} 带 · `) && bands[i].endsWith(` ${latFor(hours, eps).toFixed(2)}°N`), `band ${i + 1}: ${bands[i]} vs ${latFor(hours, eps).toFixed(2)}`);
+  });
+  assert(bands[2].endsWith(' 30.84°N'), `Lower Egypt band: ${bands[2]}`);
+  // 经典档 + 纬圈：ε 取托勒密值；最长昼 24 时 = 极圈 90 − 23.8556 = 66.14°N；只列北半球（南半球对称不重复）。
+  const par = runAcgSection({ acgData: { ...acgData, eclipse: null }, uiState: { climes: 'parallels', climesObliquity: 'ptolemy' } }).text.split('\n');
+  assert(!par.includes('◆ 日食路径:'), 'no eclipse block without eclipse data');
+  const ph = par.indexOf('◆ 托勒密纬圈(黄赤交角 23.8556°,经典:托勒密值):');
+  assert(ph > 0, `parallels head: ${JSON.stringify(par.slice(-2))}`);
+  const rows = par[ph + 1].split(';');
+  assert(rows.length === 32 && rows[0] === `最长昼 12¼ 时 ${latFor(12.25, 23 + 51 / 60 + 20 / 3600).toFixed(2)}°N`, `parallels rows: ${rows.length} ${rows[0]}`);
+  assert(rows[rows.length - 1] === '最长昼 24 时 66.14°N', `polar circle: ${rows[rows.length - 1]}`);
+  // 图层关着（缺省）不成块；偏食没有中心线 → 「最大食分点轨迹」+ 说明句，带宽改报投影面上的本影直径（无则不报）。
+  const off = runAcgSection({ acgData: { ...acgData, eclipse: null }, uiState: {} }).text;
+  assert(!off.includes('◆ 七气候带') && !off.includes('◆ 托勒密纬圈') && !off.includes('◆ 日食路径'), `layers off: ${off}`);
+  const partial = runAcgSection({ acgData: { ...acgData, eclipse: { ...acgData.eclipse, type: 'partial', central: false, north: [], south: [], widthKm: null, filter: 'any' } }, uiState: {} }).text;
+  assert(partial.includes('最大食分点轨迹:39.74°N 171.58°W → 11.00°N 27.40°W') && partial.includes('偏食没有中心线') && !partial.includes('食带宽'), `partial: ${partial}`);
+});
+
+// 世运周期表（上游 utils/mundaneCycles.js 逐字 vendored；tools/mundaneCards.js 的 cycles_request + cycles job）。期望值独立来源：
+//   · 请求字段 = 上游 mundaneCycleRequestFields 的规则：只带这张表起作用的选项；cycleVariant → variant，且只有大合（木土）、
+//     世运法达小档、世俗小限的非天顶起点才带；年份只给区间表 / 年表。
+//   · 正文：黄经 → 星座 + 座内度两位小数（300.4861° = 水瓶 0.49°——2020-12-21 木土大合在水瓶 0°29′，天文事实）；
+//     千年表 1701 年 = 千年主火、转主土、季摄火（上游 astropy/tests/test_mundane_cycles.py::test_thousands_row_fixed_sample）。
+check('mundaneCards 值级金标：世运周期表请求字段 + [世运周期表] 正文（vendored mundaneCycles）', () => {
+  const req = (settings, years) => runMundaneCards({ action: 'cycles_request', settings, years }).data;
+  const def = req({}, {});
+  assert(JSON.stringify(def.cycleTable.fields) === JSON.stringify({ table: 'conjunctions', conjKind: 'great', variant: 'improved' }), `default fields: ${JSON.stringify(def.cycleTable.fields)}`);
+  assert(def.barbault.setKey === 'slow5' && def.barbault.planets.join() === 'Jupiter,Saturn,Uranus,Neptune,Pluto', `default barbault: ${JSON.stringify(def.barbault)}`);
+  const mid = req({ conjKind: 'middle', cycleVariant: 'classic', bbSet: 'outer3' }, { startYear: 1900, endYear: 2000 });
+  assert(JSON.stringify(mid.cycleTable.fields) === JSON.stringify({ table: 'conjunctions', conjKind: 'middle', startYear: 1900, endYear: 2000 }), `middle fields: ${JSON.stringify(mid.cycleTable.fields)}`);
+  assert(mid.cycleTable.ignored.join() === 'cycleVariant', `中合无算法档 → cycleVariant ignored: ${mid.cycleTable.ignored}`);
+  assert(mid.barbault.planets.join() === 'Uranus,Neptune,Pluto', `outer3 planets: ${mid.barbault.planets}`);
+  const yr = req({ cycleTable: 'thousands', flood: 'b' }, { startYear: 1701, endYear: 1800 });
+  assert(JSON.stringify(yr.cycleTable.fields) === JSON.stringify({ table: 'thousands', startYear: 1701 }), `thousands fields: ${JSON.stringify(yr.cycleTable.fields)}`);
+  assert(yr.cycleTable.ignored.join() === 'flood,cycleEndYear', `thousands ignored: ${yr.cycleTable.ignored}`);
+  const prof = req({ cycleTable: 'profections', profBase: 'greatMc', cycleVariant: 'classic' }, {});
+  assert(JSON.stringify(prof.cycleTable.fields) === JSON.stringify({ table: 'profections', profRate: 'great', profBase: 'greatMc' }), `profections fields: ${JSON.stringify(prof.cycleTable.fields)}`);
+  // 值域校验锚到引擎自带表：认不出的表 / 选项 / 组合回执 invalid（数值型选项按严格相等，'300' 不在 100/200/500/1000 里）。
+  const bad = runMundaneCards({ action: 'settings', settings: { cycleTable: 'bogus', firdariaYears: 300, bbSet: 'slow9', meanTable: 'table8', ingressPoint: 90 } }).data.invalid;
+  assert(bad.map((i) => i.key).join() === 'cycleTable,firdariaYears,bbSet', `invalid keys: ${bad.map((i) => i.key)}`);
+  const cards = (state) => {
+    const out = runMundaneCards({ jobs: [{ id: 'cycles', chart, extra: { mundaneType: 'cycles' }, state }] });
+    assert(out.data.ok === true, 'cycles job ok');
+    return out.data.jobs[0].cards;
+  };
+  const text = (state) => { const hit = cards(state).find((c) => c.title === '世运周期表'); return hit ? hit.text.split('\n') : null; };
+  const conj = text({
+    cycleTableResult: { table: 'conjunctions', variant: 'improved', targetYear: 2025, kind: 'great', rows: [
+      { date: '1981-03-04 19:06:12', lon: 188.10774536424074, repeat: true, shift: false },
+      { date: '2000-05-28 16:03:53', lon: 52.72136629565967, repeat: false, shift: true },
+      { date: '2020-12-21 18:20:37', lon: 300.4861066687552, repeat: false, shift: true },
+    ] },
+    cycleTableRequest: { table: 'conjunctions', conjKind: 'great', variant: 'improved' },
+  });
+  assert(JSON.stringify(conj) === JSON.stringify([
+    '[世运周期表]',
+    '表：大中小合(木土、火土、火木的真实地心合,标出换三分性的一合)',
+    '合：大合(木土)',
+    '1981-03-04 天秤 8.11° 三重合',
+    '2000-05-28 金牛 22.72° 换三分性',
+    '2020-12-21 水瓶 0.49° 换三分性',
+  ]), `conjunctions text: ${JSON.stringify(conj)}`);
+  const thousands = text({
+    cycleTableResult: { table: 'thousands', variant: 'improved', targetYear: 1701, rows: [
+      { year: 1701, floodYear: 5093, thousandLord: 'Mars', turnLord: 'Saturn', quarterLord: 'Mars', quarterYear: 53, division: 31.3, turn: 150.0 },
+    ] },
+    cycleTableRequest: { table: 'thousands' },
+  });
+  assert(thousands[2] === '1701 千年主 火 转主 土 季摄 火', `thousands row: ${JSON.stringify(thousands)}`);
+  // 接口没回带的口径（周期年表起点 dawrStart）取发出这次请求的字段：cycleTableRequest 必须真的到 builder。
+  const dawr = text({
+    cycleTableResult: { table: 'dawr', variant: 'improved', targetYear: 2025, rows: [{ year: 2025, sign: 0, lord: 'Sun', quarterLord: 'Mars', lon: 12.5 }] },
+    cycleTableRequest: { table: 'dawr', dawrStart: 'b' },
+  });
+  assert(dawr[2] === '起点：1660 年起' && dawr[3] === '2025 白羊 年主 日 四分主 火', `dawr text: ${JSON.stringify(dawr)}`);
+  // 没算 / 接口报错 / 空表 → 不成段（上游同）；其余卡不受影响。
+  assert(text({}) === null, '[世运周期表] must not appear without a result');
+  assert(text({ cycleTableResult: { err: 'param error' }, cycleTableRequest: {} }) === null, 'error envelope must not become a section');
+  assert(text({ cycleTableResult: { table: 'conjunctions', rows: [] }, cycleTableRequest: {} }) === null, 'empty rows must not become a section');
+  assert(cards({}).some((c) => c.title === '大年时代'), 'other cycles cards unaffected');
+  // [盘型格局] 的相位格局：后端 v3.14.0 新增「篮形」（detect_basket：四点依次相隔 90°、60°、90°、120°），世运义取 vendored
+  // patterns.js 的 PATTERN_MUNDANE.basket（上游同版加的一行）。
+  const basket = runMundaneCards({ jobs: [{ id: 'ingress', chart, extra: { mundaneType: 'ingress', ingressTerm: '春分', ingressYear: 2025 },
+    state: { patData: [{ type: 'basket', label: 'Basket', points: ['Sun', 'Moon', 'Mars', 'Jupiter'] }] } }] }).data.jobs[0].cards.find((c) => c.title === '盘型格局');
+  assert(basket && basket.text.split('\n').some((l) => l.startsWith('- 篮形：四星沿黄道依次相隔 90°、60°、90°、120°')), `basket pattern line: ${basket && basket.text}`);
+  // Barbault：快照写算图时的组合 / 谐波 / 年段（上游 mundaneBarbaultSettings.test.js 同一断言）。
+  const bb = cards({ bbSet: 'slow5', bbStart: 1800, bbEnd: 2100, bbData: { points: [{ year: 1990, month: 1, index: 300 }, { year: 2000, month: 1, index: 100 }], harm: 2, setKey: 'outer3', startYear: 1900, endYear: 2050 } })
+    .find((c) => c.title === 'Barbault 聚散指数').text.split('\n');
+  assert(bb[1] === '（慢星组合 仅外三星 ♅♆♇（最平滑） · 2 次谐波 · 1900–2050 · 2 点）', `barbault head: ${bb[1]}`);
+});
+
+// 巴比伦 [天象实算]（上游 utils/babylonAiSnapshot.js buildBabylonSkySection 逐字 vendored；数据 = 后端 /astroextra/babylontables）。
+// 期望值按上游规则手推：赤纬 −23.2635° → 「−23°16′」（0.2635 × 60 = 15.8 → 16），|δ| > 17° 且在南 → Ea 道，距道界 23.2635 − 17 = 6.26°；
+// +22.5065° → 「+22°30′」Enlil 道，距道界 5.51°；bēru 行 = `${beru} bēru ${us} UŠ(${时}h${分}m)`（68 分钟 = 1h08m）；
+// 目标年：月亮无年数 → 「−223 月」，其余「−N 年」；周期现象取 state=last / next 两条。样本数值取自 vendored 引擎对
+// 1975-02-10 21:15 −08:00 西雅图的实算（金星 1974-12-29 16:5x 夕始见后可见——上游 astropy/tests/test_babylon_tables.py 同值）。
+check('babylon 值级金标：[天象实算] 三道 / 星钟 / 目标年 / 周期现象（vendored buildBabylonSkySection）', () => {
+  const sky = {
+    paths: [
+      { id: 'Mars', decl: -23.26353036788721, path: 'Ea', margin: 6.26353036788721 },
+      { id: 'Saturn', decl: 22.506521634590857, path: 'Enlil', margin: 5.506521634590857 },
+      { id: 'Venus', decl: -7.23312132451583, path: 'Anu', margin: 9.76687867548417 },
+    ],
+    ziqpu: { rows: [
+      { name: '弯杖之手', star: 'ρ Aur', state: 'now', ago: { beru: 0, us: 17, minutes: 68.0 } },
+      { name: '蟹', star: 'M44', ago: { beru: 10, us: 2, minutes: 1208.0 } },
+      { name: '双子', star: 'α Gem', state: 'next', in: { beru: 0, us: 16, minutes: 65.2 }, next: '1975-02-10 22:19:36' },
+    ] },
+    goalYear: [
+      { id: 'Moon', years: null, date: '1957-01-30 13:34:10', dl: 11.04, de: -0.06 },
+      { id: 'Mercury', years: 46, date: '1929-02-10 21:15:00', dl: 2.36, de: 2.52 },
+    ],
+    phenomena: [
+      { id: 'Venus', visible: true, since: '1974-12-29 16:54:21', polar: false, twilight: 0, visibleByTwilight: false, events: [
+        { kind: 'eveningFirst', state: 'last', date: '1974-12-29 16:54:21' }, { kind: 'eveningLast', state: 'next', date: '1975-08-02 03:10:00' },
+      ] },
+      { id: 'Mars', visible: null, since: null, polar: true, twilight: 0, visibleByTwilight: false, events: [
+        { kind: 'conjunction', state: 'last', date: '1974-10-14 04:55:00' }, { kind: 'firstStation', state: 'next', date: '1975-11-06 10:00:00' },
+      ] },
+    ],
+  };
+  const base = { chart, year: 1975, month: 2, day: 10 };
+  const section = (payload) => {
+    const out = runBabylon(payload);
+    assert(out.text, `babylon text empty: ${JSON.stringify(out).slice(0, 200)}`);
+    const lines = out.text.split('\n');
+    const at = lines.indexOf('[天象实算]');
+    return at < 0 ? null : lines.slice(at, at + 5);
+  };
+  const got = section({ ...base, skyTables: sky });
+  assert(JSON.stringify(got) === JSON.stringify([
+    '[天象实算]',
+    '七曜所行之道(赤纬 ±17° 内为 Anu 道):火 −23°16′ Ea 道(南) 距道界 6.26°;土 +22°30′ Enlil 道(北) 距道界 5.51°;金 −7°14′ Anu 道(中) 距道界 9.77°',
+    'ziqpu 星钟:最近过中天 弯杖之手(ρ Aur)已过 0 bēru 17 UŠ(1h08m);下一颗 双子(α Gem)还有 0 bēru 16 UŠ(1h05m),约 1975-02-10 22:19:36',
+    '目标年取数:月 −223 月(1957-01-30)黄经差 11.04° 距日差 -0.06°;水 −46 年(1929-02-10)黄经差 2.36° 距日差 2.52°',
+    '周期现象(出生前后各一个会合周期;高纬夏夜推迟到离日 40° 以外的始见末见照列,标「高纬推迟」):金 出生时可见(自 1974-12-29 16:54),前 夕始见 1974-12-29,后 夕末见 1975-08-02;火 高纬不算可见度,前 合日(不可见) 1974-10-14,后 初留 1975-11-06',
+  ]), `sky section: ${JSON.stringify(got)}`);
+  // 没取到 / 失败信封（无 paths）→ 整段不出；其余段照常（上游 fetchBabylonSkyTables 的 `res && res.paths` 判据）。
+  assert(section(base) === null, '[天象实算] must not appear without skyTables');
+  assert(section({ ...base, skyTables: { err: 'param error' } }) === null, 'an error envelope must not become a section');
+  // 后端某一块失败回 null（ziqpu / goalYear / phenomena 各自 try）：只少那一行。
+  const partial = section({ ...base, skyTables: { paths: sky.paths, ziqpu: null, goalYear: null, phenomena: null } });
+  assert(partial.length >= 2 && partial[0] === '[天象实算]' && partial[1].startsWith('七曜所行之道') && !partial.slice(2).some((l) => /^(ziqpu|目标年|周期现象)/.test(l)), `partial sky: ${JSON.stringify(partial)}`);
+});
+
+// ── v0.40 mingli：八字 / 紫微 / 宿占 改由 vendored 上游 builder 出快照 ────────────────────────────
+// 八字本地优先（tools/baziLocal.js = 上游 BaZi.js:716-755 fetchBaziCached 主路径）。
+check('baziLocal 值级金标：晚子时四象限 + 命宫起法 + Java 回退形状', () => {
+  const genParams = (extra) => ({
+    date: '2026-05-27', time: '23:30:00', ad: 1, zone: '+08:00', lon: '121e28', lat: '31n13', gender: 1,
+    timeAlg: 1, phaseType: 0, godKeyPos: '年', adjustJieqi: 0, minggongMethod: 'tongxing',
+    fenyeVersion: 'common', cangVersion: 'common', dayunPrecision: 'precise', ...extra,
+  });
+  const pillar = (text, label) => (text.split('\n').find((l) => l.startsWith(`| ${label} |`)) || '').split(' | ')[1];
+  // 权威：上游 utils/dayBoundary.js:49-57 矩阵（2026-05-27 23:30 直接时间；jest baziLunarLocal.dayBoundary
+  // + Java BaZiHelper + 七路 Python 同口径 2026-09-18）：(1,1) 壬寅庚子 · (1,0) 壬寅戊子 · (0,1) 辛丑庚子 · (0,0) 辛丑戊子。
+  const want = { '1,1': ['壬寅', '庚子'], '1,0': ['壬寅', '戊子'], '0,1': ['辛丑', '庚子'], '0,0': ['辛丑', '戊子'] };
+  for (const [key, [day, hour]] of Object.entries(want)) {
+    const [a23, lz] = key.split(',').map(Number);
+    const out = runBaziLocal({ params: genParams({ after23NewDay: a23, lateZiHourUseNextDay: lz }) });
+    assert(out.data.ok === true && out.data.local === true, `local engine must compute (${key})`);
+    assert(pillar(out.snapshot_text, '日柱') === day && pillar(out.snapshot_text, '时柱') === hour,
+      `${key}: ${pillar(out.snapshot_text, '日柱')} ${pillar(out.snapshot_text, '时柱')}`);
+  }
+  // 命宫起法（techniqueMountSettings.js:1705）：1990-05-15 10:30 上海真太阳时，通行版=癸未；子平数法=辛巳
+  // （与 Java /bazi/birth 缺省 shufa 同盘实测一致 —— 跨引擎权威）。快照命宫行标起法（BaZi.js:397）。
+  const mg = (m) => runBaziLocal({ params: genParams({ date: '1990-05-15', time: '10:30:00', lat: '31n14', timeAlg: 0, after23NewDay: 1, lateZiHourUseNextDay: 1, minggongMethod: m }) }).snapshot_text
+    .split('\n').find((l) => l.startsWith('命宫：'));
+  assert(mg('tongxing') === '命宫：癸未，干十神:伤，支十神:印（起法：通行版）', `tongxing: ${mg('tongxing')}`);
+  assert(mg('shufa') === '命宫：辛巳，干十神:劫，支十神:杀（起法：子平数法）', `shufa: ${mg('shufa')}`);
+  // 域外（公元前）本地抛错 → 回报 local_engine_unavailable（Python 据此回退 Java，上游同）。
+  const bc = runBaziLocal({ params: genParams({ date: '-0100-05-15', ad: -1 }) });
+  assert(bc.data.ok === false && bc.data.reason === 'local_engine_unavailable' && bc.snapshot_text === '', `BC: ${JSON.stringify(bc.data)}`);
+  // Java 回退形状：命宫行按回退口径标「子平数法(本域回退)」，本地派生段（五行力量）不出。
+  const jv = runBaziLocal({ params: genParams({}), java_result: { bazi: { nongli: { year: '丙午', month: '四月', day: '十一' }, fourColumns: { ming: { stem: { cell: '甲' }, branch: { cell: '子' } } } }, gender: 'Male' } });
+  assert(jv.data.local === false && jv.snapshot_text.includes('命宫：甲子（起法：子平数法(本域回退)）') && !jv.snapshot_text.includes('[五行力量]'),
+    `java fallback: ${jv.snapshot_text.slice(0, 400)}`);
+});
+
+// 紫微（tools/ziweiBirth.js = 上游 buildZiweiSnapshotForParams，ZiWeiMain.js:716-822）：传本开关非缺省 → 本地 ZiweiCalc；
+// 流派切四化表；单例用毕还原。
+check('ziweiBirth 值级金标：钦天局数年大限 + 中州派四化 + 单例还原', () => {
+  const base = { date: '1985-11-07', time: '23:30:00', zone: '+08:00', lon: '121e28', lat: '31n13', gender: 1, timeAlg: 0, after23NewDay: 1, lateZiHourUseNextDay: 1 };
+  const row = (text, name) => text.split('\n').find((l) => l.startsWith(`| ${name}`)) || '';
+  const ju = runZiweiBirth({ action: 'finalize', params: { ...base, daxianSpan: 'ju' }, result: { chart: {} } });
+  assert(ju.data.localEngine === true && ju.data.localApplied === true, `local engine: ${JSON.stringify(ju.data.localError)}`);
+  // 土五局 + 钦天「大限跨度=局数年」→ 每限 5 年、命宫 5~9 起（ziweiCore.daxianRanges span=ju；三合缺省是 10 年 5~14）。
+  assert(row(ju.text, '命宫·胎').includes('| 丙戌 | 5~9 |'), `命宫 row: ${row(ju.text, '命宫·胎')}`);
+  assert(ju.text.includes('传本设置：大限跨度=局数年(钦天)') && ju.text.includes('四化流派：通用·飞星'), 'ju notes');
+  // 戊干化科：通用·飞星 = 右弼，中州派 = 太阳（ziweiSchools SIHUA_OVERRIDES.zhongzhou 戊科 → 太阳）。官禄宫干戊 → 右弼自化科只在通用表。
+  assert(row(ju.text, '官禄宫').includes('右弼（自化科）·旺'), `beipai 官禄: ${row(ju.text, '官禄宫')}`);
+  const zz = runZiweiBirth({ action: 'finalize', params: { ...base, daxianSpan: 'ju', sihuaSchool: 'zhongzhou' }, result: { chart: {} } });
+  assert(zz.text.includes('四化流派：中州派') && row(zz.text, '官禄宫').includes('、右弼·旺、'), `zhongzhou 官禄: ${row(zz.text, '官禄宫')}`);
+  // prepare：中州派戊干四化表 = 贪狼/太阴/太阳/天机（发 Java 的 sihua）；认不出的值回报不静默。
+  const prep = runZiweiBirth({ action: 'prepare', params: { sihuaSchool: 'zhongzhou', kuiYue: 'nope' } });
+  assert(JSON.stringify(prep.data.sihua['戊']) === JSON.stringify(['贪狼', '太阴', '太阳', '天机']), `sihua 戊: ${JSON.stringify(prep.data.sihua && prep.data.sihua['戊'])}`);
+  assert(prep.warnings.length === 1 && prep.warnings[0].key === 'kuiYue', `warnings: ${JSON.stringify(prep.warnings)}`);
+  // 可变单例必须还原（同进程下一次缺省调用不得串味）。
+  const plain = runZiweiBirth({ action: 'prepare', params: {} });
+  assert(plain.data.school === 'beipai' && plain.data.localEngine === false && plain.data.sihua === null, `leak: ${JSON.stringify(plain.data)}`);
+});
+
+// 宿占（tools/suzhan.js = 上游 buildSuzhanSnapshotText，SuZhanMain.js:396-428）：人事十二宫起法 + 宿法标签。
+check('suzhan 值级金标：八字公式/ASC 起宫 + 宿法九档标签 + 缺农历回落', () => {
+  // fixture 盘（2026-06-02 14:30）上升赤经 201.3° → 天秤(6)；太阳赤经 70.2° → 双子(2)。
+  // 八字公式（computeAscSignIndex :148-173）：(日座 − 时支座 − 5 + 24) % 12。时支取申（ZiSign 申=双子(2)）→ 7；ASC → 6。
+  // 白羊宫头（signIdx 0）的宫序 = (0 − 起宫 + 12) % 12 + 1：八字公式 6、ASC 7。
+  const params = { date: '2026-06-02', time: '14:30:00', zone: '+08:00', lon: '121e28', lat: '31n13', doubingSu28: 3 };
+  const withShen = { ...chart, chart: { ...chart.chart, nongli: { bazi: { time: { branch: { cell: '申' } } } } } };
+  const aries = (text) => text.split('\n').find((l) => l.startsWith('| 戌—降娄—白羊座—')) || '';
+  const bazi = runSuzhan({ chart: withShen, params: { ...params, houseStartMode: 0 } });
+  assert(aries(bazi.text).startsWith('| 戌—降娄—白羊座—第6宫 |') && bazi.data.nongliHour === '申', `bazi mode: ${aries(bazi.text)}`);
+  assert(bazi.text.includes('宿法：回归古制开禧') && bazi.text.includes('人事十二宫起盘：八字公式起盘'), 'su28 label (guolaoData SU28_MODE_LABEL[3])');
+  const asc = runSuzhan({ chart: withShen, params: { ...params, houseStartMode: 1 } });
+  assert(aries(asc.text).startsWith('| 戌—降娄—白羊座—第7宫 |') && asc.text.includes('人事十二宫起盘：ASC起盘'), `asc mode: ${aries(asc.text)}`);
+  // 缺 nongli（chart 服务的盘）→ 八字公式回落 ASC（上游同），并把「没拿到时支」回报给 Python。
+  const bare = runSuzhan({ chart, params: { ...params, houseStartMode: 0 } });
+  assert(aries(bare.text).startsWith('| 戌—降娄—白羊座—第7宫 |') && bare.data.nongliHour === null, `no nongli: ${aries(bare.text)}`);
+  // 外盘/盘型两行只在显式给了才出（上游模型缺省不带这两键）。
+  assert(!bazi.text.includes('外盘：') && runSuzhan({ chart, params: { ...params, szchart: 1 } }).text.includes('外盘：星座外盘'), 'szchart line gating');
+});
+
+// 🔴 wave-3 值级金标：三式合一快照由 vendored 上游 buildSanShiUnitedSnapshotText 产出（tools/sanshiUnited.js 按上游
+// performRecalcByNongli 装配）。六壬层用 SanShiUnitedMain 自带的 buildLiuRengLayout/buildKeData/buildSanChuan、占时取奇门盘
+// 时柱（buildLrNongli）；这里拿独立六壬页的同名三函数（vendored LiuRengMain）在同盘同时柱上再起一遍课 —— 两份上游实现
+// 逐课逐传一致即权威。盘：chart_liureng.json（2026-04-04 21:18 上海，戊申日癸亥时，月将戌，星占法贵人，夜占）。
+// 【大六壬】行格式 = SanShiUnitedMain.js:1534-1544（日干/上神/天将连写、空行、三传带天将、递生递克 + 徽记）。
+// 负向对照：【大六壬】改回旧的 [四课] 体（「一课：地盘=戊，天盘=辰…」）或占时不取奇门盘时柱，本条即红。
+check('sanshiUnited 值级金标：【大六壬】= 两份上游六壬实现同盘互证 + 上游行格式', () => {
+  const nongli = liurengFix.liureng.nongli;
+  const base = { date: '2026-04-04', time: '21:18:00', zone: '+08:00', lat: '31n13', lon: '121e28' };
+  const dunjia = calcDunJia(makeFields(base), nongli,
+    { paiPanType: 3, qijuMethod: 'zhirun', school: '转盘', timeAlg: 0, after23NewDay: 1, lateZiHourUseNextDay: 1 },
+    { year: 2026, jieqiYearSeeds: { 2025: buildLocalJieqiYearSeed(2025, '+08:00'), 2026: buildLocalJieqiYearSeed(2026, '+08:00') },
+      isDiurnal: liurengFix.chart.chart.isDiurnal, displaySolarTime: nongli.birth });
+  const r = runSanshiUnited({ ...base, options: {}, nongli, displaySolarTime: nongli.birth, dunjia, chart: liurengFix.chart });
+  assert(r.data.ok === true && r.data.warnings.length === 0, `sanshiUnited failed: ${JSON.stringify(r.data.error || r.data.warnings)}`);
+  const text = r.snapshot_text;
+  const block = (t) => ((text.split(`【${t}】\n`)[1] || '').split('\n【')[0].trim().split('\n'));
+  const chartObj = { ...liurengFix.chart.chart, nongli: { ...nongli, dayGanZi: dunjia.ganzhi.day, time: dunjia.ganzhi.time } };
+  const lay = lrmLayout(chartObj, 2, null);
+  const ke = lrmKe(lay, chartObj);
+  const sc = lrmSanChuan(lay, ke.raw, chartObj, null);
+  const fromLrm = [
+    ...ke.raw.map((k, i) => `${'一二三四'[i]}课：${k[2]}${k[1]}${k[0]}`), '',
+    ...sc.cuang.map((gz, i) => `${'初中末'[i]}传：${gz}（${sc.tianJiang[i]}）`),
+  ];
+  const dalr = block('大六壬');
+  assert(JSON.stringify(dalr.slice(0, 8)) === JSON.stringify(fromLrm), `三式六壬层 ≠ 独立六壬引擎：${JSON.stringify(dalr)} vs ${JSON.stringify(fromLrm)}`);
+  assert(JSON.stringify(dalr) === JSON.stringify([
+    '一课：戊辰朱雀', '二课：辰卯螣蛇', '三课：申未青龙', '四课：未午勾陈', '',
+    '初传：空卯（螣蛇）', '中传：空寅（贵人）', '末传：癸丑（天后）',
+    '三传递生递克：初传→中传 比和；中传→末传 克', '逐传徽记：中传寅(马)',
+  ]), `【大六壬】${JSON.stringify(dalr)}`);
+  assert(block('起盘信息').includes('月将：戌') && block('起盘信息').includes('四柱：丙午年/辛卯月/戊申日/癸亥时'), `【起盘信息】${JSON.stringify(block('起盘信息'))}`);
+});
+
+// ───────────────────────────── 上游 v3.11.2（Horosa-Public 9cd9078f）同步 · 值级金标 ─────────────────────────────
+check('v3.11.2 南半球月令：南纬 chong 月柱对冲（未→丑、月干五虎遁），none / 北纬逐字不变，快照只在南纬出「南半球月令」行', () => {
+  // 上游 baziLunarLocal.js flipMonthPillar / isSouthLatitude；BaZi.js:406-410 快照行。旧代码：无 southMonth 键 → chong 与 none 同盘、无该行。
+  const syd = { date: '1990-07-15', time: '14:30:00', zone: '+10:00', lat: '33s52', lon: '151e12', gender: 1, timeAlg: 0,
+    after23NewDay: 1, lateZiHourUseNextDay: 1, minggongMethod: 'tongxing', fenyeVersion: 'common', cangVersion: 'common', dayunPrecision: 'precise' };
+  const month = (r) => { const m = r.bazi.fourColumns.month; return `${m.stem.cell}${m.branch.cell}`; };
+  assert(isSouthLatitude(syd) === true && isSouthLatitude({ ...syd, lat: '31n14' }) === false, 'isSouthLatitude 纬度串 s/n');
+  const none = buildLocalBaziResult({ ...syd, southMonth: 'none' });
+  const chong = buildLocalBaziResult({ ...syd, southMonth: 'chong' });
+  assert(month(none) === '癸未', `南纬不对冲月柱 = 北半球同法 癸未，得 ${month(none)}`);
+  // 未 + 6 = 丑；庚年五虎遁 戊寅起 → 丑月 己丑（月干随对冲后的月序重起，不是原月干换支）
+  assert(month(chong) === '己丑', `南纬对冲月柱 己丑，得 ${month(chong)}`);
+  assert(month(buildLocalBaziResult({ ...syd, lat: '31n14', lon: '121e28', zone: '+08:00', southMonth: 'chong' })) === '癸未', '北纬 chong 无效（逐字不变）');
+  const south = runBaziLocal({ params: { ...syd, southMonth: 'chong' }, snapshot: {} }).snapshot_text;
+  const southNone = runBaziLocal({ params: { ...syd, southMonth: 'none' }, snapshot: {} }).snapshot_text;
+  const north = runBaziLocal({ params: { ...syd, lat: '31n14', lon: '121e28', zone: '+08:00' }, snapshot: {} }).snapshot_text;
+  assert(south.includes('\n南半球月令：对冲(月支取对冲之支)\n'), '南纬 chong 快照行');
+  assert(southNone.includes('\n南半球月令：不对冲(月柱同北半球)\n'), '南纬 none 快照行');
+  assert(!north.includes('南半球月令'), '北纬不出该行');
+});
+
+check('八字闰月出生的农历行：本地引擎 month 已带「闰」，不再叠成「闰闰五月」（上游 BaZi.js:317 缺陷，声明式偏离）', () => {
+  const t = runBaziLocal({ params: { date: '1990-07-15', time: '14:30:00', zone: '+08:00', lat: '31n14', lon: '121e28', gender: 1, timeAlg: 0,
+    after23NewDay: 1, lateZiHourUseNextDay: 1, minggongMethod: 'tongxing', fenyeVersion: 'common', cangVersion: 'common', dayunPrecision: 'precise' }, snapshot: {} }).snapshot_text;
+  const line = t.split('\n').find((l) => l.startsWith('农历：'));
+  assert(line === '农历：一九九〇年闰五月廿三', `得 ${line}`);
+  assert(!t.includes('闰闰'), '不得出现叠字');
+  // Java 形状（month 不带前缀）仍按 leap 加「闰」——前缀逻辑本来就是为它写的
+  const jv = runBaziLocal({ params: { date: '1990-07-15', time: '14:30:00', zone: '+08:00', lat: '31n14', lon: '121e28', gender: 1 },
+    java_result: { bazi: { nongli: { year: '一九九〇', month: '五月', day: '廿三', leap: true }, fourColumns: {} }, gender: 'Male' } }).snapshot_text;
+  assert(jv.split('\n').find((l) => l.startsWith('农历：')) === '农历：一九九〇年闰五月廿三', 'Java 形状仍加前缀');
+});
+
+check('v3.11.2 alignJavaBaziAges：Java 回退结果的大运 / 小运岁对齐为虚岁，跨公元纪元不多算一年、不出 0 年', () => {
+  // BaZi.js:725-753（fetchBazi*Cached 取数入口）。旧代码：Java 岁数原样进快照 → 大运 / 小运整体小一岁。
+  const j = { bazi: { nongli: { clockTime: '1990-05-15 10:30:00' }, direction: [{ startYear: 1997, age: 7 }, { startYear: 2007, age: 17 }],
+    smallDirection: [{ year: 1990, age: 0 }, { year: 1991, age: 1 }] } };
+  const a = alignJavaBaziAges(j).bazi;
+  assert(JSON.stringify(a.direction.map((d) => d.age)) === '[8,18]' && JSON.stringify(a.smallDirection.map((d) => d.age)) === '[1,2]', JSON.stringify(a));
+  const bc = alignJavaBaziAges({ bazi: { nongli: { clockTime: '-0010-05-15 10:30:00' }, direction: [{ startYear: -3, age: 7 }, { startYear: 7, age: 17 }] } }).bazi;
+  // 公元前 10 年生：起运 -3 年 = 7 个天文年 → 8 岁；起运公元 7 年：-9(astro) → 7 = 16 年 → 17 岁（直接 7-(-10)+1 会多算不存在的 0 年）
+  assert(JSON.stringify(bc.direction.map((d) => d.age)) === '[8,17]', JSON.stringify(bc.direction));
+  assert(alignJavaBaziAges(null) === null && alignJavaBaziAges({ x: 1 }).x === 1, '无 bazi 原样返回');
+});
+
+check('v3.11.2 heluoSolarTermOfDate 按出生地当地日期比交节：2026-02-03 纽约 / UTC = 立春初候，北京 = 大寒三候', () => {
+  // 上游 heluoLocal.js heluoSolarTermOfDate（HeLuoMain.solarTerm 与 aiAnalysisContext.heluoSolarTermForDate 同源）。
+  // 2026 立春 = 北京时间 02-04 04:02:08 = 纽约 02-03 15:02 / UTC 02-03 20:02 → 当地日期 02-03 已交节。旧 port 不看时区：三地都是大寒。
+  const bj = heluoSolarTermOfDate('2026-02-03', '+08:00', 'tuWangKunGen');
+  const ny = heluoSolarTermOfDate('2026-02-03', '-05:00', 'tuWangKunGen');
+  const utc = heluoSolarTermOfDate('2026-02-03', '+00:00', 'tuWangKunGen');
+  assert(bj.term === '大寒' && bj.hou === 3 && bj.houLabel === '大寒三候·大寒後', JSON.stringify(bj));
+  assert(ny.term === '立春' && ny.hou === 1 && ny.houLabel === '立春初候·立春後', JSON.stringify(ny));
+  assert(utc.term === '立春' && utc.hou === 1, JSON.stringify(utc));
+  assert(heluoSolarTermOfDate('2026-02-04', '+08:00', 'tuWangKunGen').term === '立春', '东八区原路径逐字不变');
+  const r = runHeluo({ date: '2026-02-03', time: '10:00:00', zone: '-05:00', lat: '40n43', lon: '74w00', gender: 1 });
+  assert(r.data && r.data.solarTerm && r.data.solarTerm.term === '立春' && r.data.solarTerm.hou === 1, `heluo 工具带时区：${JSON.stringify((r.data && (r.data.solarTerm || r.data.error)) || r)}`);
+});
+
+check('jieqi 年种子 = lunar-javascript 精确节气表（旧 S_TERM_INFO 近似公式 2026 立春差 6 小时），非东八区折成当地钟表，域外年返 null', () => {
+  // 上游 utils/localNongliAdapter.js buildLocalJieqiYearSeed（v3.11.2 加当地钟表折算）。奇门当前节气 / 择日扫描 / 七政年界都吃它。
+  // 负向对照 = skill 自 v0.9 起的 src/shared/localNongliAdapter.js：1900 历元近似公式（日粒度精度），2026 立春算到 10:16:32（真值 04:02:08）。
+  const table = LunarSolar.fromYmd(2026, 7, 1).getLunar().getJieQiTable();
+  const seed = buildLocalJieqiYearSeed(2026, '+08:00');
+  assert(seed['立春'].time === table['立春'].toYmdHms() && seed['立春'].time === '2026-02-04 04:02:08', JSON.stringify(seed['立春']));
+  assert(seed['立春'].dateKey === '20260204' && seed['立春'].dayGanzhi === '己酉', JSON.stringify(seed['立春']));
+  const S_TERM_INFO = [0, 21208, 42467, 63836, 85337, 107014, 128867, 150921, 173149, 195551, 218072, 240693, 263343, 285989, 308563, 331033, 353350, 375494, 397447, 419210, 440795, 462224, 483532, 504758];
+  const oldLichun = new Date(31556925974.7 * (2026 - 1900) + S_TERM_INFO[2] * 60000 + Date.UTC(1900, 0, 6, 2, 5, 0));
+  const oldBj = new Date(oldLichun.getTime() + 8 * 3600 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+  assert(oldBj === '2026-02-04 10:16:32', `负向对照的旧公式值变了：${oldBj}`);
+  assert(oldBj !== seed['立春'].time, '旧公式与精确表必须不同（否则这条对照证明不了什么）');
+  const ny = buildLocalJieqiYearSeed(2026, '-05:00');
+  assert(bjShiftMinutes('-05:00') === 780 && ny['立春'].time === '2026-02-03 15:02:08' && ny['立春'].dateKey === '20260203' && ny['立春'].dayGanzhi === '戊申', JSON.stringify(ny['立春']));
+  assert(buildLocalJieqiYearSeed(12000, '+08:00') === null, 'lunar-javascript 可靠域外必须返 null（走后端实算），不得吐近似值');
+});
+
+check('v3.11.2 间爻随世应位置取（世初应四→二三 / 二五→三四 / 三上→四五），jianYaoSpanText', () => {
+  // 上游 LiuYaoConst.js jianYaoPositions（旧 liuyaoFacade 写死 [3,4]，64 卦中 48 卦把世 / 应本身算进间爻）。
+  const cases = [[1, 4, [2, 3]], [2, 5, [3, 4]], [3, 6, [4, 5]], [6, 3, [4, 5]], [4, 1, [2, 3]], [null, 4, []]];
+  for (const [shi, ying, want] of cases) {
+    assert(JSON.stringify(jianYaoPositions(shi, ying)) === JSON.stringify(want), `jianYaoPositions(${shi},${ying}) = ${JSON.stringify(jianYaoPositions(shi, ying))}`);
+  }
+  assert(JSON.stringify(jianYaoPositions(1, 4)) !== '[3,4]', '旧写死 [3,4] 对世初应四是错的');
+  assert(jianYaoSpanText(1, 4) === '世初应四之间', jianYaoSpanText(1, 4));
+});
+
+check('perfFlags headless：flagEnabled 恒 true（无 window/localStorage = 上游缺省全开），huangliDay 惰性开关不改输出', () => {
+  assert(typeof window === 'undefined' && flagEnabled('horosa.perf.huangliLazyDetail') === true, 'flagEnabled must default on headlessly');
+});
+
+await Promise.all(pending);
+
+// 上游 v3.12.0 删了 DunJiaCalc.buildJieqiYearSeed，后端 jieqi24 → 种子的转换收进网络模块 preciseCalcBridge（不 vendor）；
+// tools/qimen.js 逐字照它。钉住它与旧写法的三处不同：带符号年的日期键、日干支先认 dayGanzhi、空节气名跳过。
+check('qimen 后端节气种子 = 上游 fetchPreciseJieqiSeed 的转换（公元前日期键 / dayGanzhi 优先）', () => {
+  const seed = jieqiSeedFromYearResult({ jieqi24: [
+    { jieqi: '冬至', time: '-0300-12-21 10:00:00', dayGanzhi: '甲子', bazi: { fourColumns: { day: { ganzi: '乙丑' } } } },
+    { jieqi: '夏至', time: '2026-06-21 10:24:00', bazi: { fourColumns: { day: { ganzi: '丙午' } } } },
+    { jieqi: '' },
+  ] });
+  assert(seed.冬至.dateKey === '-03001221', `公元前日期键 ${seed.冬至.dateKey}`);
+  assert(seed.冬至.dayGanzhi === '甲子', 'dayGanzhi 字段优先于四柱日柱');
+  assert(seed.夏至.dateKey === '20260621' && seed.夏至.dayGanzhi === '丙午', '回落四柱日柱');
+  assert(Object.keys(seed).length === 2, '空节气名跳过');
+  assert(jieqiSeedFromYearResult({}) === null, '无 jieqi24 → null（回落本地种子）');
+});
+
+// 上游 v3.13.0：129 年系统改前端单源 utils/yearSystem129.js（后端 yearsystem129.py 已删）；年龄推进点 / 界推运改
+// buildXxxSnapshotFromResult（后端结果作 payload.result）。三者都是 verbatim vendor（manifest 校验），这里钉「选项改变结果」
+// 与 now_ms 钉住 Date.now 两件 skill 自己的接线。期长手算：日数法子限 日 = 19 × ⌊2.5×19⌋ = 893 日 = 2.44 年（yearSystem129.js:18-21）。
+check('progextra(yearsystem129 / agepoint / distributions) — v3.13.0 builders + options + now_ms', () => {
+  const ys = runProgExtra({ technique: 'yearsystem129', chart }).snapshot_text;
+  assert(ys.startsWith('[129年系统表格]\n七星各管其小年（土 30 / 木 12 / 火 15 / 日 19 / 金 8 / 水 20 / 月 25，合 129 年）。起始星=日、'), ys.slice(0, 80));
+  assert(ys.split('\n').some((l) => /^\| 日\(19\.00年,起 .+\) \| 日 \| .+ \| 2\.44 \|$/.test(l)), 'Sun main period / days sub-rule');
+  const ysEq = runProgExtra({ technique: 'yearsystem129', chart, options: { order: 'chaldean', subRule: 'equal', yearType: 'hellenistic' } }).snapshot_text;
+  assert(ysEq.includes('次序=迦勒底序（土木火日金水月）、年制=埃及 / 希腊化年（360 日）、子限=七等分（主限 ⁄ 7）'), 'ys129 options must reach builder');
+  assert(ysEq.split('\n').some((l) => /^\| 日\(19\.00年,起 .+\) \| 日 \| .+ \| 2\.71 \|$/.test(l)), 'equal sub-rule = 19/7 = 2.71');
+  const natal = { params: { birth: '1995-06-03 05:30:00', zone: '+08:00' }, chart: {} };
+  const ap = { agepoint: { settings: { apMethod: 'equal5', apEvents: 'conj', apYear: 'tropical', apMaxAge: 100 },
+    points: [
+      { age: 0, date: '1995-06-03', sign: 'Gemini', signlon: 20.66, house: 1, aspects: [] },
+      { age: 8, date: '2003-06-03', sign: 'Leo', signlon: 0.66, house: 2, aspects: [{ aspectTo: 'Moon', aspectAge: 8.09, aspectType: 0, side: '' }] },
+    ],
+    crossings: [{ age: 8.09, aspectTo: 'Moon', aspect: 0, side: '', date: '2003-07-06' }] } };
+  const a = runProgExtra({ technique: 'agepoint', chart: natal, result: ap, now_ms: Date.UTC(2001, 0, 1) });
+  assert(a.snapshot_text.includes('推进方式=等速（自上升每年 5°）、事件=只报合七星、年长=回归年（365.2422 日）、年限=100 岁'), 'ap.settings echo');
+  assert(a.snapshot_text.includes('| 8岁 | 2003-06-03 | 狮子 0.66° | 2宫 | 合月(8.09岁) |'), a.snapshot_text);
+  assert(JSON.stringify(a.moment_lines) === JSON.stringify(['当前年龄点：0岁 落双子 20.66°，第1宫', '下一事件：8.09岁合月（2003-07-06）']), JSON.stringify(a.moment_lines));
+  const later = runProgExtra({ technique: 'agepoint', chart: natal, result: ap, now_ms: Date.UTC(2004, 0, 1) });
+  assert(later.moment_lines[0] === '当前年龄点：8岁 落狮子 0.66°，第2宫，合月(8.09岁)', `now_ms must pin Date.now: ${JSON.stringify(later.moment_lines)}`);
+  assert(runProgExtra({ technique: 'agepoint', chart: natal, result: { agepoint: { points: [] } } }).snapshot_text === '', 'no points → ""');
+  const dist = { dist: [{ distributor: 'Mars', sign: 'Gemini', startYears: 0, years: 3.3212, startDate: '1995-06-03 05:30:00', endDate: '1998-09-28 06:25:30', partnerDetail: [{ planet: 'Saturn', aspect: 90, side: 'S' }] }],
+    distSettings: { distReleaser: 'Asc', distMethod: 'classical', distYear: 'tropical', distYears: 100, releaserLon: 80.6562 },
+    distPartners: [{ planet: 'Saturn', aspect: 90, side: 'S', lon: 83.8329, startYears: 3.1552, years: 10.5357, startDate: '1998-07-29 15:16:36', endDate: '2009-02-09 17:06:44' }] };
+  const d = runProgExtra({ technique: 'distributions', chart: natal, result: dist, now_ms: Date.UTC(1999, 0, 1) });
+  assert(d.snapshot_text.includes('年限=100 年（黄经 80.66°）'), 'releaser lon');
+  assert(d.snapshot_text.includes('| 火 | 双子 | 0.00 | 3.32 | 1995-06-03 05:30:00 | 1998-09-28 06:25:30 | 土四分·左 |'), d.snapshot_text);
+  assert(d.snapshot_text.includes('[伙伴星期]\n| 伙伴星 | 相位点 | 起始岁 | 时长(年) | 起 | 止 |'), 'partner section');
+  assert(JSON.stringify(d.moment_lines) === JSON.stringify(['当前伙伴星：土四分·左（1998-07-29 15:16:36 ~ 2009-02-09 17:06:44）']), JSON.stringify(d.moment_lines));
+});
+
+// 推运图族四法（上游 v3.13.0 之后 219d8a67）：后端 /astroextra/<接口> 结果作 payload.result，vendored AstroDirectedFigures.snapshotText
+// + directedFigures.buildDirectedFigureText 排版；request_fields = 上游合并规则（页面保存值为底、非空齿轮值覆盖）+ directedFigureRequestFields。
+// 实抓回包上逐字等于上游的金标在 tests/test_sync313_directed.py；这里钉 skill 自己的接线：页面键 → 口径键、缺省回落、事件 ±10 岁窗。
+check('progextra(neroman / bezzafigure / jayprofection / michon) — directed figures + request_fields', () => {
+  const chart0 = { params: {}, chart: {} };
+  const ner = { target: '2026-10-30 12:00:00', age: 31.41, arc: 1026.72154, k: 300, t0: 0.75, keepDeclination: true, orb: 1,
+    evolved: [{ id: 'Sun', natalLon: 71.88, lon: 121.41 }, { id: 'MC', natalLon: 332.9, lon: 30.22 }],
+    contacts: [{ evolved: 'Sun', natal: 'Moon', asp: 0, orb: 0.29 }],
+    events: [{ age: 21.62, date: '2017-01-14 13:28:13', mover: 'MC', asp: 90, target: 'North Node' }, { age: 2.1, date: '1997-07-10 00:00:00', mover: 'MC', asp: 0, target: 'MC' }] };
+  const n = runProgExtra({ technique: 'neroman', chart: chart0, options: { nerK: 300, nerKeepDec: true, nerOrb: '' }, result: ner });
+  assert(n.snapshot_text.includes('演进弧：1026.7215°(弧 = 300.00 × ln(1 + 年龄 ⁄ 0.75),各点赤经逆行减弧)\n换到赤道：保留本命赤纬'), n.snapshot_text);
+  assert(n.snapshot_text.includes('| 日 | 双子 11.88° | 狮子 1.41° |') && n.snapshot_text.includes('| 日 | 合 | 月 | 0.29 |'), n.snapshot_text);
+  assert(n.snapshot_text.includes('| 21.62 | 2017-01-14 13:28:13 | 中天 | 刑 | 北交 |') && !n.snapshot_text.includes('| 2.10 |'), 'events outside ±10 years of age are dropped');
+  // 空串齿轮值 = 未改：回落缺省 orb 1（上游 buildDirectedFigureSnapshotText 合并规则）；nerT0 缺省 0.75。
+  assert(JSON.stringify(n.request_fields) === JSON.stringify({ nerK: 300, nerT0: 0.75, nerKeepDec: 1, orb: 1 }), JSON.stringify(n.request_fields));
+  const jay = runProgExtra({ technique: 'jayprofection', chart: chart0, options: { jayFrom: 36 }, result: { rows: [] } });
+  assert(jay.snapshot_text === '' && JSON.stringify(jay.request_fields) === JSON.stringify({ jayFrom: 36 }), 'no rows → "" (上游「缺失」)');
+  const mic = runProgExtra({ technique: 'michon', chart: chart0, options: { michonSwap: 'true', michonEqual: 0 }, result: { superpositions: [] } });
+  assert(JSON.stringify(mic.request_fields) === JSON.stringify({ orb: 1, mzSwap: 1, mzEqual: 0 }), JSON.stringify(mic.request_fields));
+  const bez = runProgExtra({ technique: 'bezzafigure', chart: chart0, options: {}, result: { target: 't', age: 1, arc: 1, orb: 2, points: [{ id: 'Tyche', lon: 127.35, hp0: 13.9214, hp1: 16.0912, dp: 102.49 }], contacts: [] } });
+  assert(bez.snapshot_text.includes('| 福点(世俗) | 狮子 7.35° | 13.921 | 16.091 | 巨蟹 12.49° |') && bez.snapshot_text.includes('当前弧 ±2.0° 内无接触'), bez.snapshot_text);
+  assert(JSON.stringify(bez.request_fields) === JSON.stringify({ orb: 1 }), 'bezza default orb');
+});
+
+// 时主轮转十二法（上游 v3.14.0）：后端 /astroextra/timelords 结果作 payload.result，经推运图族同一条路（directedFigures.buildDirectedFigureText
+// 的 timelords 键 → utils/timeLordTables.buildTimeLordText）排版；request_fields = timeLordRequestFields（只带这一法读的键）。
+// 权威：上游 utils/__tests__/timeLordTables.test.js 的夹具与期望串（期表 / 事件表 / 月亮日 / 极圈说明 / 请求键），逐条照搬——不是录本仓输出。
+// 十二法在实抓回包上逐字等于上游的金标在 tests/test_sync314_predictive_timelords.py。
+check('progextra(timelords) — 时主轮转：期表 / 事件表 / 月亮日 / 极圈说明 + request_fields', () => {
+  const chart0 = { params: {}, chart: {} };
+  const run = (options, result) => runProgExtra({ technique: 'timelords', chart: chart0, options, result });
+  const periods = {
+    kind: 'periods', method: 'quarters', target: '2030-01-01', startLord: 'Moon', hourLord: 'Mars', currentIndex: 1,
+    rows: [
+      { lord: 'Asc', startAge: 0, endAge: 1, start: '2000-01-01 12:00:00', end: '2001-01-01' },
+      { lord: 'MC', startAge: 1, endAge: 2, start: '2001-01-01', end: '2002-01-01', children: [{ lord: 'Asc', start: '2001-01-01 00:00:00' }] },
+      { lord: 'Asc', startAge: 2, endAge: 3, start: '2002-01-01', end: '2003-01-01' },
+    ],
+  };
+  const p = run({ tlMethod: 'quarters' }, { ...periods, yearType: 'sidereal', releaser: 'Moon' });
+  for (const want of ['[时主轮转]', '[当前时段]', '[后续]', '起始星：月', '天顶,1.00 至 2.00 岁,2001-01-01 至 2002-01-01', '子段：上升 2001-01-01 起',
+    '上升:2002-01-01 起,2.00 岁', '年长：恒星年（365.2564 日）', '释放星：月']) {
+    assert(p.snapshot_text.includes(want), `期表应含「${want}」：${p.snapshot_text}`);
+  }
+  // 目标在表尾之后：不列后续；在出生之前：从头列。
+  const after = run({ tlMethod: 'quarters' }, { ...periods, currentIndex: -1, pastEnd: true }).snapshot_text;
+  assert(after.includes('目标时刻不在列表范围内') && after.split('[后续]')[1].trim() === '', after);
+  assert(run({ tlMethod: 'quarters' }, { ...periods, currentIndex: -1, pastEnd: false }).snapshot_text.split('[后续]')[1].includes('上升:2000-01-01 起'), 'before birth lists from the top');
+  // 九分主：口径回显三行；极圈内写明改按度数（TIMELORD_POLAR_NOTE），不在极圈不写。
+  const nine = run({ tlMethod: 'nineparts' }, { ...periods, method: 'nineparts', yearType: 'solar', time: 'ascension', reverse: true, variant: 'classic' }).snapshot_text;
+  assert(nine.includes('时间：上升时') && nine.includes('子主：首段子主反转') && nine.includes('算法：经典'), nine);
+  const polar = run({ tlMethod: 'nineparts' }, { ...periods, method: 'nineparts', polar: true }).snapshot_text;
+  assert(polar.includes('极圈内斜升不单调,上升时档不成立,已改按度数'), polar);
+  assert(!run({ tlMethod: 'nineparts' }, { ...periods, method: 'nineparts', polar: false }).snapshot_text.includes('极圈内'), 'no polar note outside the polar circle');
+  // 事件表：最近一件在目标时刻之前，后续从下一件起；目标在全部事件之前 / 之后各一种写法。
+  const events = { kind: 'events', method: 'moving', target: '2030-01-01', currentIndex: 1,
+    rows: [{ point: 'Asc', aspect: 0, age: 0, date: '2000-01-01' }, { point: 'MC', aspect: 60, side: 'D', age: 3, date: '2003-01-01' }] };
+  const e = run({ tlMethod: 'moving' }, events).snapshot_text;
+  assert(e.includes('最近一件：上升 合 0.00 岁,2000-01-01') && e.includes('天顶 六合(右):3.00 岁,2003-01-01'), e);
+  const last = run({ tlMethod: 'moving' }, { ...events, currentIndex: -1 }).snapshot_text;
+  assert(last.includes('最近一件：天顶 六合(右)') && last.split('[后续]')[1].trim() === '', last);
+  assert(run({ tlMethod: 'moving' }, { ...events, currentIndex: 0 }).snapshot_text.includes('目标时刻之前没有事件'), 'target before every event');
+  assert(!run({ tlMethod: 'lifetime' }, { ...events, method: 'lifetime', yearType: 'solar' }).snapshot_text.includes('年长'), '对数时标不用年长，不写年长行');
+  // 发展年龄按星座分段不写算法档，按宫位才写。
+  const dev = { ...events, method: 'devages', yearType: 'solar', variant: 'improved' };
+  assert(!run({ tlMethod: 'devages' }, { ...dev, basis: 'sign' }).snapshot_text.includes('算法：'), 'devages by sign: no variant line');
+  assert(run({ tlMethod: 'devages', tlDevBasis: 'house' }, { ...dev, basis: 'house' }).snapshot_text.includes('算法：改进'), 'devages by house: variant line');
+  // 月亮日：逐行列三个时刻、不写目标时刻、没有 [当前时段] / [后续]。
+  const days = { kind: 'events', method: 'moondays', currentIndex: 1, rows: [
+    { day: 3, arc: 30, age: 0.01, date: '2000-01-03 00:00:00' }, { day: 7, arc: 90, age: 0.02, date: '2000-01-08 00:00:00' }] };
+  const md = run({ tlMethod: 'moondays' }, days).snapshot_text;
+  assert(md.includes('第 3 日:月亮到本命月加 30°') && md.includes('2000-01-03') && md.includes('第 7 日:月亮到本命月加 90°'), md);
+  assert(!md.includes('目标时刻') && !md.includes('[当前时段]') && !md.includes('[后续]'), md);
+  // 空结果 / 报错 → ''（上游挂载显示「缺失」；Python 侧据此报 tool.timelords_empty）。
+  for (const empty of [{}, { err: 'x', rows: [{}] }, { rows: [] }]) {
+    assert(run({ tlMethod: 'turn' }, empty).snapshot_text === '', `empty result must give "" : ${JSON.stringify(empty)}`);
+  }
+  // 请求键（上游「请求只带这一法用到的参数」「匀速点读自己的年长」「发展年龄按星座分段时不发算法档」「九分主反转发成数字」）。
+  const req = (options) => JSON.stringify(run(options, periods).request_fields);
+  assert(req({ tlMethod: 'orb', tlOrbMode: 'cycle', tlTurnOrder: 'chaldean' }) === JSON.stringify({ method: 'orb', yearType: 'solar', orbMode: 'cycle' }), req({ tlMethod: 'orb', tlOrbMode: 'cycle', tlTurnOrder: 'chaldean' }));
+  assert(req({ tlMethod: 'lifetime', tlYearType: 'sidereal' }) === JSON.stringify({ method: 'lifetime' }), 'lifetime sends no year length');
+  assert(req({ tlMethod: 'annual' }) === JSON.stringify({ method: 'annual', annualDays: 'tableA', annualOrder: 'natal' }), 'annual defaults');
+  assert(JSON.parse(req({ tlMethod: 'moving' })).yearType === 'sidereal', '匀速点缺省恒星年');
+  assert(JSON.parse(req({ tlMethod: 'moving', tlYearType: 'solar', tlMovingYear: 'hellenistic' })).yearType === 'hellenistic', '匀速点读 tlMovingYear');
+  assert(JSON.parse(req({ tlMethod: 'devages', tlVariant: 'classic' })).variant === undefined, 'devages by sign: variant not sent');
+  assert(JSON.parse(req({ tlMethod: 'devages', tlDevBasis: 'house', tlVariant: 'classic' })).variant === 'classic', 'devages by house: variant sent');
+  assert(JSON.parse(req({ tlMethod: 'nineparts', tlNineReverse: true })).nineReverse === 1 && JSON.parse(req({ tlMethod: 'nineparts' })).nineReverse === 0, 'nineReverse as 1 / 0');
+});
+
+// ---- v0.50.0-dev（C-18 第 8 项）：值金标守卫改认「调用 tools/<名>.js 的导出」之后补的金标 ----
+// 守卫此前只看 check 标题 / 注释里有没有技法名：calendarExtras 与 qimenzeri 的旧金标测的是它们用到的 vendored 函数
+// （personBazi / computeQimenScanPan），从没走过 tools/ 里的那层接线——而那两条 bug 正是接线 bug。下面各条都经 run* 入口。
+// 期望值的来源写在每条里：独立的库 / 输入夹具里的引擎数据交叉核对，或录自本仓引擎（2026-11-12，标明「录」）。
+
+check('calendarExtras 经工具入口：当事人八字段 = 同一引擎 personBazi 的喜用（03:00 与 21:00 必不同）', () => {
+  const line = (time) => (runCalendarExtras({ year: 2028, month: 4, day: 6, rizi: { event: 'marriage', year: 2028, topN: 3,
+    persons: [{ name: '甲', date: '1990-05-15', time, gender: 1 }] } }).text.split('\n').find((l) => l.includes('（甲）：')) || '');
+  // 权威：vendored riziEngine.personBazi（与上游 RiziMain.baziOf 同一引擎）；工具层只负责把纯时刻交下去。
+  for (const time of ['03:00:00', '21:00:00']) {
+    const xi = personBazi({ date: '1990-05-15', time, gender: 1 }).xi.join('');
+    assert(line(time).includes(`喜用${xi}｜`), `${time}: ${line(time)} 应含 喜用${xi}`);
+  }
+  assert(line('03:00:00') !== line('21:00:00'), '两个时辰的当事人八字段不该相同（时刻没进盘）');
+  // 日干支 = lunar-javascript 独立算的同日干支（[通书择日] 段）。
+  const day = LunarSolar.fromYmd(2028, 4, 6).getLunar().getDayInGanZhi();
+  assert(runCalendarExtras({ year: 2028, month: 4, day: 6 }).text.includes(`日干支：${day}`), `通书段日干支应为 ${day}`);
+});
+
+check('qimenzeri 经工具入口：青龙回首扫描区间录值 + timeAlg 真的改结果', async () => {
+  const qz = { action: 'scan', cfg: { startDate: '2028-04-01', startTime: '00:00', endDate: '2028-04-08', endTime: '23:59' },
+    geo: { zone: '+08:00', gpsLon: 121.4667, gpsLat: 31.2167, lon: '121e28', lat: '31n13' }, options: { timeAlg: 0, qijuMethod: 'zhirun' },
+    tree: { kind: 'group', joiner: 'all', children: [{ type: 'pattern_ji', params: { names: ['青龙回首'], palaces: [], matchMode: 'any' } }] } };
+  const spans = async (timeAlg) => (await runQimenZeri({ ...qz, options: { ...qz.options, timeAlg } })).data.intervals.map((i) => `${i.start}~${i.end}`);
+  const flat = await spans(0);
+  // 录（本仓引擎 2026-11-12，与 live 样例载荷同一请求）：8 天 11 段，首段 4 月 1 日戌时；起局时柱口径由上一条 computeQimenScanPan 金标独立钉住。
+  assert(flat.length === 11 && flat[0] === '2028-04-01 18:58~2028-04-01 20:58' && flat[10] === '2028-04-08 14:56~2028-04-08 16:56', JSON.stringify(flat));
+  const solar = await spans(1);
+  assert(solar[0] === '2028-04-01 19:00~2028-04-01 21:00' && JSON.stringify(solar) !== JSON.stringify(flat), `timeAlg=1: ${solar[0]}`);
+});
+
+check('tongshu 董公：日干支 / 建除 = lunar-javascript 独立值，「直星」日宜嫁娶', () => {
+  const text = (date) => runTongshu({ date, event: '嫁娶', school: 'donggong' }).text;
+  for (const [y, m, d] of [[2028, 4, 6], [2028, 4, 11]]) {
+    const lunar = LunarSolar.fromYmd(y, m, d).getLunar();
+    const gz = lunar.getDayInGanZhi();
+    const jianchu = lunar.getZhiXing();   // 建除十二神（lunar-javascript 自带，与 vendored 通书引擎无关）
+    const date = `${y}-${`${m}`.padStart(2, '0')}-${`${d}`.padStart(2, '0')}`;
+    assert(text(date).includes(`日干支：${gz}`) && text(date).includes(`${jianchu}${gz.slice(1)}日`), `${date}: ${gz} ${jianchu}`);
+  }
+  // 录（董公择日表，vendored）：4 月 11 日丙寅开日值「直星」，用事嫁娶为宜；4 月 6 日辛酉为正四废。
+  assert(text('2028-04-11').includes('用事「嫁娶」：通书宜') && text('2028-04-11').includes('三吉星：直星值日'), 'tongshu 04-11');
+  assert(text('2028-04-06').includes('辛酉正四废'), 'tongshu 04-06');
+});
+
+check('egyptSection 各行星落旬 = 夹具盘黄经所在 10° 段（36 旬定义）', () => {
+  const text = runEgyptSection({ chart, fields: {} }).text;
+  const cn = { Sun: '日', Moon: '月', Mercury: '水', Venus: '金', Mars: '火', Jupiter: '木', Saturn: '土' };
+  for (const [id, label] of Object.entries(cn)) {
+    const obj = chart.chart.objects.find((o) => o.id === id);
+    const n = Math.floor(obj.lon / 10) + 1;   // 旬 = 黄道 36 等分，第 n 旬覆盖 [10(n-1), 10n)°
+    const row = text.split('\n').find((l) => l.startsWith(`${label}：`)) || '';
+    assert(row.startsWith(`${label}：第${n}旬 `) && row.includes(`(${(n - 1) * 10}–${n * 10}°)`), `${id} lon ${obj.lon} → 第${n}旬；实得 ${row}`);
+  }
+  // 录（vendored 旬名表）：日在双子第 2 旬 Remen-kher-Saḥ，面主火。
+  assert(text.includes('日：第8旬 双子2(70–80°)·埃及名 Remen-kher-Saḥ·面主火'), 'sun decan name');
+});
+
+// [盘面细节]（上游 v3.14.0）。期望值的来源 = 上游自己的 jest 用例 astrostudyui/src/utils/__tests__/chartDetails.test.js：
+// 同一份 sample 入参、同一批逐字断言（「段头和结论」「互容只列七类」「判据只列成立的」「寿主与格局」「续表进快照」「补的六张表」），
+// 这里经 tools/chartDetails.js 的 runChartDetails 走一遍——接线（tool → vendored buildChartDetailsText）与正文同时钉住。
+check('chartDetails 盘面细节正文 = 上游 jest 样本的逐字断言；口径 → 请求体键；点名的表原值回带', () => {
+  const sample = {
+    accidental: { geniture: 'Mars', rows: [{ planet: 'Sun', sum: -3 }, { planet: 'Mars', sum: 9 }] },
+    temperament: { name: '粘液', warm: -2, moist: 7 },
+    dispositors: { final: null, rows: [] },
+    persian: [{ planet: 'Sun', sum: 7 }],
+    sunPhases: [{ planet: 'Mercury', phaseName: '东方焦伤' }],
+    sect: [{ planet: 'Sun', hayz: true, ex: false }, { planet: 'Mars', hayz: false, ex: true }],
+    receptions: [{ type: 1, name: '守护互容', a: 'Sun', b: 'Mars' }, { type: 8, name: '同主', a: 'Moon', b: 'Venus' }],
+    topics: [{ topic: '灵魂', winners: ['Sun', 'Moon'] }],
+    hyleg: [{ label: '托勒密', hyleg: 'Pars Fortuna', alcocoden: 'Venus' }, { label: '奥马尔', hyleg: null, alcocoden: null }],
+    eminence: [{ test: '福点主入本座', hit: true }, { test: '灵点主入本座', hit: false }],
+    considerations: [{ test: '月亮空亡', hit: false }],
+    slavery: [{ test: '金、木在果宫', planets: ['Venus'] }, { test: '太阳在果宫', planets: [] }],
+    hellenistic: { predominator: 'Asc', triplicity: ['Sun', 'Jupiter', 'Saturn'], oversight: 'Mars' },
+    patterns: [{ name: '大三角', corners: [['Sun', 'Venus'], ['Moon'], ['Mars']] }],
+  };
+  const text = runChartDetails({ result: sample }).text;
+  const lines = text.split('\n');
+  assert(lines[0] === '[盘面细节]', `header ${lines[0]}`);
+  // 「段头和结论」
+  for (const want of ['命主星：火', '气质：粘液(热冷 -2,湿干 +7)', '最终定位星：无', '偶然尊贵总分：日 -3、火 +9']) {
+    assert(lines.includes(want), `缺行 ${want}`);
+  }
+  // 「互容只列七类互容,同主同光不列」「判据只列成立的」「寿主与格局」
+  assert(lines.includes('互容：守护互容 日、火') && !text.includes('同主'), 'receptions');
+  assert(lines.includes('名望判据成立：福点主入本座') && !text.includes('灵点主入本座'), 'eminence hits only');
+  assert(lines.includes('判前考量成立：无') && lines.includes('奴役判据成立：金、木在果宫(金)') && !text.includes('太阳在果宫'), 'considerations / slavery');
+  assert(lines.includes('寿主：托勒密 福点(寿主星 金);奥马尔 无(寿主星 无)'), `hyleg: ${lines.find((l) => l.startsWith('寿主'))}`);
+  assert(lines.includes('相位格局：大三角(日+金 / 月 / 火)'), 'patterns');
+  assert(lines.includes('喜乐之位：日') && lines.includes('失位：火'), 'sect hayz / ex');
+  assert(lines.includes('希腊化主星：上升,三分主 日、木、土,界主 火'), 'hellenistic');
+  // 「写明面和算法的口径」：结果不带 faces / variant 时不写口径行；带了就写。
+  assert(!text.includes('口径：'), 'no calibre line without faces/variant');
+  assert(runChartDetails({ result: { ...sample, faces: 'element', variant: 'classic' } }).text.split('\n')[1] === '口径：元素面 · 经典', 'calibre line');
+  // 「续表进快照」
+  const more = runChartDetails({ result: { persian: [],
+    lunarDays: { method: 'centered', rows: [{ day: 1, phase: '朔', start: 'a', end: 'b', current: true }] },
+    perfections: [{ a: 'Sun', b: 'Moon', aspect: 0, datetime: '1975-02-10 21:16:51', applying: true }, { a: 'Jupiter', b: 'Saturn', aspect: 120, datetime: '1987-05-23 04:25:38', applying: false }],
+    inMundo: { system: 'koch', aspects: [{ a: 'Sun', b: 'Mars', aspect: 90, orb: 1.234 }] },
+    starAspects: [{ planet: 'Moon', star: 'Regulus', aspect: 180, orb: 0.38 }],
+    astrodynes: { rows: [{ planet: 'Sun', power: 30, harmony: 4 }, { planet: 'Moon', power: 10, harmony: -2 }] },
+    fertility: { elongation: 12.5, rows: [{ datetime: '2026-01-18 11:50:14', male: true }] },
+    crisis: { moon: 10, rows: [{ arc: 45, datetime: '1975-02-14 16:06:45', critical: false }, { arc: 90, datetime: '1975-02-18 08:16:33', critical: true }] },
+  } }).text.split('\n');
+  for (const want of [
+    '月亮日(朔居中):出生在第 1 日(朔),a 至 b',
+    '成相表:日合月 1975-02-10、木拱土 1987-05-23(离相后下一轮)',
+    '世俗相位(Koch):日刑火(差 1.23°)',
+    '恒星相位:月冲狮心轩辕十四(0.38°)',
+    'AstroDynes 力量:日 30.0(75.0%)、月 10.0(25.0%)',
+    'AstroDynes 和谐:日 +4.0、月 -2.0',
+    '受孕期(日月角距 12.50°):2026-01-18 11:50:14 男',
+    '危机日(月亮每走 45°):45° 1975-02-14 16:06:45(判断)、90° 1975-02-18 08:16:33(危机)',
+  ]) {
+    assert(more.includes(want), `缺行 ${want}；实得 ${more.join(' | ')}`);
+  }
+  // 「补的六张表」：中点合星 = 火(50.5°) 距 日/金 中点 50° 0.50°；世俗缺点写明。
+  const six = runChartDetails({ result: {
+    persian: [], accidental: { rows: [] }, temperament: {}, dispositors: {},
+    relations: [{ id: 1, name: '喜乐之位', items: ['Mercury'] }, { id: 6, name: '推进本性', items: [['Mars', 'Venus']] }],
+    planetDetails: [{ planet: 'Sun', lon: 10, altitude: 12.34, speedMeanPct: 101, accelerating: true }, { planet: 'Mars', lon: 50.5, altitude: -3, speedMeanPct: 80, accelerating: false },
+      { planet: 'Venus', lon: 90, altitude: 5, speedMeanPct: 90, accelerating: false }],
+    degrees: { points: [{ point: 'Sun', lame: true, deep: false, wells: 0, fortune: 2 }] },
+    midpoints: { coord: 'ecliptic', rows: [{ a: 'Sun', b: 'Venus', midpoint: 50 }] },
+    stats: { element: { fire: ['Sun'], water: ['Mars', 'Venus'] } },
+    inMundo: { system: 'koch', aspects: [], missing: ['MC'] },
+  } }).text.split('\n');
+  for (const want of [
+    '行星关系:喜乐之位 水;推进本性 火→金',
+    '中点合星(黄经 1.5° 内):火=日/金(0.50°)',
+    '统计:元素 火 1、水 2',
+    '世俗相位缺点:天顶(所选宫制在本纬度对这些点不成立)',
+    '度数性质:日 残缺度、增运度(2 派)',
+  ]) {
+    assert(six.includes(want), `缺行 ${want}；实得 ${six.join(' | ')}`);
+  }
+  assert(six.find((l) => l.startsWith('行星细节:')).startsWith('行星细节:日 高度 12.3°、速度为均值 101%(在加速);火 高度 -3.0°、速度为均值 80%(在减速)'), 'planet details');
+  // 「空结果不出快照」→ 工具把原因说出来。
+  for (const empty of [{}, { persian: 'x' }]) {
+    const out = runChartDetails({ result: empty });
+    assert(out.text === '' && out.error === 'no_result', JSON.stringify(out));
+  }
+  // 口径 → 请求体键（上游「缺省不带任何参数」「改了选项才发」「续表选项」三条用例的期望值）。
+  const fieldsOf = (settings) => JSON.stringify(runChartDetails({ settings }).request_fields);
+  assert(fieldsOf({}) === '{}' && fieldsOf({ detailFaces: 'chaldean', detailVariant: 'improved', detailLunar: 'traditional', detailMundo: 'proportional', detailMidpoint: 'ecliptic' }) === '{}', 'defaults send nothing');
+  assert(fieldsOf({ detailFaces: 'element', detailVariant: 'classic' }) === JSON.stringify({ detailFaces: 'element', variant: 'classic' }), fieldsOf({ detailFaces: 'element', detailVariant: 'classic' }));
+  assert(fieldsOf({ detailLunar: 'centered', detailMundo: 'koch', detailMidpoint: 'ra' }) === JSON.stringify({ lunarMethod: 'centered', mundoSystem: 'koch', midpointCoord: 'ra' }), 'more fields');
+  // 值域锚定引擎表：认不出的口径值 / 表 id 不许静默按缺省算。
+  const bad = runChartDetails({ result: sample, settings: { detailMundo: 'whole' }, tables: ['nope'] });
+  assert(bad.error === 'invalid_setting' && bad.text === '' && bad.invalid.map((i) => i.key).join() === 'detailMundo,detailTable', JSON.stringify(bad));
+  // 点名的表（上游「当前表」）：后端原值原样回带，标签取 CHART_DETAIL_TABLES。
+  const picked = runChartDetails({ result: sample, tables: ['hellenistic', 'stats'] }).tables;
+  assert(picked.hellenistic.label === '希腊化细节' && picked.hellenistic.data === sample.hellenistic, 'picked table data');
+  assert(picked.stats.label === '统计' && picked.stats.data === null, 'absent table → null');
+  const catalog = runChartDetails({ action: 'catalog' });
+  assert(catalog.tables.length === 30 && catalog.defaults.table === 'topics' && catalog.options.mundo.length === 12, 'catalog');
+});
+
+check('classicalDerived 转宫首行 = 夹具盘上升星座；气候带按出生纬度落第 3 带（亚历山大）', () => {
+  const text = runClassicalDerived({ chart, eminence: {} }).snapshot_text;
+  const asc = chart.chart.objects.find((o) => o.id === 'Asc');
+  const signCn = { Libra: '天秤', Scorpio: '天蝎', Aries: '白羊', Cancer: '巨蟹' }[asc.sign];
+  assert(signCn && text.includes(`| 1·命宫·自我 | ${signCn} |`), `Asc ${asc.sign}`);
+  // 托勒密七气候带：第 3 带中线约北纬 30°43′（下埃及·亚历山大，最长昼 14 时），夹具纬度 31n13 落此带。
+  assert(text.includes('出生纬度 31.22°N,归入第 3 气候带（亚历山大(下埃及)·最长昼 14h'), 'clime');
+  // 斜升时度十二座之和恒 360（闭式），首末两座对称。
+  const rows = text.split('\n').filter((l) => /^\| (白羊|金牛|双子|巨蟹|狮子|处女|天秤|天蝎|射手|摩羯|水瓶|双鱼) \| [\d.]+° \|/.test(l));
+  const sum = rows.reduce((acc, l) => acc + Number(/\| ([\d.]+)° \|/.exec(l)[1]), 0);
+  assert(rows.length === 12 && Math.abs(sum - 360) < 0.1, `ascensions ${rows.length} rows sum ${sum}`);
+});
+
+check('jinkou 格式器把 ken 引擎的四位 / 三盘原样落进快照（夹具 = 共享引擎 2028-04-06 09:33 上海的真响应）', () => {
+  const fx = JSON.parse(readFileSync(join(HERE, 'fixtures', 'jinkou_live_2028-04-06.json'), 'utf8'));
+  const ken = fx.ken_response;
+  const text = runJinkou(fx).snapshot_text;
+  const g = ken.ganzhi;
+  assert(text.includes(`四柱：${g.year}年 ${g.month}月 ${g.day}日 ${g.time}时`), 'pillars from ken');
+  assert(text.includes(`地分：${ken.difen}`) && text.includes(`月将：${ken.yuejiang}`) && text.includes(`占时：${ken.zhanshi}`), 'difen/yuejiang/zhanshi');
+  assert(text.includes(`用爻：${ken.yongYao.label}(${ken.yongYao.sign})`), 'yongYao');
+  for (const row of ken.rows.filter((r) => r.label !== '人元')) {
+    assert(text.includes(`| ${row.label} | ${row.gan} | ${row.content} | ${row.shenjiang} | ${row.element}${row.season} |`), `row ${row.label}`);
+  }
+});
+
+// 择日条件取值预检（审计 S-01）：期望值来自下面这张手写的小注册表本身（与上游各择日注册表同形：select 带 options、showIf 控显隐），
+// 不依赖任何一张上游词表——规则是「value 照用 / 唯一等于标签就读成 value / 其余报错并列可选值、黄历用事给建议」。
+check('zeriParamCheck 标签读成规范值、界外值报错并给通书用事建议、隐藏字段不查', () => {
+  const registry = {
+    dun: { label: '阴阳遁', fields: [{ key: 'value', label: '遁', kind: 'select', options: [{ value: '阳', label: '阳遁' }, { value: '阴', label: '阴遁' }] }] },
+    yi: { label: '宜', fields: [{ key: 'items', label: '用事', kind: 'multiselect', options: ['移徙', '入宅', '嫁娶', '开市'] }] },
+    mid: { label: '中点', fields: [
+      { key: 'targetKind', label: '对象', kind: 'select', options: ['planet', 'angle'] },
+      { key: 'targetId', label: '四轴', kind: 'select', options: ['ASC', 'MC'], showIf: (p) => p.targetKind === 'angle' },
+    ] },
+  };
+  const tree = { kind: 'group', op: 'and', children: [
+    { type: 'dun', params: { value: '阴遁' } },
+    { type: 'yi', params: { items: '搬家' } },
+    { type: 'mid', params: { targetKind: 'planet', targetId: 'Sun' } },
+  ] };
+  const res = checkConditionValues(registry, tree);
+  assert(res.tree.children[0].params.value === '阴', JSON.stringify(res.tree.children[0]));
+  assert(res.invalid.length === 1, JSON.stringify(res.invalid));
+  assert(JSON.stringify(res.invalid[0].did_you_mean) === JSON.stringify(['移徙', '入宅']), JSON.stringify(res.invalid[0]));
+  assert(res.invalid[0].path === 'conditions.children[1]' && res.invalid[0].field === 'items', JSON.stringify(res.invalid[0]));
+  assert(res.tree.children[2].params.targetId === 'Sun', 'hidden field (showIf false) must not be checked');
+  assert(res.notes.length === 1 && res.notes[0].includes('「阴阳遁」的「遁」'), JSON.stringify(res.notes));
+  const msg = invalidValuesMessage(res.invalid);
+  assert(msg === '「宜」的「用事」取值 「搬家」 不在可选值里（可选：移徙/入宅/嫁娶/开市）；是不是指：移徙 / 入宅？', msg);
+});
+
+check('uranianExtra 虚星参考 = 上游八颗汉堡学派虚星表（周期 / 距离，vendored）', () => {
+  const text = runUranianExtra({ showTnp: true, labels: {} }).text;
+  // 录（vendored 上游表）：丘比特 262/262.5 年 41AU，波塞冬 720/765.3/745 年 83.5AU；八星分前后两组。
+  assert(text.includes('丘比特(第一组(前四星))：周期 甲262/乙262.5 年 · 41AU'), 'cupido');
+  assert(text.includes('波塞冬(第二组(后四星))：周期 甲720/乙765.3/丙745 年 · 83.5AU'), 'poseidon');
+  assert(text.split('\n').filter((l) => /^ {2}\S+\(第[一二]组/.test(l)).length === 8, 'eight TNPs');
+  assert(runUranianExtra({ showTnp: false, labels: {} }).text === '' || !runUranianExtra({ showTnp: false, labels: {} }).text.includes('丘比特'), 'showTnp=false hides the table');
+});
+
+// 地名检索（v0.48.0，tools/placeSearch.js 懒加载：tz-lookup + 城市库）。期望值 = 上游 resolvePlaceOffline / dstAwareZoneAt 在上游源上
+// 跑出的值（tests/fixtures/place_search_upstream.json，test_fixture_matches_upstream 对着 HOROSA_SOURCE_ROOT 复核）：
+// 上海 1988-07-01 在 1986–1991 夏令时内 +09:00；「朝阳」三处同名不唯一；乌鲁木齐 2000 年按北京时间统一 +08:00、关掉统一回到 +06:00。
+try {
+  const { runPlaceSearch } = await import('../src/tools/placeSearch.js');
+  const sh = (await runPlaceSearch({ query: '上海', date: '1988-07-01' })).data;
+  assert(sh.resolved === true && sh.confidence === 'high', JSON.stringify(sh));
+  // 罗盘串不在引擎里出（Python 与一般十进制入参共用一个换算），这里钉十进制坐标与当日时区。
+  assert(JSON.stringify([sh.match.gpsLat, sh.match.gpsLon, sh.match.zone, sh.match.iana, sh.match.dst])
+    === JSON.stringify([31.2304, 121.4737, '+09:00', 'Asia/Shanghai', true]), JSON.stringify(sh.match));
+  const cy = (await runPlaceSearch({ query: '朝阳', date: '1988-07-01', limit: 3 })).data;
+  assert(cy.resolved === false && cy.match === null, JSON.stringify(cy));
+  assert(JSON.stringify(cy.candidates.map((c) => `${c.name}|${c.region}`)) === JSON.stringify(['朝阳区|北京城区', '朝阳区|长春市', '朝阳市|辽宁省']), JSON.stringify(cy.candidates));
+  const ur = (await runPlaceSearch({ query: '乌鲁木齐', date: '2000-01-01' })).data.match;
+  assert(ur.zone === '+08:00' && ur.advisory === 'cn-unified' && ur.geoZone === 'Asia/Urumqi', JSON.stringify(ur));
+  const urLocal = (await runPlaceSearch({ query: '乌鲁木齐', date: '2000-01-01', cnUnified: false })).data.match;
+  assert(urLocal.zone === '+06:00' && urLocal.iana === 'Asia/Urumqi', JSON.stringify(urLocal));
+  // skill 接受规则（v0.50.0，placeResolve.js）：上游字段原样（NYC 仍是上游的银川 high），裁决另放 verdict。
+  const nyc = (await runPlaceSearch({ query: 'NYC', date: '1988-07-01' })).data;
+  assert(nyc.match && nyc.match.name === '银川' && nyc.confidence === 'high', 'upstream fields stay verbatim');
+  assert(nyc.verdict.status === 'resolved' && nyc.verdict.match.name === '纽约' && nyc.verdict.match.zone === '-04:00', JSON.stringify(nyc.verdict));
+  const spb = (await runPlaceSearch({ query: 'St. Petersburg', date: '1988-07-01' })).data.verdict;
+  assert(spb.status === 'ambiguous' && spb.candidates.length === 2, JSON.stringify(spb));
+  const point = (await runPlaceSearch({ point: { gpsLat: 31.2304, gpsLon: 121.4737 }, date: '1988-07-01' })).data.point;
+  assert(point.zone === '+09:00' && point.iana === 'Asia/Shanghai', JSON.stringify(point));
+  const batch = (await runPlaceSearch({ queries: ['HK', '31.2,121.5'] })).data.batch;
+  assert(batch[0].status === 'resolved' && batch[0].match.name === '香港' && batch[1].status === 'coordinates', JSON.stringify(batch));
+  console.log('  ok   placeSearch 上海 DST / 朝阳歧义 / 乌鲁木齐统一北京时间 / 接受规则 verdict / point / batch');
+} catch (err) {
+  failures += 1;
+  console.error(`  FAIL placeSearch: ${err.message}`);
+}
+
+// 择日条件回显（skill 自有 tools/zeriConditions.js，深审 F5）：期望值 = 上游 huangliZeriConditionTypes.chong_shengxiao.summary 的写法
+// （mode 缺省 without →「不冲:」）+ 本工具的取反措辞；词表条数 = 上游十张注册表的键数（黄历 26）。
+try {
+  const { runZeriConditions } = await import('../src/tools/zeriConditions.js');
+  const tree = { kind: 'group', joiner: 'all', children: [
+    { kind: 'leaf', type: 'yi_has', params: { values: ['移徙'] } },
+    { kind: 'leaf', type: 'chong_shengxiao', negate: true, params: { values: ['马'] } },
+  ] };
+  const echo = runZeriConditions({ action: 'echo', technique: 'huanglizeri', tree }).data;
+  assert(echo.lines[1].zh === '且 不满足〔冲煞生肖：不冲:马〕（negate 取反：这一项不成立才算命中）', JSON.stringify(echo.lines));
+  const catalog = runZeriConditions({ action: 'catalog' }).data.catalog;
+  assert(catalog.huanglizeri.length === 26, `huanglizeri types ${catalog.huanglizeri.length}`);
+  console.log('  ok   zeriConditions 黄历冲煞生肖取反回显 / 词表条数');
+} catch (err) {
+  failures += 1;
+  console.error(`  FAIL zeriConditions: ${err.message}`);
+}
+
+// 判读层覆写值的值域检查（shared/specOptions.js）：1 / 0 两档的 select 认 JSON 布尔（卜卦 tradition: true），表外值仍拒。
+try {
+  const { checkSpecValue } = await import('../src/shared/specOptions.js');
+  const binary = { type: 'select', options: [{ value: 1 }, { value: 0 }] };
+  assert(checkSpecValue(binary, true).ok && checkSpecValue(binary, true).value === 1, 'true → 1');
+  assert(checkSpecValue(binary, false).value === 0, 'false → 0');
+  assert(!checkSpecValue(binary, 'bogus').ok, 'bogus refused');
+  assert(!checkSpecValue({ type: 'select', options: [{ value: 2 }, { value: 3 }] }, true).ok, 'bool not read for non-binary select');
+  console.log('  ok   specOptions 1/0 档认布尔、表外值拒');
+} catch (err) {
+  failures += 1;
+  console.error(`  FAIL specOptions: ${err.message}`);
+}
+
+// 辅盘变换盘 / 黄道制（上游 v3.14.0，tools/auxLabs.js → vendored utils/transformCharts.js + aiAnalysisContext/derivedLabsHeadless.js）。
+// 期望值出处 = 上游自己的 jest：utils/__tests__/transformCharts.test.js（「快照正文」「宫主和黄金分割进快照」「快照写明坐标口径」
+// 「北交宫盘给 AI 的宫头」）与 derivedLabsHeadless.test.js（「只发这种变换真正用到的选项」）——输入与期望串逐字照抄，只把上游
+// 测试里手写的 names 换成本工具用的 AstroMsgCN（太阳 / 月亮 同名）。
+try {
+  const { runAuxLabs } = await import('../src/tools/auxLabs.js');
+  const base = { planet: 'Moon', shift: true, house: 3, variant: 'improved' };
+  // 变换盘:段头、用到的选项、前后黄经、出黄道带;没用到的选项不写
+  const sup = runAuxLabs({ technique: 'transformchart', settings: { ...base, kind: 'superimposed' }, result: {
+    kind: 'superimposed', chart: {}, positions: [{ id: 'Sun', natalLon: 54.07, lon: 10.5 }], vertical: [{ id: 'Moon', outside: true }],
+  } });
+  assert(sup.title === '变换盘', `title ${sup.title}`);
+  const supText = sup.lines.join('\n');
+  assert(supText.includes('基准星:月亮') && supText.includes('宫位:随之旋转'), supText);
+  assert(supText.includes('太阳:本命黄经 54.07° → 10.50°'), supText);
+  assert(supText.includes('出黄道带:月亮') && !supText.includes('宫头'), supText);
+  const inv = runAuxLabs({ technique: 'transformchart', settings: { ...base, kind: 'inverted' }, result: { kind: 'inverted', chart: {}, positions: [] } });
+  assert(!inv.lines.join('\n').includes('基准星') && !inv.lines.join('\n').includes('宫位:'), inv.lines.join('\n'));
+  assert(inv.lines.includes('口径:改进'), inv.lines.join('\n'));
+  // 请求体:只发这种变换真正用到的选项（derivedLabsHeadless.test.js 的两组期望）
+  const settings4 = { kind: 'superimposed', planet: 'Moon', shift: true, house: 4, variant: 'classic' };
+  const reqSup = runAuxLabs({ technique: 'transformchart', settings: settings4, result: null }).request_fields;
+  assert(JSON.stringify(reqSup) === JSON.stringify({ transformKind: 'superimposed', transformPlanet: 'Moon', transformShift: 1 }), JSON.stringify(reqSup));
+  const reqInv = runAuxLabs({ technique: 'transformchart', settings: { ...settings4, kind: 'inverted' }, result: null }).request_fields;
+  assert(JSON.stringify(reqInv) === JSON.stringify({ transformKind: 'inverted', transformVariant: 'classic' }), JSON.stringify(reqInv));
+  const reqEpoch = runAuxLabs({ technique: 'transformchart', settings: { ...settings4, kind: 'epoch' }, result: null }).request_fields;
+  assert(JSON.stringify(reqEpoch) === JSON.stringify({ transformKind: 'epoch', transformHouse: 4 }), JSON.stringify(reqEpoch));
+  // 算不出盘时不留空段
+  const failed = runAuxLabs({ technique: 'transformchart', settings: { ...base, kind: 'persona' }, result: { kind: 'persona', momentFailed: true } });
+  assert(failed.title === '' && failed.lines.length === 0, JSON.stringify(failed));
+  // 宫主和黄金分割进快照 / 逆行次主和宫头前 3°
+  const vert = runAuxLabs({ technique: 'transformchart', settings: { ...base, kind: 'vertical' }, result: {
+    kind: 'vertical', chart: {}, positions: [], coordinatesMoved: false,
+    vertical: [{ id: 'Sun', outside: false, declination: 10, first: 25, second: 155 }],
+    rulers: [{ house: 1, ruler: 'Mars', coRuler: 'Mars', nextRuler: null, inside: ['Sun'] }, { house: 2, ruler: 'Mars', rulerRetro: 'Pluto', coRuler: 'Venus', nearCusp: ['Moon'] }],
+    golden: [{ lon: 137.51, ratio: 0.382, near: ['Moon'] }, { lon: 1, ratio: 0.618, near: [] }],
+  } }).lines.join('\n');
+  assert(vert.includes('太阳 赤纬 10.00°:两解 25.00° / 155.00°'), vert);
+  assert(vert.includes('本命第 1 宫现代宫主:主星 火星,共主 火星,宫内 太阳'), vert);
+  assert(vert.includes('本命第 2 宫现代宫主:主星 火星/冥王星逆,共主 金星,宫头前 3° 月亮'), vert);
+  assert(vert.includes('黄金分割点 137.51°(比例 0.382):月亮') && !vert.includes('1.00°'), vert);
+  assert(vert.includes('本来的位置'), vert);
+  // 北交宫盘给 AI 的宫头:真宫头 = 段头 + 30°,星座随之;别的变换不换宫头
+  const nodeChart = { chart: { houses: [{ id: 'House1', lon: 216.4, sign: 'Scorpio' }] }, params: {} };
+  const node = runAuxLabs({ technique: 'transformchart', settings: { ...base, kind: 'nodeHouses' }, result: { kind: 'nodeHouses', chart: nodeChart, positions: [], coordinatesMoved: true, natalHorizon: true } });
+  assert(Math.abs(node.snapshot_houses[0].lon - 246.4) < 1e-9 && node.snapshot_houses[0].sign === 'Sagittarius', JSON.stringify(node.snapshot_houses));
+  assert(nodeChart.chart.houses[0].sign === 'Scorpio', 'input chart mutated');
+  assert(node.lines.join('\n').includes('得时失时取出生时的值') && !node.lines.join('\n').includes('本来的位置'), node.lines.join('\n'));
+  assert(runAuxLabs({ technique: 'transformchart', settings: { ...base, kind: 'inverted' }, result: { kind: 'inverted', chart: nodeChart, positions: [] } }).snapshot_houses === null, 'inverted must keep houses');
+  // 设置值不在上游候选里:报出来,不落缺省（上游 transformKindDef('nope') 会静默落到第一项）
+  const bad = runAuxLabs({ technique: 'transformchart', settings: { ...base, kind: 'nope', house: 13 }, result: null });
+  assert(JSON.stringify(bad.invalid.map((item) => item.key)) === JSON.stringify(['kind', 'house']), JSON.stringify(bad));
+  // 黄道制:段头、版本、落段与上次 / 下次换星座;黄道外星座标明
+  const zod = runAuxLabs({ technique: 'zodiacsystems', settings: { version: 'z13a' }, result: {
+    version: 'z13a', galacticCenter: 266.7,
+    rows: [{ id: 'Sun', lon: 54.07, conName: '金牛', onZodiac: true, versions: { z13a: { sign: '金牛', deg: 0.79 } }, galactic: { sign: '狮子', deg: 27.37 } }, { id: 'Moon', lon: 200, conName: '乌鸦', onZodiac: false, versions: {} }],
+    around: [{ id: 'Sun', last: { date: '1990-05-14', fromName: '白羊' }, next: { date: '1990-06-21', toName: '双子' } }],
+  } });
+  assert(zod.title === '黄道制' && zod.version.label === '十三星座 · 甲本', JSON.stringify(zod.version));
+  const zodText = zod.lines.join('\n');
+  assert(zodText.includes('黄道版本:十三星座 · 甲本'), zodText);
+  assert(zodText.includes('太阳:回归黄经 54.07° · 金牛 0.79° · 星座 金牛 · 银河黄道 狮子 27.37°'), zodText);
+  assert(zodText.includes('星座 乌鸦(黄道外)'), zodText);
+  assert(zodText.includes('太阳 下次换星座:1990-06-21 入双子') && zodText.includes('太阳 上次换星座:1990-05-14 自白羊'), zodText);
+  assert(runAuxLabs({ technique: 'zodiacsystems', settings: { version: 'z99' }, result: null }).invalid[0].key === 'version', 'bad zodiac version must be reported');
+  let threw = false;
+  try { runAuxLabs({ technique: 'draconic', settings: {}, result: null }); } catch (err) { threw = true; }
+  assert(threw === true, 'unknown technique must throw');
+  console.log('  ok   auxLabs 变换盘 / 黄道制专属段、请求体选项、北交宫盘真宫头、坏设置不落缺省');
+} catch (err) {
+  failures += 1;
+  console.error(`  FAIL auxLabs: ${err.message}`);
+}
+
+// 🔴 收尾前再等一次：中途那句 `await Promise.all(pending)` 之后登记的 async check，其失败会在「all passed」打印之后才到，
+// 退出码照样 0（v0.50.0-dev 加 qimenzeri 金标时撞上：变异体打印了 FAIL，进程却以 0 退出）。
+await Promise.all(pending);
+
+if (failures > 0) {
+  console.error(`\nselfcheck: ${failures} failure(s)`);
+  process.exit(1);
+}
+console.log('\nselfcheck: all JS engine golden checks passed');

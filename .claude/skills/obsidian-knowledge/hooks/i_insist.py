@@ -1,0 +1,199 @@
+"""Vault policy checker; i-insist owns tool normalization and human approval."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Annotated, Literal
+
+from pydantic import AfterValidator, BaseModel, ConfigDict, ValidationError
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from hookslib.patterns import (
+    dated_filename_violation,
+    find_wikilink_ext_violations,
+    is_published,
+    parse_frontmatter,
+)
+from hookslib.shell_guard import destructive_vault_ops, enters_protected_directory, write_targets
+from hookslib.vault_config import load_vault_roots, matching_vault_root
+from hookslib.vault_policy import load_vault_policy
+
+
+def absolute_path(value: str) -> str:
+    if not Path(value).is_absolute() or "\0" in value:
+        raise ValueError("event paths must be absolute and contain no NUL bytes")
+    return str(Path(value).resolve())
+
+
+AbsolutePath = Annotated[str, AfterValidator(absolute_path)]
+
+
+class Change(BaseModel):
+    model_config = ConfigDict(strict=True)
+    path: AbsolutePath
+    operation: Literal["write", "edit", "delete"]
+    content: str
+
+
+class Event(BaseModel):
+    model_config = ConfigDict(strict=True)
+    kind: Literal["shell", "file_write", "file_edit", "other"]
+    cwd: AbsolutePath
+    command: str | None = None
+    paths: list[AbsolutePath] = []
+    changes: list[Change]
+
+
+MESSAGES = {
+    "protected-dirs": "Cannot modify _sources directories in configured vaults; these contain irreplaceable originals. Ask the human for consent.",
+    "ai-readonly": "Cannot modify publishable-zone paths listed in ai_readonly_folders or ai_readonly_root_files. Ask the human for consent.",
+    "destructive-ops": "Destructive vault operation blocked. Use Obsidian CLI to preserve links and vault integrity, or ask the human for consent.",
+    "published-files": "Published vault content is read-only without human consent.",
+    "publish-allowlist": "Cannot set dg-publish: true outside publish_allowlist in the vault policy. No override.",
+    "generic-filenames": "New vault filename would collide with generic wikilink names. Prefix its basename with context; index.md is exempt. No override.",
+    "illegal-filenames": "New vault filename contains characters forbidden by the vault sync policy. Rename the file. No override.",
+    "memory-routing": "Do not write operational facts to agent auto-memory. Search the Obsidian wiki; file only durable, novel facts not recoverable from code, git, docs, or runtime. Use the repo or host memory scope in the vault. No override.",
+    "decision-records": "Do not create a docs/decisions/ directory; this repository has no tracked decision records there. Record durable decisions with obsidian-knowledge in the Obsidian wiki. Ask the human for consent to override.",
+    "wikilinks": "Remove .md extensions from wikilinks: use [[foo]], not [[foo.md]]. No override.",
+    "dated-filenames": "New notes in dated folders need a YYYY-MM-DD filename prefix; index.md and periodic Journal names are exempt. No override.",
+    "frontmatter": "Vault note has malformed YAML frontmatter. Fix it before writing. No override.",
+}
+
+
+def readonly(path: str, roots: list[str]) -> bool:
+    root = matching_vault_root(path, roots)
+    if root is None:
+        return False
+    policy = load_vault_policy()
+    relative = Path(path).relative_to(root)
+    return policy.readonly_relative(relative.as_posix())
+
+
+def published(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    return is_published(path.read_text(encoding="utf-8"))
+
+
+def agent_memory(path: str) -> bool:
+    """Recognize native memory stores, including a relocated Codex home."""
+    resolved = Path(path).resolve()
+    codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser().resolve()
+    # NOTE: docs/hooks.md's Memory and recall lists the guarded stores.
+    return resolved.is_relative_to(codex_home / "memories") or bool(
+        re.search(r"/(?:\.claude/projects/[^/]+/memory|\.codex/memories)(?:/|$)", str(resolved))
+    )
+
+
+def established(directory: Path) -> bool:
+    """A directory with Git-tracked files is the repository's own convention, not agent invention."""
+    if not directory.is_dir():
+        return False
+    result = subprocess.run(
+        ["git", "-C", str(directory), "ls-files", "--", "."],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def decision_record(path: str) -> bool:
+    parts = Path(path).parts
+    return any(
+        parts[i : i + 2] == ("docs", "decisions") and not established(Path(*parts[: i + 2]))
+        for i in range(len(parts) - 1)
+    )
+
+
+def file_blocks(name: str, change: Change, roots: list[str]) -> bool:
+    path = Path(change.path)
+    if name == "memory-routing":
+        return agent_memory(change.path)
+    if name == "decision-records":
+        return decision_record(change.path)
+    root = matching_vault_root(change.path, roots)
+    if root is None:
+        return False
+    if name == "protected-dirs":
+        return "_sources" in path.parts
+    if name == "ai-readonly":
+        return readonly(change.path, roots)
+    if name == "published-files":
+        # NOTE: docs/hooks.md's Vault protection covers existing files for every operation.
+        return published(path)
+    if change.operation == "delete":
+        return False
+    content = change.content
+    if name == "wikilinks":
+        return bool(find_wikilink_ext_violations(content))
+    if name == "frontmatter":
+        return parse_frontmatter(content)[1] is not None
+    relative = str(path.relative_to(root))
+    policy = load_vault_policy()
+    if name == "publish-allowlist":
+        allowlist = policy.publish_allowlist
+        return bool(allowlist and is_published(content, fragment=True)) and not any(
+            relative == entry.rstrip("/") or (entry.endswith("/") and relative.startswith(entry))
+            for entry in allowlist
+        )
+    if path.exists():
+        return False
+    if name == "generic-filenames":
+        return path.name.lower() != "index.md" and path.name.lower() in {
+            item.lower() for item in policy.generic_filenames
+        }
+    if name == "illegal-filenames":
+        return any(char in path.name for char in policy.illegal_filename_chars)
+    if name == "dated-filenames":
+        return dated_filename_violation(relative)
+    return False
+
+
+def should_block(name: str, event: Event) -> bool:
+    if name not in MESSAGES:
+        raise ValueError(f"unknown rule: {name}")
+    roots = load_vault_roots()
+    if event.kind == "shell":
+        if not event.command:
+            raise ValueError("shell event needs command")
+        if name == "destructive-ops":
+            return destructive_vault_ops(event.command, event.cwd)
+        targets = write_targets(event.command, event.cwd)
+        if name == "memory-routing":
+            return any(agent_memory(path) for path in targets)
+        if name == "decision-records":
+            return any(decision_record(path) for path in targets)
+        if name == "protected-dirs":
+            return any("_sources" in Path(path).parts for path in targets) or enters_protected_directory(
+                event.command
+            )
+        return name == "ai-readonly" and any(readonly(path, roots) for path in targets)
+    if event.kind == "other":
+        return False
+    if set(event.paths) != {change.path for change in event.changes} or not event.changes:
+        raise ValueError("file event needs a change for every path; upgrade i-insist")
+    return any(file_blocks(name, change, roots) for change in event.changes)
+
+
+def main() -> int:
+    try:
+        if len(sys.argv) != 2:
+            raise ValueError("expected one rule id")
+        result = should_block(sys.argv[1], Event.model_validate_json(sys.stdin.read()))
+    except (ValidationError, ValueError, OSError) as exc:
+        print(f"obsidian-knowledge checker: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(MESSAGES[sys.argv[1]] if result else None))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

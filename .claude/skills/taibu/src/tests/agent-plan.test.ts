@@ -1,0 +1,139 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { AgentPlanView } from '../components/chat/agent/AgentPlanView';
+import { AgentContextBreakdown } from '../components/chat/agent/AgentContextUsage';
+import { getAgentPlan, getAgentSkills, type AgentToolPart } from '../lib/agent/tool-presentation';
+import { estimateTokens } from '../lib/ai/token-estimate';
+import { getAgentSteps, summarizeAgentActivity } from '../components/chat/agent/presentation';
+import { buildAgentWorkspace, getAgentWorkspaceLocation } from '../lib/agent/workspace';
+import type { AgentRuntimeInfo } from '../lib/agent/types';
+
+const part = (id: string, name: string, extra: Partial<AgentToolPart> = {}): AgentToolPart => ({
+  type: 'tool', id, name, title: name, status: 'completed', ...extra,
+});
+
+const plan = (id: string, text: string, output?: Record<string, unknown>, status: AgentToolPart['status'] = 'completed') =>
+  part(id, 'submit_plan', { status, input: { plan: text }, ...(output ? { output } : {}) });
+
+test('a plan is read from the call: the Markdown it proposed and the decision that followed', () => {
+  assert.deepEqual(getAgentPlan(plan('p1', '# 计划\n1. 先排盘。')), { plan: '# 计划\n1. 先排盘。', approved: null, feedback: null, disabled: false });
+  assert.deepEqual(getAgentPlan(plan('p1', '# 计划', { plan: '# 计划', approved: false, feedback: '先看紫微' })), { plan: '# 计划', approved: false, feedback: '先看紫微', disabled: false });
+  assert.deepEqual(getAgentPlan(plan('p1', '# 计划', { approved: false, disabled: true })), { plan: '# 计划', approved: null, feedback: null, disabled: true });
+  assert.equal(getAgentPlan(part('b', 'bazi', { input: { plan: '# 计划' } })), null, 'only the plan tool');
+  assert.equal(getAgentPlan(part('p', 'submit_plan', { input: { plan: '  ' } })), null, 'an empty plan has nothing to show');
+});
+
+test('every plan submission of the task shares one workspace page', () => {
+  const first = plan('p1', '# 第一版', { plan: '# 第一版', approved: false, feedback: '再具体些' });
+  const second = plan('p2', '# 第二版', { plan: '# 第二版', approved: true });
+  const model = buildAgentWorkspace({ parts: [first, second], artifacts: [], attachmentIds: [] });
+  const resource = model.resources.find(item => item.view === 'plan')!;
+  assert.deepEqual(resource.toolIds, ['p1', 'p2']);
+  assert.equal(model.locations.get('p1'), resource.id);
+  assert.equal(model.locations.get('p2'), resource.id);
+  // 「tool:p1」 from a transcript step reaches the same page.
+  assert.equal(getAgentWorkspaceLocation(model, { selected: 'tool:p1', followModel: false, status: 'completed' }), resource.id);
+});
+
+test('the plan page renders the plan as Markdown, newest first, with the decision and the feedback', () => {
+  const html = renderToStaticMarkup(createElement(AgentPlanView, {
+    tools: [
+      plan('p1', '# 第一版计划\n\n1. 先排八字。', { plan: '# 第一版计划\n\n1. 先排八字。', approved: false, feedback: '加上紫微' }),
+      plan('p2', '# 第二版计划\n\n1. 先排八字，再看紫微。', { plan: '# 第二版计划\n\n1. 先排八字，再看紫微。', approved: true }),
+    ],
+    runStatus: 'completed',
+    step: 2,
+  }));
+  const text = html.replace(/<[^>]+>/gu, ' ').replace(/\s+/gu, ' ');
+  assert.ok(!html.includes('\\n'), 'the plan is not shown as an escaped JSON string');
+  assert.match(html, /<h1[^>]*>第一版计划<\/h1>/u);
+  assert.match(html, /<h1[^>]*>第二版计划<\/h1>/u);
+  assert.ok(html.indexOf('第二版计划') < html.indexOf('第一版计划'), 'the newest submission comes first');
+  assert.match(text, /第 2 次提交 · 已批准/u);
+  assert.match(text, /第 1 次提交 · 要求修改/u);
+  assert.match(text, /你的意见：加上紫微/u);
+  assert.match(text, /计划模式 · 第 2 步 · 已批准/u);
+});
+
+test('a plan still waiting for the user says so, and an ended task does not pretend it is waiting', () => {
+  const waiting = renderToStaticMarkup(createElement(AgentPlanView, { tools: [plan('p1', '# 待批计划', undefined, 'running')], runStatus: 'running' }));
+  assert.match(waiting.replace(/<[^>]+>/gu, ' '), /等待你批准/u);
+  const ended = renderToStaticMarkup(createElement(AgentPlanView, { tools: [plan('p1', '# 待批计划', undefined, 'running')], runStatus: 'cancelled' }));
+  assert.match(ended.replace(/<[^>]+>/gu, ' '), /任务结束时计划未被处理/u);
+  assert.ok(!ended.includes('等待你批准'));
+});
+
+test('a disabled plan is not shown as approved or as a requested revision', () => {
+  const tool = plan('p1', '# 待批计划', { approved: false, disabled: true });
+  const html = renderToStaticMarkup(createElement(AgentPlanView, { tools: [tool], runStatus: 'completed' }));
+  const text = html.replace(/<[^>]+>/gu, ' ').replace(/\s+/gu, ' ');
+  assert.match(text, /计划模式已关闭/u);
+  assert.match(text, /受计划审批保护的操作未执行/u);
+  assert.ok(!text.includes('要求修改'));
+});
+
+test('the skills are the methods and skills this task loaded, listed once each', () => {
+  // 方法是内置技能：load_skill 读回的是方法本身，按方法 id 去重，版本取方法自己的。
+  const loaded = (id: string, version: string, tokens?: number) => part(`m-${id}-${version}`, 'load_skill', {
+    output: {
+      name: id, version: 0, scope: 'builtin', files: [],
+      method: { id, title: id === 'bazi' ? '子平八字' : '紫微斗数', kind: 'system', system: id, systems: [id], version, description: '', tools: ['bazi'] },
+      ...(tokens === undefined ? {} : { tokens }),
+    },
+  });
+  const ziwei = loaded('ziwei', '1.0.0');
+  // A stored skill counts once by name, its latest load opening its step.
+  const skill = (id: string, version: number, tokens?: number) => part(id, 'load_skill', {
+    output: { name: 'case-review', version, scope: 'user', files: [{ path: 'notes.md', bytes: 12 }], ...(tokens === undefined ? {} : { tokens }) },
+  });
+  const skills = getAgentSkills([loaded('bazi', '2.0.0', 300), skill('s1', 1, 90), loaded('bazi', '2.1.0', 640), ziwei, skill('s2', 2, 120)], 'deepseek-v3.2');
+  assert.deepEqual(skills.cards, [
+    { id: 'method:bazi', kind: 'method', title: '子平八字', version: '2.1.0', tokens: 640 },
+    { id: 'tool:s2', kind: 'skill', title: 'case-review', version: 'v2', tokens: 120 },
+    { id: 'method:ziwei', kind: 'method', title: '紫微斗数', version: '1.0.0', tokens: estimateTokens('deepseek-v3.2', JSON.stringify(ziwei.output)) },
+  ], 'a reloaded card replaces its earlier version; a card counted at run time keeps its count, an older one is estimated from what the model read');
+  assert.deepEqual(getAgentSkills([]), { cards: [] });
+});
+
+test('the context breakdown shows skill tokens without a method count', () => {
+  const runtime: AgentRuntimeInfo = {
+    model: { id: 'main', name: '主模型', contextWindow: 100_000, limitSource: 'configured' },
+    context: { tokens: 8000, measuredTokens: 8000, estimatedTokens: 0, source: 'usage', compactions: 0 },
+  };
+  const render = (props: Parameters<typeof AgentContextBreakdown>[0]) =>
+    renderToStaticMarkup(createElement(AgentContextBreakdown, props)).replace(/<[^>]+>/gu, ' ').replace(/\s+/gu, ' ');
+  const withSkills = render({ runtime, skills: { cards: [{ id: 'method:bazi', title: '子平八字', version: '2.1.0', tokens: 1_200 }] } });
+  assert.match(withSkills, /技能 1\.2k/u, 'the row states only the tokens it occupies');
+  assert.ok(!withSkills.includes('个方法'), 'the row does not repeat how many methods were loaded');
+  assert.ok(!withSkills.includes('技能 未启用'), 'a used skill row is not a placeholder');
+  const unusedSkills = render({ runtime, skills: { cards: [] } });
+  assert.match(unusedSkills, /技能 0/u, 'the injected directory is counted as skills, not «未加载»');
+  assert.ok(!unusedSkills.includes('未加载'));
+  assert.match(render({ runtime }), /技能 未启用/u, 'without skill data the row stays as it was');
+  // 目录整段记在 runtime.skills 上；读进上下文的方法另计。
+  const listed = { ...runtime, skills: { listed: 2, sectionTokens: 300 } };
+  assert.match(render({ runtime: listed, skills: { cards: [] } }), /技能 300/u);
+  assert.match(render({ runtime: listed, skills: { cards: [
+    { id: 'method:bazi', kind: 'method', title: '子平八字', version: '2.1.0', tokens: 200 },
+    { id: 'tool:s1', kind: 'skill', title: 'case-review', version: 'v2', tokens: 100 },
+  ] } }), /技能 600/u);
+});
+
+test('a plan is a process step; the task list stays a progress bar', () => {
+  const steps = getAgentSteps([
+    part('todo', 'todo_write', { output: { revision: 1, items: [] } }),
+    plan('p1', '# 计划'),
+    part('b', 'bazi'),
+  ]);
+  assert.deepEqual(steps.map(step => step.name), ['submit_plan', 'bazi']);
+  assert.equal(summarizeAgentActivity(steps, 0, 0), '查看 1 张命盘，提交 1 次计划');
+  assert.equal(summarizeAgentActivity([part('todo', 'todo_write')], 0, 0), '任务过程', 'task-list updates do not count as work');
+});
+
+test('the status line counts methods and skills, not loads', () => {
+  const load = (id: string, name: string) => part(id, 'load_skill', { input: { name } });
+  assert.equal(summarizeAgentActivity([load('m1', 'bazi'), load('m2', 'bazi'), load('m3', 'ziwei'), load('s1', 'case-review')], 0, 0), '使用 3 个技能',
+    'reading a card twice is still one card; the directory is injected, not counted');
+});

@@ -1,0 +1,385 @@
+/**
+ * MCP 服务编辑弹窗：管理员的平台服务与用户自己的连接器共用。
+ *
+ * 'use client' 标记说明：
+ * - 草稿状态、动态增删请求头与密钥行、提交中状态
+ *
+ * 密钥只写不读：已保存的只显示名称，可以替换或删除；留空表示保持不变。
+ */
+'use client';
+
+import { useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { Plus, Trash2, Undo2, X, Zap } from 'lucide-react';
+import { Dialog } from '@/components/ui/Dialog';
+import { Button } from '@/components/ui/Button';
+import { Field as FieldBase } from '@/components/ui/Field';
+import { Input } from '@/components/ui/Input';
+import { Textarea } from '@/components/ui/Textarea';
+import { IconButton } from '@/components/ui/IconButton';
+import { Select } from '@/components/ui/Select';
+import {
+  MCP_EXPOSURES, MCP_EXPOSURE_HINTS, MCP_EXPOSURE_LABELS, MCP_RESULT_CHARS_RANGE, MCP_SERVER_NAME_PATTERN, MCP_TIMEOUT_RANGE,
+  USER_MCP_EXPOSURES,
+  type McpExposure, type McpServerInput, type McpServerView,
+} from '@/lib/agent/mcp/config';
+import { MCP_PUBLIC_URL } from '@/lib/mcp-service-config';
+import type { McpServerScope } from '@/lib/agent/mcp/client';
+
+/** What the editor starts from: a saved server, or a template for a new one. */
+export type McpEditorSeed =
+  | { server: McpServerView }
+  | { input: McpServerInput; secretHeader?: { name: string; placeholder: string } };
+
+type Pair = { key: number; name: string; value: string };
+type Secret = { key: number; name: string; stored: boolean; value: string; removed: boolean; placeholder?: string };
+type Draft = {
+  displayName: string;
+  name: string;
+  url: string;
+  description: string;
+  exposure: McpExposure;
+  searchTool: string;
+  fetchTool: string;
+  routePriority: string;
+  headers: Pair[];
+  secretHeaders: Secret[];
+  secretQuery: Secret[];
+  timeoutSeconds: string;
+  maxResultChars: string;
+  sortOrder: string;
+  enabled: boolean;
+  healthStatus?: { state: 'idle' | 'testing' | 'ok' | 'error'; message?: string };
+};
+
+let rowKey = 0;
+const nextKey = () => ++rowKey;
+const stored = (name: string): Secret => ({ key: nextKey(), name, stored: true, value: '', removed: false });
+
+function draftOf(seed: McpEditorSeed, scope: McpServerScope): Draft {
+  if ('server' in seed) {
+    const server = seed.server;
+    return {
+      displayName: server.displayName, name: server.name, url: server.url, description: server.description,
+      exposure: server.exposure,
+      searchTool: server.searchTool ?? '', fetchTool: server.fetchTool ?? '',
+      routePriority: String(server.routePriority),
+      headers: Object.entries(server.headers).map(([name, value]) => ({ key: nextKey(), name, value })),
+      secretHeaders: server.secretHeaders.map(stored), secretQuery: server.secretQuery.map(stored),
+      timeoutSeconds: String(server.timeoutMs / 1000), maxResultChars: String(server.maxResultChars),
+      sortOrder: String(server.sortOrder), enabled: server.enabled,
+      healthStatus: { state: 'idle' },
+    };
+  }
+  const { input, secretHeader } = seed;
+  return {
+    displayName: input.displayName, name: input.name, url: input.url, description: input.description ?? '',
+    exposure: input.exposure ?? 'deferred',
+    searchTool: input.searchTool ?? '', fetchTool: input.fetchTool ?? '',
+    routePriority: String(input.routePriority ?? 100), headers: [],
+    // 用户连接器默认给一行 Authorization 请求头，填了再保存；平台服务沿用模板。
+    secretHeaders: secretHeader
+      ? [{ key: nextKey(), name: secretHeader.name, stored: false, value: '', removed: false, placeholder: secretHeader.placeholder }]
+      : scope === 'user' ? [{ key: nextKey(), name: 'Authorization', stored: false, value: '', removed: false }] : [],
+    secretQuery: [],
+    timeoutSeconds: String(MCP_TIMEOUT_RANGE.default / 1000), maxResultChars: String(MCP_RESULT_CHARS_RANGE.default),
+    sortOrder: '0', enabled: input.enabled ?? true,
+    healthStatus: { state: 'idle' },
+  };
+}
+
+function integer(value: string, label: string, min: number, max: number) {
+  const number = Number(value.trim());
+  if (!value.trim() || !Number.isInteger(number) || number < min || number > max) throw new Error(`${label}须为 ${min}–${max} 的整数`);
+  return number;
+}
+
+/** Write-only changes: a typed value sets or replaces, a removed stored secret becomes null, an untouched one is left out. */
+function secretChanges(list: Secret[], label: string) {
+  const changes: Record<string, string | null> = {};
+  for (const secret of list) {
+    const name = secret.name.trim();
+    if (secret.stored) {
+      if (secret.removed) changes[name] = null;
+      else if (secret.value.trim()) changes[name] = secret.value.trim();
+      continue;
+    }
+    if (!name && !secret.value.trim()) continue;
+    if (!name) throw new Error(`请填写${label}的名称`);
+    if (!secret.value.trim()) throw new Error(`请填写${label}「${name}」的值`);
+    changes[name] = secret.value.trim();
+  }
+  return changes;
+}
+
+function autoName(source: string) {
+  const base = source.toLowerCase().replace(/^https?:\/\//u, '').replace(/[^a-z0-9]+/gu, '_').replace(/^_+|_+$/gu, '').slice(0, 24);
+  return `mcp_${base || crypto.randomUUID().slice(0, 6)}`.slice(0, 31);
+}
+
+function isTaibuMcpUrl(value: string) {
+  try {
+    const target = new URL(value.trim());
+    const self = new URL(MCP_PUBLIC_URL);
+    return target.host === self.host && target.pathname.replace(/\/+$/u, '') === self.pathname.replace(/\/+$/u, '');
+  } catch {
+    return false;
+  }
+}
+
+function payloadOf(draft: Draft, scope: McpServerScope): McpServerInput {
+  const seconds = Number(draft.timeoutSeconds.trim());
+  const timeoutMs = Math.round(seconds * 1000);
+  if (!draft.timeoutSeconds.trim() || !Number.isFinite(seconds) || timeoutMs < MCP_TIMEOUT_RANGE.min || timeoutMs > MCP_TIMEOUT_RANGE.max)
+    throw new Error(`超时须为 ${MCP_TIMEOUT_RANGE.min / 1000}–${MCP_TIMEOUT_RANGE.max / 1000} 秒`);
+  const name = draft.name.trim() || (scope === 'user' ? autoName(draft.url || draft.displayName) : '');
+  if (!MCP_SERVER_NAME_PATTERN.test(name)) throw new Error('标识须以小写字母开头，只能使用小写字母、数字和下划线');
+  return {
+    name, displayName: draft.displayName.trim(), description: draft.description.trim(), url: draft.url.trim(),
+    headers: Object.fromEntries(draft.headers.filter(pair => pair.name.trim()).map(pair => [pair.name.trim(), pair.value])),
+    secretHeaders: secretChanges(draft.secretHeaders, '密钥请求头'),
+    secretQuery: secretChanges(draft.secretQuery, '密钥查询参数'),
+    exposure: draft.exposure, enabled: draft.enabled, timeoutMs,
+    maxResultChars: integer(draft.maxResultChars, '结果字数上限', MCP_RESULT_CHARS_RANGE.min, MCP_RESULT_CHARS_RANGE.max),
+    sortOrder: integer(draft.sortOrder, '排序', -10_000, 10_000),
+    ...(scope === 'platform' ? {
+      searchTool: draft.searchTool.trim() || null, fetchTool: draft.fetchTool.trim() || null,
+      routePriority: integer(draft.routePriority, '路由优先级', 0, 1000),
+    } : {}),
+  };
+}
+
+type ControlProps = { id: string; 'aria-describedby'?: string };
+
+/** A labelled control whose hint is its description, not part of its name. */
+function Field({ label, hint, wide, children }: { label: string; hint?: ReactNode; wide?: boolean; children: (props: ControlProps) => ReactNode }) {
+  return (
+    <FieldBase label={label} description={hint} className={wide ? 'is-wide' : undefined}>
+      {props => children({ id: props.id, 'aria-describedby': props['aria-describedby'] })}
+    </FieldBase>
+  );
+}
+
+function SecretRows({ label, kind, list, onChange }: {
+  label: string;
+  kind: 'header' | 'query';
+  list: Secret[];
+  onChange: (next: Secret[]) => void;
+}) {
+  const update = (key: number, patch: Partial<Secret>) => onChange(list.map(item => item.key === key ? { ...item, ...patch } : item));
+  return (
+    <fieldset className="mcp-group">
+      <legend>{label}</legend>
+      {list.map(secret => (
+        <div key={secret.key} className="mcp-pair">
+          {secret.stored
+            ? <span className="mcp-secret-state"><code>{secret.name}</code>{secret.removed ? ' · 保存后删除' : ' · 已设置'}</span>
+            : <Input aria-label={`${label}名称`} placeholder={kind === 'header' ? '如 x-api-key' : '如 apiKey'}
+              value={secret.name} spellCheck={false} autoComplete="off" onChange={event => update(secret.key, { name: event.target.value })} />}
+          <Input type="password" aria-label={`${label}「${secret.name || '新密钥'}」的值`} autoComplete="new-password"
+            spellCheck={false} disabled={secret.removed} value={secret.value}
+            placeholder={secret.stored ? '留空则保持不变' : secret.placeholder ?? '密钥值'}
+            onChange={event => update(secret.key, { value: event.target.value })} />
+          {secret.stored && secret.removed
+            ? <IconButton label={`保留「${secret.name}」`} size="sm" title="撤销删除" onClick={() => update(secret.key, { removed: false })}><Undo2 size={16} aria-hidden="true" /></IconButton>
+            : <IconButton label={`删除「${secret.name || '新密钥'}」`} tone="danger" size="sm" title="删除"
+              onClick={() => secret.stored ? update(secret.key, { removed: true, value: '' }) : onChange(list.filter(item => item.key !== secret.key))}>
+              <Trash2 size={16} aria-hidden="true" />
+            </IconButton>}
+        </div>
+      ))}
+      <Button variant="ghost" size="sm" className="mcp-add"
+        onClick={() => onChange([...list, { key: nextKey(), name: '', stored: false, value: '', removed: false }])}>
+        <Plus size={14} aria-hidden="true" />添加{kind === 'header' ? '密钥请求头' : '密钥查询参数'}
+      </Button>
+    </fieldset>
+  );
+}
+
+export function McpServerEditor({ scope, seed, onClose, onSubmit }: {
+  scope: McpServerScope;
+  /** Null while closed. */
+  seed: McpEditorSeed | null;
+  onClose: () => void;
+  /** Resolves when saved; a rejection's message is shown in the dialog. */
+  onSubmit: (input: McpServerInput) => Promise<void>;
+}) {
+  const titleId = useId();
+  const toolsId = useId();
+  const firstField = useRef<HTMLInputElement>(null);
+  const [state, setState] = useState<{ seed: McpEditorSeed | null; draft: Draft | null }>({ seed: null, draft: null });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // A new seed (opening the dialog) starts a fresh draft; closing keeps the last one for the exit animation.
+  if (seed && seed !== state.seed) {
+    setState({ seed, draft: draftOf(seed, scope) });
+    setError(null);
+  }
+  const draft = state.draft;
+  const editing = state.seed && 'server' in state.seed ? state.seed.server : null;
+  const tools = editing?.snapshot?.tools ?? [];
+  const exposures: readonly McpExposure[] = scope === 'platform' ? MCP_EXPOSURES : USER_MCP_EXPOSURES;
+  const selfHosted = scope === 'user' && isTaibuMcpUrl(draft?.url ?? '');
+  const set = (patch: Partial<Draft>) => setState(current => current.draft ? { ...current, draft: { ...current.draft, ...patch } } : current);
+
+  const testConnection = async () => {
+    if (!draft || !draft.url.trim()) return;
+    set({ healthStatus: { state: 'testing' } });
+    try {
+      // 构建用于测试的临时 input
+      const testInput = payloadOf(draft, scope);
+      const response = await fetch('/api/admin/mcp/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(testInput),
+      });
+      if (!response.ok) throw new Error(`测试失败：${response.statusText}`);
+      const result = await response.json() as { success: boolean; message?: string };
+      set({ healthStatus: { state: result.success ? 'ok' : 'error', message: result.message ?? (result.success ? '连接成功' : '连接失败') } });
+    } catch (problem) {
+      set({ healthStatus: { state: 'error', message: problem instanceof Error ? problem.message : '连接测试失败' } });
+    }
+  };
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!draft || saving) return;
+    let input: McpServerInput;
+    try {
+      input = payloadOf(draft, scope);
+    } catch (problem) {
+      setError(problem instanceof Error ? problem.message : '填写有误');
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await onSubmit(input);
+    } catch (problem) {
+      setError(problem instanceof Error ? problem.message : '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // A space sets the Latin acronym off from the verb before it.
+  const noun = scope === 'platform' ? ' MCP 服务' : '连接器';
+  return (
+    <Dialog bare open={seed !== null} onClose={() => { if (!saving) onClose(); }} labelledBy={titleId} busy={saving} className="mcp-editor" initialFocusRef={firstField}>
+      {draft ? (
+        <form onSubmit={event => { void submit(event); }} noValidate>
+          <div className="mcp-editor-head">
+            <h2 id={titleId}>{editing ? `编辑${noun}` : `添加${noun}`}</h2>
+            <IconButton label="关闭" size="sm" disabled={saving} onClick={onClose}><X size={17} aria-hidden="true" /></IconButton>
+          </div>
+          <div className="mcp-editor-body">
+            <div className="mcp-fields">
+              <Field label="名称" wide hint="显示在设置页和工具卡片上。">
+                {props => <Input {...props} ref={firstField} value={draft.displayName} maxLength={40} required onChange={event => set({ displayName: event.target.value })} />}
+              </Field>
+              {scope === 'platform' ? (
+                <Field label="标识" hint={editing ? '用于工具名前缀；修改后工具名随之改变。' : '用于工具名前缀，如 notion、my_search。'}>
+                  {props => <Input {...props} value={draft.name} maxLength={31} required spellCheck={false} autoComplete="off"
+                    pattern="[a-z][a-z0-9_]{1,30}" onChange={event => set({ name: event.target.value.toLowerCase() })} />}
+                </Field>
+              ) : null}
+              <Field label="服务地址" wide hint="Streamable HTTP 的公开 HTTPS 地址；不含密钥的查询参数可以直接写在地址里。">
+                {props => <Input {...props} type="url" inputMode="url" value={draft.url} required spellCheck={false} autoComplete="off"
+                  placeholder="https://example.com/mcp" onChange={event => set({ url: event.target.value })} />}
+              </Field>
+              {draft.healthStatus && draft.healthStatus.state !== 'idle' ? (
+                <div className={`mcp-health is-wide mcp-health--${draft.healthStatus.state}`} role="status">
+                  {draft.healthStatus.state === 'testing' ? '测试连接中…' : draft.healthStatus.message}
+                </div>
+              ) : null}
+              <div className="is-wide" style={{ marginTop: '-0.5rem', marginBottom: '0.5rem' }}>
+                <Button size="sm" type="button" variant="secondary" onClick={testConnection} disabled={!draft.url.trim() || draft.healthStatus?.state === 'testing'}>
+                  <Zap size={16} aria-hidden="true" />
+                  测试连接
+                </Button>
+              </div>
+              {selfHosted ? <p className="mcp-notice is-wide" role="status">太卜已经有这个 MCP 了，不需要重复导入；可以直接在「Taibu MCP」页复制配置。</p> : null}
+              <Field label="用途说明" wide hint={scope === 'platform' ? '写给模型看：这个服务能做什么、什么时候用。' : '写给 Agent 看：什么时候该用这个连接器。'}>
+                {props => <Textarea {...props} rows={3} maxLength={2000} value={draft.description} onChange={event => set({ description: event.target.value })} />}
+              </Field>
+              {scope === 'platform' ? (
+                <Field label="工具提供方式" wide hint={<span className="block min-h-[2.5rem]">{MCP_EXPOSURE_HINTS[draft.exposure]}</span>}>
+                  {props => (
+                    <Select ariaLabel="工具提供方式" id={props.id} value={draft.exposure}
+                      onChange={exposure => set({ exposure })} options={exposures.map(exposure => ({ value: exposure, label: MCP_EXPOSURE_LABELS[exposure] }))} />
+                  )}
+                </Field>
+              ) : null}
+            </div>
+
+            <SecretRows label="密钥请求头" kind="header" list={draft.secretHeaders} onChange={secretHeaders => set({ secretHeaders })} />
+            {scope === 'platform' ? (
+              <>
+                <SecretRows label="密钥查询参数" kind="query" list={draft.secretQuery} onChange={secretQuery => set({ secretQuery })} />
+                <p className="mcp-hint">密钥加密保存，保存后不再显示；调用时才附加到请求上。</p>
+              </>
+            ) : (
+              <>
+                <Field label="密钥" wide hint="MCP 服务可以通过 Authorization 请求头读取；加密保存，保存后不再显示。">
+                  {props => {
+                    const secret = draft.secretHeaders[0];
+                    return secret?.stored ? (
+                      <span className="mcp-secret-state" role="status">{secret.removed ? '保存后删除' : '已设置'}</span>
+                    ) : (
+                      <Input {...props} type="password" autoComplete="new-password" spellCheck={false}
+                        placeholder={secret?.placeholder ?? '密钥值'}
+                        value={secret?.value ?? ''}
+                        onChange={event => set({ secretHeaders: [{ key: secret?.key ?? 0, name: 'Authorization', stored: secret?.stored ?? false, value: event.target.value, removed: false }] })} />
+                    );
+                  }}
+                </Field>
+              </>
+            )}
+
+            {scope === 'platform' ? <details className="mcp-advanced">
+              <summary>高级设置</summary>
+              <div className="mcp-advanced-body">
+                <fieldset className="mcp-group">
+                  <legend>联网路由</legend>
+                  <p className="mcp-hint">工具不用手填：测试连接会列出服务提供的工具。这里只指定哪两个承接 Agent 的 web_search / web_fetch 与普通对话的联网搜索；留空就不参与路由（只作普通工具）。按优先级数字从小到大尝试，出错、超时或没有结果时转下一个，连续失败 3 次的服务暂停 1 分钟。</p>
+                  <div className="mcp-fields">
+                    <Field label="搜索工具">{props => <Input {...props} list={toolsId} value={draft.searchTool} spellCheck={false} onChange={event => set({ searchTool: event.target.value })} />}</Field>
+                    <Field label="读网页工具">{props => <Input {...props} list={toolsId} value={draft.fetchTool} spellCheck={false} onChange={event => set({ fetchTool: event.target.value })} />}</Field>
+                    <Field label="路由优先级">{props => <Input {...props} inputMode="numeric" value={draft.routePriority} onChange={event => set({ routePriority: event.target.value })} />}</Field>
+                  </div>
+                  <datalist id={toolsId}>{tools.map(tool => <option key={tool.name} value={tool.name} />)}</datalist>
+                </fieldset>
+                <fieldset className="mcp-group">
+                  <legend>普通请求头</legend>
+                  {draft.headers.map(pair => (
+                    <div key={pair.key} className="mcp-pair">
+                      <Input aria-label="请求头名称" placeholder="名称" spellCheck={false} value={pair.name}
+                        onChange={event => set({ headers: draft.headers.map(item => item.key === pair.key ? { ...item, name: event.target.value } : item) })} />
+                      <Input aria-label={`请求头「${pair.name || '新请求头'}」的值`} placeholder="值" spellCheck={false} value={pair.value}
+                        onChange={event => set({ headers: draft.headers.map(item => item.key === pair.key ? { ...item, value: event.target.value } : item) })} />
+                      <IconButton label={`删除请求头「${pair.name || '新请求头'}」`} tone="danger" size="sm"
+                        onClick={() => set({ headers: draft.headers.filter(item => item.key !== pair.key) })}><Trash2 size={16} aria-hidden="true" /></IconButton>
+                    </div>
+                  ))}
+                  <Button variant="ghost" size="sm" className="mcp-add" onClick={() => set({ headers: [...draft.headers, { key: nextKey(), name: '', value: '' }] })}>
+                    <Plus size={14} aria-hidden="true" />添加请求头
+                  </Button>
+                  <p className="mcp-hint">不能放密钥：名称像 key、token、auth 的请求头请填到密钥请求头。</p>
+                </fieldset>
+                <div className="mcp-fields">
+                  <Field label="超时（秒）">{props => <Input {...props} inputMode="numeric" value={draft.timeoutSeconds} onChange={event => set({ timeoutSeconds: event.target.value })} />}</Field>
+                  <Field label="结果字数上限" hint="超出时保留首尾、省略中间。">{props => <Input {...props} inputMode="numeric" value={draft.maxResultChars} onChange={event => set({ maxResultChars: event.target.value })} />}</Field>
+                  <Field label="排序" hint="小的在前。">{props => <Input {...props} inputMode="numeric" value={draft.sortOrder} onChange={event => set({ sortOrder: event.target.value })} />}</Field>
+                </div>
+              </div>
+            </details> : null}
+          </div>
+          <div className="mcp-editor-foot">
+            {error ? <p role="alert">{error}</p> : null}
+            <Button type="button" variant="ghost" size="lg" disabled={saving} onClick={onClose}>取消</Button>
+            <Button type="submit" size="lg" loading={saving} disabled={saving || selfHosted}>{editing ? '保存' : '添加并测试'}</Button>
+          </div>
+        </form>
+      ) : null}
+    </Dialog>
+  );
+}

@@ -1,0 +1,199 @@
+"""Unit tests for the re-vendor transform (scripts/revendor_core_js.py).
+
+Four defects pinned here, all shipped in v0.26.0 and all of the same family: a batch of regex
+matches was materialized up front, then the text was re-spliced using those now-stale offsets.
+Deleting the first match shortens the string, so every later `match.start()/end()` points at the
+wrong place. The mildest symptom is a silently-skipped removal; the worst is a **destroyed file**.
+
+`horosa-core-js/src/vendor/` is git-tracked, so a corrupted re-vendor lands in the repo — and
+`loadcheck.mjs` only catches it if the wreckage happens to break an import.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "revendor_core_js.py"
+_spec = importlib.util.spec_from_file_location("revendor_core_js", _SCRIPT)
+rv = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(rv)
+
+
+# --- stale offsets: orphaned imports -----------------------------------------------------------
+
+
+def test_two_orphaned_namespace_imports_do_not_destroy_the_file() -> None:
+    """The reproduction: v0.26.0 turned this into `\\nimport * as lodash from 'urn 1; }`."""
+    src = "import * as d3 from 'd3';\nimport * as lodash from 'lodash';\nexport function f(){ return 1; }\n"
+    out, notes = rv._drop_orphaned_imports(src)
+    assert "export function f(){ return 1; }" in out, f"module body was destroyed: {out!r}"
+    assert "d3" not in out and "lodash" not in out
+    assert len(notes) == 2
+
+
+def test_second_orphaned_named_import_is_also_dropped() -> None:
+    """`utils/kentangCache` is the case the function's own docstring names; it used to survive."""
+    src = (
+        "import { aa } from './x.js';\n"
+        "import { cachedKentangFetch, someHelper } from './utils/kentangCache.js';\n"
+        "const K = 1;\nexport function real(){ return K; }\n"
+    )
+    out, _ = rv._drop_orphaned_imports(src)
+    assert "kentangCache" not in out, "2nd orphaned import survived — ERR_MODULE_NOT_FOUND at load"
+    assert "export function real" in out
+
+
+def test_imports_actually_in_use_are_kept() -> None:
+    src = "import * as AstroConst from './progConst.js';\nexport const X = AstroConst.SUN;\n"
+    assert rv._drop_orphaned_imports(src)[0] == src
+
+
+# --- stale offsets + head selection: export lists ----------------------------------------------
+
+
+def test_two_export_lists_do_not_produce_invalid_js() -> None:
+    """v0.26.0 produced `export {export { q };` — the module stopped parsing entirely."""
+    src = "const a = 1;\nexport { p, fetchA };\nconst IMPORTANT = 42;\nexport { q, fetchB };\n"
+    out, _ = rv._prune_default_export(src, ["fetchA", "fetchB"])
+    assert "export {export" not in out, f"invalid JS emitted: {out!r}"
+    assert "const IMPORTANT = 42;" in out, "code between the two export lists was eaten"
+    assert "export { p };" in out and "export { q };" in out
+
+
+def test_a_named_list_containing_the_substring_default_stays_named() -> None:
+    """Head was picked with `"default" in match.group(0)`, so `defaultRules` flipped the whole
+    list to `export default { … }` and every `import { keeper }` broke."""
+    src = "export { fetchThing, defaultRules, keeper };\n"
+    out, _ = rv._prune_default_export(src, ["fetchThing"])
+    assert not out.strip().startswith("export default"), f"named list turned into a default export: {out!r}"
+    assert out.strip() == "export { defaultRules, keeper };"
+
+
+def test_a_real_default_export_is_still_pruned_as_default() -> None:
+    src = "export default { fetchX, keep };\n"
+    out, _ = rv._prune_default_export(src, ["fetchX"])
+    assert out.strip() == "export default { keep };"
+
+
+def test_a_bare_default_export_of_a_stripped_symbol_is_dropped() -> None:
+    """v3.11.0 returnCharts.js ends with `export default fetchReturnSet;` — a bare identifier, not an
+    aggregate object. Neither aggregate pattern matched it, so the stripped name stayed and the module
+    threw ReferenceError at load."""
+    src = "export function judge(){ return 1; }\nexport default fetchReturnSet;\n"
+    out, notes = rv._prune_default_export(src, ["fetchReturnSet"])
+    assert "export default" not in out, f"stale default export left behind: {out!r}"
+    assert "export function judge()" in out
+    assert notes == ["pruned bare default export fetchReturnSet"]
+
+
+def test_a_bare_default_export_that_was_not_stripped_is_kept() -> None:
+    src = "function keeper(){}\nexport default keeper;\n"
+    out, notes = rv._prune_default_export(src, ["fetchSomethingElse"])
+    assert out == src and notes == []
+
+
+# --- stub_import must not be treated as a regex replacement template ---------------------------
+
+
+def test_stub_import_stub_is_inserted_literally() -> None:
+    """A JS stub containing a regex literal or an escape is normal. As an `re.sub` template, `\\1`
+    silently splices the captured import back in and `\\c` raises `re.error`, killing the run."""
+    src = "import { x } from './helper.js';\nconst y = 1;\n"
+    stub = "const x = (s) => s.replace(/\\d+/g, '\\\\1');"
+    out, notes = rv.apply_deviations(src, [{"kind": "stub_import", "specifier": "./helper.js", "stub": stub}])
+    assert stub in out, f"stub was reinterpreted as a template: {out!r}"
+    assert "import {" not in out
+    assert notes == ["stubbed ./helper.js"]
+
+
+def test_dead_prune_helper_is_gone() -> None:
+    assert not hasattr(rv, "_prune_default_export_unused"), "dead near-duplicate should stay deleted"
+
+
+# --- stub audit: a stubbed binding the kept code still uses ------------------------------------
+
+
+def _warnings(notes: list[str]) -> list[str]:
+    return [n for n in notes if n.startswith("⚠")]
+
+
+def test_stub_audit_flags_a_stubbed_binding_the_kept_code_still_uses() -> None:
+    """v0.40.0: LiuRengMain.js stubbed `ChuangChart` to '' while the kept `buildSanChuanData` does
+    `new ChuangChart(...)` → swallowed ReferenceError → 六壬择时 zero hits for every condition."""
+    src = "import ChuangChart from '../liureng/ChuangChart.js';\nexport function build(){ return new ChuangChart({}); }\n"
+    _out, notes = rv.apply_deviations(src, [{"kind": "stub_import", "specifier": "../liureng/ChuangChart.js", "stub": ""}])
+    assert _warnings(notes) and "ChuangChart" in _warnings(notes)[0]
+    named = "import { buildXiangContext as bx } from './LRXiangDoc.js';\nexport const f = () => bx();\n"
+    _out, notes = rv.apply_deviations(named, [{"kind": "stub_import", "specifier": "./LRXiangDoc.js", "stub": ""}])
+    assert _warnings(notes) and ": bx " in _warnings(notes)[0]
+
+
+def test_stub_audit_is_quiet_for_unused_defined_or_non_code_mentions() -> None:
+    unused = "import LiuRengChart from './LiuRengChart.js';\nexport const X = 1;\n"
+    _out, notes = rv.apply_deviations(unused, [{"kind": "stub_import", "specifier": "./LiuRengChart.js", "stub": ""}])
+    assert not _warnings(notes)
+    defined = "import { drawPath } from '../graph/GraphHelper.js';\nexport function f(){ drawPath(); }\n"
+    stub = "const drawPath = () => {};"
+    _out, notes = rv.apply_deviations(defined, [{"kind": "stub_import", "specifier": "../graph/GraphHelper.js", "stub": stub}])
+    assert not _warnings(notes)
+    mentions = (
+        "import DateTime from '../comp/DateTime.js';\n// DateTime is UI-only\n"
+        "export const s = 'DateTime'; export function g(o){ return o.DateTime; }\n"
+    )
+    _out, notes = rv.apply_deviations(mentions, [{"kind": "stub_import", "specifier": "../comp/DateTime.js", "stub": ""}])
+    assert not _warnings(notes)
+
+
+def test_imported_locals_covers_every_import_form() -> None:
+    assert rv._imported_locals("import A from 'x';") == {"A"}
+    assert rv._imported_locals("import A, { b, c as d } from 'x';") == {"A", "b", "d"}
+    assert rv._imported_locals("import * as ns from 'x';") == {"ns"}
+    assert rv._imported_locals("import A, * as ns from 'x';") == {"A", "ns"}
+    assert rv._imported_locals("import 'x';") == set()
+
+
+def test_dynamic_relative_imports_get_the_js_suffix_too() -> None:
+    """`import('./tianjiDoctrine')` loads under a bundler but not under native Node ESM (ERR_MODULE_NOT_FOUND);
+    it is lazy, so loadcheck stays green and only the first call explodes."""
+    src = "export function load(){ return import('./tianjiDoctrine').then((m)=>m); }\n"
+    out, notes = rv.transform(src)
+    assert "import('./tianjiDoctrine.js')" in out and any("dynamic relative" in n for n in notes)
+    kept = "export const a = () => import('./x.js'); export const b = () => import('lodash');\n"
+    out, _ = rv.transform(kept)
+    assert "import('./x.js')" in out and "import('lodash')" in out
+
+
+def test_bare_side_effect_imports_get_the_js_suffix_too() -> None:
+    """上游 v3.12.0 的 LiuRengMain 用 `import '../../utils/pageSettingsStore';` 只为执行模块顶层的设置登记。没有 `from`，
+    旧正则抓不到：不补 `.js`、也不重指 vendor 位置，整个六壬 / 三式合一 / 六壬择日链加载失败。"""
+    src = "import '../../utils/pageSettingsStore';\nimport { a } from './b';\nexport const c = a;\n"
+    out, notes = rv.transform(src)
+    assert "import '../../utils/pageSettingsStore.js';" in out and "from './b.js'" in out
+    assert any("bare side-effect" in n for n in notes)
+    kept = "import 'lodash';\nimport './x.js';\n"
+    out, _ = rv.transform(kept)
+    assert "import 'lodash';" in out and "import './x.js';" in out
+
+
+def test_truncation_keeps_tail_reexports_of_head_imports() -> None:
+    """LiuRengMain（上游 v3.12.0）把纯逻辑拆到 main/*.js，文件尾的 `export { … }` 里有只在头部 import 的名字；
+    截断时只留「头部定义的」会丢掉它们，三式合一按名从 LiuRengMain 导入时链接失败。"""
+    src = ("import { QIZHENG_PLANET_COLOR, buildQiZhengItems } from './main/ganzhiHelpers';\n"
+           "export function head(){ return 1; }\n"
+           "class LiuRengMain extends Component{ render(){ return QIZHENG_PLANET_COLOR; } }\n"
+           "export {\n\tbuildQiZhengItems,\n\tQIZHENG_PLANET_COLOR,\n\tonlyInTail,\n};\n")
+    out, _ = rv.apply_deviations(src, [{"kind": "truncate_before", "anchor": "^class LiuRengMain extends Component"}])
+    assert "export {\n\tbuildQiZhengItems,\n\tQIZHENG_PLANET_COLOR,\n};" in out and "onlyInTail" not in out
+
+
+def test_inline_requires_of_declared_packages_become_one_top_level_import() -> None:
+    """上游 v3.12.0 utils/civilMoment.js 在三个函数里各 `const moment = require('moment');`：ESM 下 require 未定义，
+    Balbillus / 三分主星 / 月相推运一跑就炸。声明了的依赖提成一条顶层默认导入；没声明的包不动（留给人工）。"""
+    src = ("import { a } from './a.js';\n"
+           "export function f(){\n\tconst moment = require('moment');\n\treturn moment();\n}\n"
+           "export function g(){\n\tconst moment = require('moment');\n\tconst x = require('left-pad');\n\treturn x(moment());\n}\n")
+    out, notes = rv._rewrite_package_requires(src, {"moment"})
+    assert out.count("import moment from 'moment';") == 1 and "require('moment')" not in out
+    assert "const x = require('left-pad');" in out  # 未声明的包留着
+    assert any("package require→import moment" in n for n in notes)

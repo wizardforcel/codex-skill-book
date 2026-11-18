@@ -1,0 +1,54 @@
+[[rules]]
+id = "protected-dirs"
+checker = ["obsidian-knowledge-check", "protected-dirs"]
+
+[[rules]]
+id = "ai-readonly"
+checker = ["obsidian-knowledge-check", "ai-readonly"]
+
+[[rules]]
+id = "destructive-ops"
+checker = ["obsidian-knowledge-check", "destructive-ops"]
+
+[[rules]]
+id = "published-files"
+checker = ["obsidian-knowledge-check", "published-files"]
+
+[[rules]]
+id = "publish-allowlist"
+checker = ["obsidian-knowledge-check", "publish-allowlist"]
+overridable = false
+
+[[rules]]
+id = "generic-filenames"
+checker = ["obsidian-knowledge-check", "generic-filenames"]
+overridable = false
+
+[[rules]]
+id = "illegal-filenames"
+checker = ["obsidian-knowledge-check", "illegal-filenames"]
+overridable = false
+
+[[rules]]
+id = "memory-routing"
+checker = ["obsidian-knowledge-check", "memory-routing"]
+overridable = false
+
+[[rules]]
+id = "decision-records"
+checker = ["obsidian-knowledge-check", "decision-records"]
+
+[[rules]]
+id = "wikilinks"
+checker = ["obsidian-knowledge-check", "wikilinks"]
+overridable = false
+
+[[rules]]
+id = "dated-filenames"
+checker = ["obsidian-knowledge-check", "dated-filenames"]
+overridable = false
+
+[[rules]]
+id = "frontmatter"
+checker = ["obsidian-knowledge-check", "frontmatter"]
+overridable = false

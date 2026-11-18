@@ -1,0 +1,178 @@
+# agent-skills
+
+Portable agent skills for Codex and Claude Code, maintained as a public, MIT-licensed collection. Each skill is a directory under `skills/` with a `SKILL.md`; link or copy it into `~/.codex/skills/` or `~/.claude/skills/`.
+
+This repository was renamed from `codex-skills`; GitHub redirects the old URL.
+
+## Skills
+
+### `building-viewers`
+
+Build or extend read-only browser viewers from the data, artifacts, and application stack that actually exist in a repository. The skill covers catalog/API contracts, URL-restorable selection, desktop and mobile interaction, failure isolation, real-browser verification, and optional deployment selection.
+
+It includes a React + TypeScript + FastAPI starter for repositories without a viewer stack. Existing applications are adapted in place instead of being replaced by the starter. Tailscale is an optional private-sharing route when it is already available and appropriate; it is not a runtime dependency.
+
+### `building-data-science-projects`
+
+Create or restructure Python data-science and machine-learning projects with a focused stack. The skill preserves an existing repository's package manager, frameworks, and directory contracts; for greenfield projects, it selects only the libraries and directories that have a current owner.
+
+Recommendations are conditional rather than a bulk-install bundle. Exact versions remain in each project's `pyproject.toml` and lockfile, while experiment lifecycle details and viewer implementation stay delegated to the corresponding skills.
+
+### `managing-experiments`
+
+Plan, configure, retry, and assess repository experiments with self-contained experiment configs. Each config declares its component selections directly instead of inheriting from another experiment; shared settings stay with the concrete component, task, or artifact contract that owns them.
+
+An experiment combines a hypothesis with a bounded validation plan; trials are conditions within that plan, named `001a`, `001b`, and so on when adopting a new convention. Search earlier experiments before assigning a new ID. Corrections and retries preserve the experiment, trial, and fold; planned comparison changes add trials, and independent validation plans may need a new experiment. Use the skill's decision table autonomously within an approved plan or automatic experiment scope and budget; ask when the classification is unclear or the work exceeds that scope. Track executions through job IDs, run IDs, and logs without requiring manual attempt numbers or directories. Preserve existing attempt contracts and previous results used for comparisons. No theme hierarchy is required. Run status comes from artifacts attributable to the target execution.
+
+Before creating or changing experiment configs or experiment-specific code for an unapproved plan, ask the user for the hypothesis or present a hypothesis proposal with evidence and a comparison approach for approval. Include the candidate experiment number when proposing a new experiment. Read existing materials and propose concrete conditions in chat first; create configs and perform static validation after hypothesis confirmation, then launch only within an authorized execution scope. Trials state their IDs, changed conditions, baselines, and roles in testing that hypothesis; they do not require separate hypotheses or hypothesis approvals. Preserve existing approval for concrete hypotheses and plans. Choosing new experiment numbers and hypotheses autonomously requires explicit authorization covering those choices; an automatic-loop round limit alone does not grant it.
+
+W&B groups collect CV folds for the same trial; other trials are compared separately, and retry history is excluded from CV aggregation through explicit selection of execution results. A single verification or bounded search batch schedules a follow-up Codex summary after its required evaluations, with fixed trial, job or run ID, and artifact references. The summary follows `summarizing-experiments` when available, proposes important comparison conclusions for approval before saving them as knowledge, and does not launch further experiments.
+
+### `making-slides`
+
+Make one-message-per-slide 16:9 decks that help a reader regain the big picture quickly: a pipeline overview, architecture drill-downs with tensor shapes and repeat counts, real Before/After excerpts limited to one or two per deck, and why/how/usage sequences for unfamiliar mechanisms with worked examples computed by the target code's own algorithm. Slides are SVG widgets in a Claude Docs document (or a single HTML page without Docs). Icons come from the bundled Lucide set (ISC) through `scripts/icons.py`.
+
+### `writing-agent-handoffs`
+
+Write requests that hand work, experiments, or verification over to another person or coding agent, including the execution environment, access, stop conditions, deliverables, and how to monitor progress.
+
+### `summarizing-experiments`
+
+Summarize verified conditions, metrics, observations, and unknowns from experiment artifacts. Keep experiment documents factual; discuss interpretation and next actions in chat. Propose important, evidence-backed comparison conclusions as short `HIT` / `MISS` / `OPEN` entries with the exact text, destination heading, and experiment Markdown links; include compact before/after scores when useful. Save additions and updates only after the user approves the proposed content. Use a single `docs/knowledge/README.md` by default. Put an in-page contents list and one ideas section at the top, organize findings by pipeline category and topic headings, and collect shared evaluation assumptions at the end. Preserve established locations, avoid duplicates, and respect human corrections. AI additions to the unverified ideas section also require approval. Non-interactive summaries leave unapproved proposals in their final output and complete the factual summary; automatic knowledge recording requires explicit authorization for a concrete scope. Preserve the five-column overview and never invent a launch-time hypothesis after seeing the result.
+
+Keep the human-facing summary short: purpose, comparison, main results, and evaluation limits. Route AI verification and reproduction to canonical configs, artifacts, and a separate record when needed; keep operational histories out of the summary and read them only for the relevant investigation. Default reproduction and audit records to `docs/evidence/<task>/<id>.md`, outside human report directories and the viewer's ordinary list and search, while keeping them accessible by links.
+
+By default, update each experiment in `docs/experiments/<task>/<id>.md` and maintain the Mermaid lineage and overview table in `docs/experiments/<task>/README.md`. Keep one overview row per experiment, compare trials inside its summary, and link selected results to the exact trial, execution records, and artifacts. Preserve established report locations. Reuse Hydra configuration snapshots where available; commit IDs are optional, and code provenance remains separate from configuration.
+
+### `checking-training-pipelines`
+
+Check leakage, real-data forward/backward, fixed-batch overfitting, and a short training/validation run with time and step limits. Monitor training speed and GPU state lightly. Keep auxiliary records minimal and outside the experiment output tree.
+
+Use this skill for training correctness; use `managing-experiments` for experiment configuration, execution history, and resource scheduling.
+
+### `automating-experiments`
+
+Explicitly start a bounded experiment loop. A dedicated Pueue control job opens a fresh Codex session, lets the existing experiment skills select and run one verification, waits for its completion summary, then opens the next session. The default limit is three rounds; failures and stop requests end continuation. This skill has automatic invocation disabled.
+
+In the target repository, ask:
+
+```text
+$automating-experiments で、現在のサマリーから検出器の改善を自動実験して。
+GPU 0を使って最大3回。データ分割は固定し、結果を見て次の検証を選んで。
+```
+
+The skill records the authorized scope, round limit, Pueue job IDs, and session IDs outside experiment outputs. Its `status` and `stop` commands are documented in [the skill](skills/automating-experiments/SKILL.md). Stopping ends future sessions; already-started work continues. The round limit bounds sessions, not new experiment IDs, elapsed time, or GPU hours. An authorized search batch needs its own enforced trial/time limits. The helper requires Python 3.12+, Pueue, an authenticated Codex CLI with `--approve-for-me`, and the installed management and summary skills.
+
+## Install
+
+### `building-viewers`
+
+Ask Codex to install the skill from this repository:
+
+```text
+Install the building-viewers skill from xrwr/agent-skills.
+```
+
+Or run the bundled installer directly:
+
+```bash
+python ~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py \
+  --repo xrwr/agent-skills \
+  --path skills/building-viewers
+```
+
+### `building-data-science-projects`
+
+Ask Codex to install the skill from this repository:
+
+```text
+Install the building-data-science-projects skill from xrwr/agent-skills.
+```
+
+Or run the bundled installer directly:
+
+```bash
+python ~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py \
+  --repo xrwr/agent-skills \
+  --path skills/building-data-science-projects
+```
+
+### `managing-experiments`
+
+Ask Codex to install the skill from this repository:
+
+```text
+Install the managing-experiments skill from xrwr/agent-skills.
+```
+
+Or run the bundled installer directly:
+
+```bash
+python ~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py \
+  --repo xrwr/agent-skills \
+  --path skills/managing-experiments
+```
+
+### `summarizing-experiments`
+
+Ask Codex to install the skill from this repository:
+
+```text
+Install the summarizing-experiments skill from xrwr/agent-skills.
+```
+
+Or run the bundled installer directly:
+
+```bash
+python ~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py \
+  --repo xrwr/agent-skills \
+  --path skills/summarizing-experiments
+```
+
+### `checking-training-pipelines`
+
+Ask Codex to install the skill from this repository:
+
+```text
+Install the checking-training-pipelines skill from xrwr/agent-skills.
+```
+
+Or run the bundled installer directly after the skill is published:
+
+```bash
+python ~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py \
+  --repo xrwr/agent-skills \
+  --path skills/checking-training-pipelines
+```
+
+### `automating-experiments`
+
+Install `managing-experiments` and `summarizing-experiments` above, then install this skill after publication:
+
+```bash
+python ~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py \
+  --repo xrwr/agent-skills \
+  --path skills/automating-experiments
+```
+
+Restart Codex after installation. For reproducible machine setup, keep the repository URL and a release tag in dotfiles; keep the skill source and reusable assets here.
+
+## Development
+
+```bash
+uv run python -m unittest -v tests/test_skill_package.py tests/test_experiment_loop.py
+for skill in building-viewers building-data-science-projects managing-experiments summarizing-experiments checking-training-pipelines automating-experiments; do
+  uv run python ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py \
+    "skills/$skill"
+done
+```
+
+The package suite checks the skill files, metadata, documented contracts, and viewer scaffolding when this collection is edited. Run it locally before publishing changes; GitHub Actions also runs it on pushes and pull requests. It does not invoke a coding agent or automatically run when a skill is used, and it does not evaluate the quality of agent-generated reports or applications. The loop also runs the official validator against every skill.
+
+The loop tests exercise round limits, failed summaries, stale dependencies, stop requests, and duplicate execution without starting training. They do not measure hypothesis quality.
+
+A separate starter CI job generates the bundled viewer template into a temporary directory and runs its backend/frontend tests, lint, and build. Tests for a viewer adapted to a real project belong to that project.
+
+## License
+
+[MIT](LICENSE)

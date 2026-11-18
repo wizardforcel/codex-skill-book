@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "horosa",
+  "displayName": "Horosa 星阙 — 术数 / 占星",
+  "description": "Horosa (星阙) local-first metaphysics for Claude Code: 119 real technique tools over MCP (Western astrology, 八字/紫微/大六壬/奇门/太乙/金口诀/三式合一, 14 神数, 卜卦/择日, tarot, geomancy) plus the horosa-agent skill that teaches the clarify-before-call gate and export-snapshot reading contract.",
+  "version": "0.51.0",
+  "author": {
+    "name": "Horace Maxwell",
+    "url": "https://github.com/Horace-Maxwell"
+  },
+  "homepage": "https://github.com/Horace-Maxwell/horosa-skill",
+  "repository": "https://github.com/Horace-Maxwell/horosa-skill",
+  "license": "AGPL-3.0-only",
+  "keywords": [
+    "horosa",
+    "xingque",
+    "astrology",
+    "metaphysics",
+    "mcp",
+    "offline"
+  ],
+  "skills": [
+    "./skills/horosa-agent"
+  ],
+  "mcpServers": "./.claude-plugin/mcp.json",
+  "userConfig": {
+    "runtimeRoot": {
+      "type": "directory",
+      "title": "离线 runtime 目录 / Offline runtime directory",
+      "description": "已安装的 Horosa 离线 runtime 所在目录（约 2 GB）。留空用默认位置：macOS ~/.horosa/runtime，Windows %LOCALAPPDATA%\\Horosa\\runtime。",
+      "required": false
+    },
+    "dataDir": {
+      "type": "directory",
+      "title": "本地记录目录 / Local run + report directory",
+      "description": "运行记录、报告产物与 SQLite 索引的存放位置。留空用 ~/.horosa-skill。",
+      "required": false
+    },
+    "jevMode": {
+      "type": "string",
+      "title": "云端决策层 / Cloud decision layer (TypeSafe Jev): off / shadow / enforce",
+      "description": "可选。留空或 off（默认）= 全程本机。shadow 只把脱敏后的问题文本发给 TypeSafe Jev 并记录它会怎么判；enforce 才允许它填入原话明说的设置、为无匹配的请求兜底路由。需要下面的 API key。",
+      "default": "off",
+      "required": false
+    },
+    "jevApiKey": {
+      "type": "string",
+      "title": "TypeSafe Jev API key（可选 / optional）",
+      "description": "只在决策层不是 off 时使用。由客户端保存，永不写入 Horosa 的文件、日志或结果。",
+      "sensitive": true,
+      "required": false
+    },
+    "traditionalChinese": {
+      "type": "boolean",
+      "title": "繁體中文輸出 / Traditional Chinese output",
+      "description": "勾选后，排盘结果、提示与报告里给人读的文字改用繁体（台湾字形）；不勾 = 简体，与原来逐字相同。香港字形：环境变量 HOROSA_OUTPUT_SCRIPT=zh-Hant-HK。",
+      "default": false,
+      "required": false
+    }
+  }
+}

@@ -1,0 +1,279 @@
+"""CI workflow shape guards (v0.38.0 B0).
+
+Why this exists: GitHub's `pwsh` shell runs a multi-line `run:` block as ONE script and reports only
+the LAST command's exit code. The Windows smoke step called `tool run … --output` — an option that did
+not exist until v0.38.0 — and the failure stayed invisible for many rounds because the `memory query`
+line at the end exited 0. `$PSNativeCommandUseErrorActionPreference = $true` (pwsh ≥ 7.3; the
+`windows-latest` image ships 7.4) makes every native non-zero exit fail the step under the
+`$ErrorActionPreference = 'stop'` that GitHub prepends. A pwsh step without that line is a step whose
+failures are not evidence of anything.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+WORKFLOWS = REPO_ROOT / ".github" / "workflows"
+REQUIRED_LINE = "$PSNativeCommandUseErrorActionPreference = $true"
+
+_JOB = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
+_RUN = re.compile(r"^(\s*)(?:- )?run:\s*\|\s*$")
+_SHELL = re.compile(r"^\s*shell:\s*(\S+)\s*$")
+_STEP_START = re.compile(r"^(\s*)- ")
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _job_bodies(text: str) -> dict[str, list[str]]:
+    lines = text.splitlines()
+    jobs: dict[str, list[str]] = {}
+    current: str | None = None
+    in_jobs = False
+    for line in lines:
+        if line.strip() == "jobs:":
+            in_jobs = True
+            continue
+        if not in_jobs:
+            continue
+        match = _JOB.match(line)
+        if match:
+            current = match.group(1)
+            jobs[current] = []
+            continue
+        if current is not None:
+            jobs[current].append(line)
+    return jobs
+
+
+def _steps(body: list[str]) -> list[list[str]]:
+    """Split a job body into its `- …` step blocks (the `steps:` list items)."""
+    try:
+        start = next(i for i, line in enumerate(body) if line.strip() == "steps:")
+    except StopIteration:
+        return []
+    step_indent: int | None = None
+    steps: list[list[str]] = []
+    for line in body[start + 1 :]:
+        match = _STEP_START.match(line)
+        if match and (step_indent is None or len(match.group(1)) == step_indent):
+            step_indent = len(match.group(1))
+            steps.append([line])
+        elif steps:
+            steps[-1].append(line)
+    return steps
+
+
+def _job_default_shell(body: list[str]) -> str | None:
+    """`defaults: run: shell: X` at job level (the part of the body before `steps:`)."""
+    head = []
+    for line in body:
+        if line.strip() == "steps:":
+            break
+        head.append(line)
+    for line in head:
+        match = _SHELL.match(line)
+        if match:
+            return match.group(1)
+    return None
+
+
+def pwsh_run_blocks(text: str) -> list[tuple[str, str]]:
+    """Return (job, first_effective_line) for every multi-line `run: |` block executed by pwsh.
+
+    The shell of a block is the step's own `shell:` key if present, else the job's `defaults.run.shell`.
+    A bash step inside a pwsh job (or vice versa) is judged by its own shell. Comment and blank lines
+    at the top of a block do not count as the first line.
+    """
+    found: list[tuple[str, str]] = []
+    for job, body in _job_bodies(text).items():
+        default_shell = _job_default_shell(body)
+        for step in _steps(body):
+            shell = default_shell
+            for line in step:
+                match = _SHELL.match(line)
+                if match:
+                    shell = match.group(1)
+            if shell != "pwsh":
+                continue
+            for index, entry in enumerate(step):
+                run = _RUN.match(entry)
+                if not run:
+                    continue
+                base = _indent(entry)
+                first = ""
+                for block_line in step[index + 1 :]:
+                    if block_line.strip() == "":
+                        continue
+                    if _indent(block_line) <= base:
+                        break
+                    if block_line.strip().startswith("#"):
+                        continue
+                    first = block_line.strip()
+                    break
+                found.append((job, first))
+    return found
+
+
+def offending_blocks(text: str) -> list[tuple[str, str]]:
+    return [(job, first) for job, first in pwsh_run_blocks(text) if first != REQUIRED_LINE]
+
+
+def test_every_pwsh_run_block_propagates_native_exit_codes() -> None:
+    offenders: list[str] = []
+    for workflow in sorted(WORKFLOWS.glob("*.yml")):
+        for job, first in offending_blocks(workflow.read_text(encoding="utf-8")):
+            offenders.append(f"{workflow.name}::{job} starts with {first!r}")
+    assert offenders == [], (
+        "pwsh multi-line steps only report the LAST command's exit code — every such block must start with "
+        f"`{REQUIRED_LINE}`: {offenders}"
+    )
+
+
+_SYNTHETIC = """name: x
+on: push
+jobs:
+  win:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: smoke
+        run: |
+          # a comment does not count as the first line
+          {first}
+          uv run horosa-skill tool run qimen --stdin --output out.json
+          uv run horosa-skill memory query --tool qimen --limit 1
+  nix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: bash step
+        run: |
+          echo hello
+  mixed:
+    runs-on: windows-latest
+    steps:
+      - name: bash inside a windows job
+        shell: bash
+        run: |
+          set -euo pipefail
+      - name: pwsh by explicit step shell
+        shell: pwsh
+        run: |
+          {first}
+"""
+
+
+def test_guard_catches_a_pwsh_block_without_the_switch() -> None:
+    """Negative control: the exact shape that hid the `--output` failure must be red."""
+    bad = _SYNTHETIC.format(first="$root = Join-Path $env:RUNNER_TEMP 'x'")
+    assert offending_blocks(bad) == [
+        ("win", "$root = Join-Path $env:RUNNER_TEMP 'x'"),
+        ("mixed", "$root = Join-Path $env:RUNNER_TEMP 'x'"),
+    ]
+    good = _SYNTHETIC.format(first=REQUIRED_LINE)
+    assert offending_blocks(good) == []
+    # bash jobs — and bash steps inside a pwsh job — are never held to the pwsh rule
+    assert [job for job, _ in pwsh_run_blocks(good)] == ["win", "mixed"]
+
+
+# --------------------------------------------------------------------------------------
+# v0.40.0：stdio 探针的工具数不许写死（首推时 116 已过时 → 两个 job 红）
+# --------------------------------------------------------------------------------------
+
+_CI_YML_PATH = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "ci.yml"
+_PROBE_LITERAL = re.compile(r"\['tools'\] -ne \d+|probe\[\"tools\"\] == \d+")
+
+
+def literal_probe_counts(workflow_text: str) -> list[str]:
+    return [m.group(0) for m in _PROBE_LITERAL.finditer(workflow_text)]
+
+
+def test_stdio_probes_read_the_tool_count_from_the_budget_contract() -> None:
+    text = _CI_YML_PATH.read_text(encoding="utf-8")
+    assert literal_probe_counts(text) == []
+    assert "mcp_list_budget.json" in text and "full_tools" in text and "compact_tools" in text
+
+
+def test_guard_catches_a_literal_probe_count() -> None:
+    assert literal_probe_counts("if ($r['steps']['stdio_probe']['tools'] -ne 116) { throw 'x' }") == ["['tools'] -ne 116"]
+    assert literal_probe_counts('assert probe["tools"] == 116 == probe["expected_tools"]') == ['probe["tools"] == 116']
+
+
+
+def ci_permission_and_concurrency_problems(text: str) -> list[str]:
+    """ci.yml must be read-only, and its concurrency must never queue or cancel runs on main (v0.41.1).
+
+    A shared group on main — even with cancel-in-progress false — makes GitHub queue the next run and cancel whatever
+    is still queued, so some main commits silently get no CI result. On main each commit needs its own group.
+    """
+    problems = []
+    if not re.search(r"^permissions:\n  contents: read\n", text, re.M):
+        problems.append("top-level `permissions: contents: read` missing")
+    group = re.search(r"^concurrency:\n  group: (.+)\n  cancel-in-progress: (.+)\n", text, re.M)
+    if group is None:
+        problems.append("top-level concurrency block missing")
+    else:
+        if "github.sha" not in group.group(1):
+            problems.append("concurrency group is not per-commit outside pull requests (main runs would queue / cancel)")
+        if "pull_request" not in group.group(2):
+            problems.append("cancel-in-progress is not limited to pull requests")
+    return problems
+
+
+def test_ci_is_read_only_and_never_drops_a_main_run() -> None:
+    assert ci_permission_and_concurrency_problems((WORKFLOWS / "ci.yml").read_text(encoding="utf-8")) == []
+
+
+def test_concurrency_check_catches_a_shared_main_group() -> None:
+    shared = (
+        "permissions:\n  contents: read\n\n"
+        "concurrency:\n  group: ci-${{ github.ref }}\n  cancel-in-progress: false\n"
+    )
+    assert ci_permission_and_concurrency_problems(shared) == [
+        "concurrency group is not per-commit outside pull requests (main runs would queue / cancel)",
+        "cancel-in-progress is not limited to pull requests",
+    ]
+    assert "top-level `permissions: contents: read` missing" in ci_permission_and_concurrency_problems("concurrency:\n")
+
+
+def test_every_external_action_is_pinned_to_a_commit() -> None:
+    """审计 PF-18：action 只钉 tag / 分支（release-runtime 还带 id-token / attestations 写权限）。负向对照：把一处改回 @v5 → 红。"""
+    import re
+    from pathlib import Path
+
+    workflows = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+    loose = []
+    for path in sorted(workflows.glob("*.yml")):
+        for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            match = re.search(r"uses:\s*(\S+)", line)
+            if not match or match.group(1).startswith("./"):
+                continue
+            if not re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", match.group(1)):
+                loose.append(f"{path.name}:{line_no} {match.group(1)}")
+    assert not loose, loose
+    assert (workflows.parent / "dependabot.yml").is_file(), "钉了提交号要有 Dependabot 跟进"
+
+
+def test_ci_checks_out_the_pinned_public_upstream_for_the_cross_tree_tests() -> None:
+    """审计平台待决项 13 / PF-20：55 条 [upstream-checkout] 对照测试在 CI 里整段跳过。负向对照：删掉 ci.yml 里设 HOROSA_SOURCE_ROOT 的那一步 → 红。"""
+    import json
+
+    text = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    test_job = text[text.index("\n  test:"):]
+    assert "steps.upstream.outputs.sha" in test_job and "HOROSA_SOURCE_ROOT=$GITHUB_WORKSPACE/.upstream/horosa-public" in test_job
+    state = json.loads((REPO_ROOT / "horosa-skill" / "contracts" / "upstream_provenance.json").read_text(encoding="utf-8"))
+    assert re.fullmatch(r"[0-9a-f]{40}", state["upstream_git_sha"])
+    assert state["upstream_repository"] == "Horace-Maxwell/Horosa-Web-App-comprehensively-improved-MacOS"
+
+
+def test_the_full_benchmark_runs_in_the_darwin_lane_without_blocking() -> None:
+    """审计平台待决项 14：HorosaBench 完整跑进有引擎的 lane，先只记录。负向对照：删掉这一步或去掉 continue-on-error → 红。"""
+    text = (WORKFLOWS / "runtime-matrix.yml").read_text(encoding="utf-8")
+    step = text[text.index("- name: HorosaBench (full suite, record only)"):]
+    step = step[: step.index("- name: Upload lane evidence")]
+    assert "matrix.platform == 'darwin-arm64'" in step and "continue-on-error: true" in step and "--require-full" in step

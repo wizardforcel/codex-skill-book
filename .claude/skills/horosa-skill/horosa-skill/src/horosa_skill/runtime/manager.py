@@ -1,0 +1,3443 @@
+from __future__ import annotations
+
+import functools
+import hashlib
+import json
+import logging
+import os
+import platform
+import re
+import secrets
+import sys
+import shutil
+import stat
+import subprocess
+import tarfile
+import tempfile
+import threading
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+from urllib.request import url2pathname
+
+import httpx
+
+from horosa_skill import fsretry
+from horosa_skill.config import Settings
+from horosa_skill.engine.client import HorosaApiClient, loopback_httpx_client
+from horosa_skill.errors import HorosaSkillError, RuntimeInstallError, RuntimeValidationError, bilingual
+from horosa_skill.runtime import archives
+from horosa_skill.runtime import engine_asset
+from horosa_skill.runtime.engine_asset import EngineAssetMixin
+from horosa_skill.runtime import registry as runtime_registry
+from horosa_skill.runtime.identity import EndpointIdentity, classify_endpoint, holders_outside_runtime_root, trust_unknown_ports
+from horosa_skill.runtime.pidlock import (
+    INSTALL_OWNER,
+    LAUNCHER_OWNER,
+    LockDirNotWritableError,
+    describe_lock,
+    release as release_lock,
+    release_launcher,
+    try_pid_lock,
+)
+from horosa_skill.runtime.procs import pid_alive, process_start_token
+from horosa_skill.runtime.ports import port_holders, port_taken
+from horosa_skill.tracing import TraceRecorder
+from horosa_skill.runtime.windows_jar_patch import WindowsBootJarPatchMixin
+from horosa_skill.runtime.mac_launcher_patch import MacLauncherPatchMixin
+from horosa_skill.winproc import NO_WINDOW
+
+logger = logging.getLogger(__name__)
+
+
+_MACHINE_ALIASES = {
+    "amd64": "x64", "x86_64": "x64", "x64": "x64",
+    "arm64": "arm64", "aarch64": "arm64", "armv8l": "arm64",
+    "x86": "x86", "i386": "x86", "i686": "x86",
+}
+
+
+def _canonical_machine(name: Any) -> str:
+    text = str(name or "").strip().lower()
+    return _MACHINE_ALIASES.get(text, text)
+
+
+@functools.lru_cache(maxsize=1)
+def _darwin_translated() -> bool:
+    """True when this process runs under Rosetta 2 (`sysctl.proc_translated == 1`). Cached: the host does not change."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        completed = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", "sysctl.proc_translated"],
+            capture_output=True, text=True, timeout=5, check=False, encoding="utf-8", errors="replace", creationflags=NO_WINDOW,
+        )
+    except Exception:  # noqa: BLE001 - detection must never break platform lookup
+        return False
+    return completed.returncode == 0 and completed.stdout.strip() == "1"
+
+
+def process_machine() -> str:
+    """Architecture of THIS interpreter (x64 / arm64 / x86) — what a WOW64 or Rosetta process believes it is."""
+    if os.name == "nt":
+        # PROCESSOR_ARCHITECTURE is the process view (AMD64 for an x64 Python under WOW64 on ARM64);
+        # platform.machine() on 3.12 asks WMI and already answers with the *native* CPU.
+        env_arch = os.environ.get("PROCESSOR_ARCHITECTURE")
+        if env_arch:
+            return _canonical_machine(env_arch)
+    return _canonical_machine(platform.machine())
+
+
+def native_machine() -> str:
+    """Architecture of the host CPU even when this interpreter runs under emulation (WOW64 / Rosetta).
+
+    v0.38.0 A4/B6: Windows on ARM installs the x64 payload; doctor must say which chip it is really on.
+    Windows: `IsWow64Process2` (Windows 10 1709+), falling back to PROCESSOR_ARCHITEW6432 (set only for
+    WOW64 processes). macOS: `sysctl.proc_translated`. Elsewhere: `platform.machine()`.
+    """
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            process_arch = ctypes.c_ushort(0)
+            native_arch = ctypes.c_ushort(0)
+            if kernel32.IsWow64Process2(kernel32.GetCurrentProcess(), ctypes.byref(process_arch), ctypes.byref(native_arch)):
+                known = {0x8664: "x64", 0xAA64: "arm64", 0x014C: "x86"}.get(native_arch.value)
+                if known:
+                    return known
+        except Exception:  # noqa: BLE001 - older Windows / missing symbol → env fallback
+            pass
+        wow = os.environ.get("PROCESSOR_ARCHITEW6432")
+        if wow:
+            return _canonical_machine(wow)
+        return process_machine()
+    if sys.platform == "darwin" and _darwin_translated():
+        return "arm64"
+    return _canonical_machine(platform.machine())
+
+
+def arch_report() -> dict[str, Any]:
+    """`doctor.arch`: {process, native, emulated} — emulated means this *interpreter* is translated."""
+    process = process_machine()
+    native = native_machine()
+    return {"process": process, "native": native, "emulated": bool(process and native and process != native)}
+
+
+def host_platform_key() -> str:
+    """本机的载荷平台键，给 runtime 包以外的模块用。"""
+    return _platform_key()
+
+
+def _platform_key() -> str:
+    # 架构精确匹配：只有确知的 64 位架构映射到发布键；其余（i386/i686/armv7l 等）保留原始
+    # machine 名 —— 让 install 的 `runtime.install_missing_platform` 错误如实报出真实架构，
+    # 而不是把 32 位机器误标成 x64 后下载一个跑不起来的运行时。
+    machine = platform.machine().lower()
+    arm64 = {"arm64", "aarch64", "armv8l"}
+    x64 = {"x86_64", "amd64"}
+    if sys_platform := platform.system().lower():
+        if sys_platform == "darwin":
+            # An x86_64 Python under Rosetta reports x86_64, but the payload is self-contained (own JDK /
+            # Python / Node) — the arm64 payload is the right one on an Apple Silicon host (v0.38.0 A4).
+            if machine in x64 and _darwin_translated():
+                return "darwin-arm64"
+            if machine in arm64:
+                return "darwin-arm64"
+            if machine in x64:
+                return "darwin-x64"
+            return f"darwin-{machine}"
+        if sys_platform == "windows":
+            # x64 Python on an ARM64 host runs under emulation and platform.machine() may say AMD64;
+            # Windows exposes the native arch as PROCESSOR_ARCHITEW6432 (A0 runner-probe: "ARM64").
+            if os.environ.get("PROCESSOR_ARCHITEW6432", "").lower() in arm64:
+                return "win32-arm64"
+            if machine in arm64:
+                return "win32-arm64"
+            if machine in x64:
+                return "win32-x64"
+            return f"win32-{machine}"
+        if sys_platform == "linux":
+            if machine in arm64:
+                return "linux-arm64"
+            if machine in x64:
+                return "linux-x64"
+            return f"linux-{machine}"
+    return f"{sys_platform}-{machine}"
+
+
+# Which payloads a release ships and what other hosts do. Locked to contracts/release_platforms.json by
+# tests/test_runtime_platform_fallback.py (the wheel does not ship contracts/, hence the duplication).
+SUPPORTED_PAYLOAD_PLATFORMS = ("darwin-arm64", "win32-x64")
+# host platform -> (payload to install, mode). Windows on ARM runs the x64 payload under Windows 11's
+# x64 emulation (A0 runner-probe on windows-11-arm: x64 Temurin 17 / Node 22 / embedded CPython 3.12 run).
+# NEVER darwin-x64 -> darwin-arm64: Rosetta runs x86_64 on arm64, not the reverse.
+PLATFORM_FALLBACKS: dict[str, tuple[str, str]] = {"win32-arm64": ("win32-x64", "x64-emulation")}
+
+
+def host_os_version() -> str:
+    """Host OS version for `min_os` checks: Windows `major.minor.build`, macOS `platform.mac_ver()`, else ''."""
+    try:
+        if os.name == "nt":
+            win = sys.getwindowsversion()  # type: ignore[attr-defined]
+            return f"{win.major}.{win.minor}.{win.build}"
+        if sys.platform == "darwin":
+            return platform.mac_ver()[0] or ""
+    except Exception:  # noqa: BLE001 - both calls practically never raise; if one does, an unknown version
+        return ""  # must not block an install (an empty version makes the min_os check skip, not fail)
+    return ""
+
+
+def _version_tuple(text: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", text or "")[:3])
+
+
+def _assert_min_os(min_os: Any, platform_name: str, *, host_version: str | None = None) -> None:
+    """A payload that declares `min_os` (derived payloads do, v0.38.0 A2) refuses hosts older than it."""
+    if not isinstance(min_os, str) or not min_os.strip():
+        return
+    host = host_os_version() if host_version is None else host_version
+    if not host or not _version_tuple(host):
+        return
+    if _version_tuple(host) < _version_tuple(min_os):
+        raise RuntimeInstallError(
+            bilingual(
+                f"本机系统版本 {host} 低于离线 runtime 载荷要求的 {min_os}。",
+                f"This runtime payload needs OS version {min_os}+ but this host reports {host}.",
+            ),
+            code="runtime.install_os_too_old",
+            details={
+                "platform": platform_name,
+                "min_os": min_os,
+                "host_os": host,
+                "next_action": "升级操作系统，或走网关模式（HOROSA_SERVER_ROOT / HOROSA_CHART_SERVER_ROOT 指向一台受支持的机器）。",
+                "agent_recovery": {
+                    "must_ask_user": False,
+                    "prompt_to_user": f"本机系统版本 {host} 低于离线 runtime 要求的 {min_os}，无法安装；可升级系统或走网关模式。",
+                },
+            },
+        )
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _parse_manifest_text(text: str) -> tuple[dict[str, Any] | None, str | None]:
+    """清单文本 → (清单, None)；不是 JSON / 不是清单时 (None, 原因)，原因说成「它其实是什么」（HTML 登录页 / 接口报错 / 别的 JSON）。"""
+    stripped = text.lstrip("\ufeff \t\r\n")
+    try:
+        payload = json.loads(stripped)
+    except ValueError:
+        lowered = stripped[:512].lower()
+        if lowered.startswith(("<!doctype", "<html", "<?xml")) or "<html" in lowered:
+            return None, "the content is an HTML page (a login / error page?)"
+        return None, "the file is empty" if not stripped else "the content is not JSON"
+    if not isinstance(payload, dict) or not isinstance(payload.get("platforms"), dict):
+        return None, "the JSON has no `platforms` object (an API error body, or some other file?)"
+    return payload, None
+
+
+def _contextualize(text: str) -> str:
+    """提示里的 `horosa-skill …` 按本机安装方式改写（hints.contextualize；E-06）。"""
+    from horosa_skill.runtime.hints import contextualize
+
+    return contextualize(text)
+
+
+def _describe_takers(takers: list[dict[str, Any]]) -> str:
+    """`java_backend :9999 ← pid 123 (nc -l 9999)`；点不出进程时如实说不知道是谁。"""
+    parts = []
+    for taker in takers:
+        holders = ", ".join(f"pid {h.get('pid')} ({str(h.get('command') or '?')[:60]})" for h in taker.get("holders") or [])
+        parts.append(f"{taker.get('label')} :{taker.get('port')} ← {holders or 'unknown process / 查不出进程'}")
+    return "; ".join(parts)
+
+
+def _is_local_location(value: str) -> bool:
+    """file:// 或本地路径（含 Windows 盘符）。http(s) 与任何别的 scheme 都不算本地。"""
+    parsed = urlparse(value)
+    return parsed.scheme == "file" or parsed.scheme == "" or (len(parsed.scheme) == 1 and value[1:3] in {":\\", ":/"})
+
+
+def _is_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https", "file"}
+
+def _windows_long_paths_enabled() -> bool:
+    """注册表里的 LongPathsEnabled。读不到就当没开（保守，宁可多给一次提示）。读法在 winpaths（报告路径也用它）。"""
+    from horosa_skill import winpaths
+
+    return winpaths.long_paths_enabled()
+
+
+_SMART_APP_CONTROL_STATES = {0: "off", 1: "on", 2: "evaluation"}
+
+
+def smart_app_control_state() -> str | None:
+    """`--entry auto` 与 doctor 读的入口（测试会话把它钉成 None，见 tests/conftest.py）；真读注册表见下。"""
+    return read_smart_app_control_state()
+
+
+def read_smart_app_control_state() -> str | None:
+    """Windows 11 Smart App Control：`on` / `evaluation` / `off`；非 Windows 或读不到（Windows 10、无此键）返回 None。
+
+    注册表 `HKLM\\SYSTEM\\CurrentControlSet\\Control\\CI\\Policy` 的 `VerifiedAndReputablePolicyState`（0 关 / 1 开 / 2 评估）。
+    `on` 时没有签名也没有云端信誉的程序会被拒绝执行——uv 现生成的 `Scripts\\*.exe` 就属于这类（os error 4551），
+    所以 `client config` / `setup` 的 `--entry auto` 据此改写成 `python -m horosa_skill`。
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import winreg  # type: ignore[import-not-found]
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\CI\Policy") as key:
+            value, _ = winreg.QueryValueEx(key, "VerifiedAndReputablePolicyState")
+    except Exception:  # noqa: BLE001 - 读不到 = 不知道，按缺省入口走（探针，None 即答案；已进 silent_degrade 基线）
+        return None
+    return smart_app_control_label(value)
+
+
+def smart_app_control_label(value: Any) -> str | None:
+    """注册表原值 → `on` / `evaluation` / `off`；认不出的值返回 None（不猜）。"""
+    try:
+        return _SMART_APP_CONTROL_STATES.get(int(value))
+    except (TypeError, ValueError):
+        return None
+
+
+# v0.38.0 B6：安装临时目录与 doctor 的长路径余量估算共用这几个常量（tests/test_doctor_machine_conditions.py 锁步）。
+_INSTALL_TEMP_PREFIX = ".hi-"
+_INSTALL_EXTRACT_DIRNAME = "x"
+INSTALL_TEMP_OWNER = ".owner"  # `.hi-*` 里记属主 pid：被杀的 install 留下的目录要能和正在跑的分开
+_INSTALL_TEMP_MAX_AGE_SECONDS = 6 * 3600.0  # 属主「活着」但目录这么老：pid 被回收了（解压只要分钟级，下载不在这个目录里）
+_INSTALL_TEMP_UNMARKED_AGE_SECONDS = 3600.0  # 没有属主标记：老版本留下的，或刚建还没写
+# `<root>/.hi-XXXXXXXX/x/` — tempfile 随机后缀 8 个字符
+_INSTALL_TEMP_OVERHEAD = len(_INSTALL_TEMP_PREFIX) + 8 + 1 + len(_INSTALL_EXTRACT_DIRNAME) + 1
+# 载荷里最深的条目（含 `runtime-payload/` 前缀）。v0.38.0 darwin 载荷**实测** 179
+# （…/site-packages/streamlit/.agents/skills/developing-with-streamlit/assets/templates/apps/dashboard-seattle-weather/streamlit_app.py），
+# Windows 树还短约 7。此前写 200：默认根 `C:\Users\<user>\AppData\Local\Horosa\runtime`（38 + 用户名长度）
+# 在用户名 ≥ 6 字符时被 doctor 报成 headroom -1 / ok:false，让人去搬一个其实装得下的 runtime。
+# scripts/verify_runtime_release.py 双向锁它：真实最长条目 ≤ 本值，且本值 − 实测 ≤ 8（不许再高估）。
+PAYLOAD_LONGEST_ENTRY_CHARS = 180
+WINDOWS_PATH_LIMIT = 259
+# doctor 能报出的 issue 码（`missing:*` 是前缀族）；cli._DOCTOR_ADVICE 必须逐个给出人话（锁步测试）。
+DOCTOR_ISSUE_CODES = (
+    "runtime.manifest_invalid",
+    "runtime.state_invalid",
+    "runtime:not_installed",
+    "runtime:root_not_writable",
+    "external:unreachable",
+    "missing:*",
+    "services:java_backend_not_running",
+    "services:chart_not_running",
+    "services:not_running",
+    "quarantine:runtime_binaries",
+    "windows:runtime_root_not_ascii",
+)
+
+
+# v0.38.1 R4：每次成功抓到发布清单（install / upgrade / setup 探针 / doctor --probe-network）都把版本号顺手记在
+# runtime 根下；默认 doctor **只读这份缓存**（保住「零外网请求」不变量），没有缓存就老实报 latest_version: null。
+LATEST_MANIFEST_CACHE_NAME = ".latest-manifest-cache.json"
+
+
+def _release_version_tuple(text: str | None) -> tuple[int, ...] | None:
+    """发布版本号 → 数字段元组（不截断到三段，`+local` 后缀忽略）；解析不出返回 None。`_version_tuple` 是 OS 版本用的三段版。"""
+    if not text:
+        return None
+    parts = re.findall(r"\d+", str(text).split("+", 1)[0])
+    return tuple(int(p) for p in parts) if parts else None
+
+
+def version_is_newer(latest: str | None, installed: str | None) -> bool | None:
+    """`latest` 是否比 `installed` 新；任一边解析不出数字段返回 None（不知道 ≠ 最新）。"""
+    a, b = _release_version_tuple(latest), _release_version_tuple(installed)
+    if a is None or b is None:
+        return None
+    return a > b
+
+
+def _rmtree_force(path: Path) -> None:
+    """rmtree，顺手清 Windows 只读位（嵌入式 JDK 的部分文件带 R 属性，裸 rmtree 会 PermissionError）。仍失败就抛。"""
+
+    def _onexc(func, failed_path, _exc):  # noqa: ANN001
+        os.chmod(failed_path, stat.S_IWRITE)
+        func(failed_path)
+
+    shutil.rmtree(path, onexc=_onexc)
+
+
+def _host_is_windows() -> bool:
+    return os.name == "nt"
+
+
+def windows_ansi_code_page() -> int | None:
+    """Windows 的系统 ANSI 代码页（GetACP）；非 Windows 或查不到返回 None。"""
+    if not _host_is_windows():
+        return None
+    try:
+        import ctypes
+
+        return int(ctypes.windll.kernel32.GetACP())  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - 只用于报告，查不到不影响判定
+        return None
+
+
+def windows_runtime_path_ok(path: Path | str) -> bool:
+    """Windows：runtime 根必须是**纯 ASCII**（v0.38.1，draft 真机矩阵三轮实证）。
+
+    随包的两个原生组件都用窄字符 API 碰文件系统：
+      · JDK 17 的 java.exe 用 GetModuleFileNameA 找自己的 java.dll、用 GetCommandLineA 读参数——系统 ANSI 代码页表示不了的字符变 `?`
+        （en-US runner 上的「horosa 测试 lane」：`Unable to access jarfile …??…` → `could not find java.dll`）；
+      · Swiss Ephemeris（pyswisseph → C `fopen`）拿到的是 **UTF-8 编码**的星历目录，而 Windows 的 fopen 按 ANSI 代码页解字节——
+        **任何**非 ASCII 字符都对不上，哪怕代码页能表示（「horosa lane é」下 Java 起来了，Chiron 星历打不开 → `KeyError: 'Chiron'` →
+        29 个 chart 族测试报误导性的 `tool.backend_param_error`）。所以中文系统（cp936）上的中文用户名同样中招。
+    Python / Node / PowerShell / JVM 内部文件 IO 走 Unicode API，不受影响；只有这两处决定了规则只能是「纯 ASCII」。
+    """
+    return str(path).isascii()
+
+
+def data_privacy_report(settings: Any) -> dict[str, Any]:
+    """数据目录与记忆库对本机其他用户是否可读（审计 O-05）。存档里是姓名、出生时刻地点、问题与 AI 解读；目录 0755 / 库 0644 时
+    同机别的账户都读得到（报告则是 0600，两边不一致）。只报不改：已有目录的权限是用户的（容器卷上别的进程可能要读），修复命令交给用户。
+    不进 issues（不让 doctor 因此 ok:false）；Windows 用户 profile 的 ACL 继承，不查。"""
+    if os.name == "nt":
+        return {"checked": False, "reason": "windows_acl", "flagged": [], "fix": None}
+    flagged: list[dict[str, Any]] = []
+    for label, path in (("data_dir", Path(settings.data_dir)), ("memory_db", Path(settings.db_path))):
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+        except OSError:
+            continue
+        if mode & 0o077:
+            flagged.append({"what": label, "path": str(path), "mode": oct(mode)})
+    data_dir = Path(settings.data_dir)
+    return {
+        "checked": True,
+        "readable_by_others": bool(flagged),
+        "flagged": flagged,
+        "fix": f"chmod 700 '{data_dir}'" if flagged else None,
+        "note": ("数据目录 / 记忆库对本机其他用户可读：存档里有姓名、出生时刻地点与解读。单人机器建议 chmod 700；"
+                 "容器卷上要给别的进程读的部署请保留。" if flagged else None),
+    }
+
+
+def windows_path_report(runtime_root: Path) -> dict[str, Any] | None:
+    """doctor.windows：长路径开关 + 按最深载荷条目估的余量（负数 = install 会以 runtime.install_long_path 拒绝）
+    + runtime 根是否纯 ASCII（否 = install 以 runtime.path_not_ascii 拒绝，doctor 报 windows:runtime_root_not_ascii）。"""
+    if os.name != "nt":
+        return None
+    enabled = _windows_long_paths_enabled()
+    root_length = len(str(runtime_root))
+    projected = root_length + 1 + _INSTALL_TEMP_OVERHEAD + PAYLOAD_LONGEST_ENTRY_CHARS
+    headroom = WINDOWS_PATH_LIMIT - projected
+    ascii_ok = windows_runtime_path_ok(runtime_root)
+    app_control = smart_app_control_state()
+    return {
+        "long_paths_enabled": enabled,
+        "runtime_root_length": root_length,
+        "projected_deepest_path": projected,
+        "limit": WINDOWS_PATH_LIMIT,
+        "headroom_chars": None if enabled else headroom,
+        "ok": enabled or headroom >= 0,
+        "fix": None if (enabled or headroom >= 0) else (
+            "设 HOROSA_RUNTIME_ROOT=C:\\horosa（更短的路径），或开启注册表 LongPathsEnabled=1 后重启。"
+        ),
+        "ansi_code_page": windows_ansi_code_page(),
+        "runtime_root_ascii": ascii_ok,
+        "path_fix": None if ascii_ok else (
+            "`setx HOROSA_RUNTIME_ROOT C:\\horosa`（纯英文路径），新开终端并重启 AI 客户端后重跑 install / setup。"
+        ),
+        "smart_app_control": app_control,
+        "app_control_note": None if app_control != "on" else (
+            "Smart App Control 已开启：uv 现生成的 horosa-skill.exe 可能被拦（os error 4551）。`setup` / `client config` "
+            "缺省（--entry auto）已改写成 `python -m horosa_skill`；手写的配置照此改即可，不必关闭 Smart App Control。"
+        ),
+    }
+
+
+def _platform_dead_end_advice(platform_name: str) -> dict[str, Any]:
+    """没有原生载荷时给出真正的出路，而不是把人卡在「不支持」四个字上。
+
+    🔴 之前这条错误只说「manifest 里没有这个平台」。Intel Mac 与 Linux 用户由此以为是发布疏漏，
+    于是反复重试、或去下载 arm64 包（在 Rosetta 下起不来：嵌入式 JDK/Python 是原生二进制）。
+    离线载荷确实只发 darwin-arm64 与 win32-x64 —— 但**网关模式**在任何平台上都可用：Python 包
+    本身跨平台，把 HOROSA_SERVER_ROOT / HOROSA_CHART_SERVER_ROOT 指向一台装了 runtime 的机器即可。
+    """
+    gateway = bilingual(
+        "网关模式：在一台受支持的机器（darwin-arm64 / win32-x64）上跑 runtime，本机只装 Python 包，"
+        "设 HOROSA_SERVER_ROOT 与 HOROSA_CHART_SERVER_ROOT 指过去即可（外部模式，本机不启动任何服务）。",
+        "Gateway mode: run the runtime on a supported machine (darwin-arm64 / win32-x64), install only the "
+        "Python package here, and point HOROSA_SERVER_ROOT / HOROSA_CHART_SERVER_ROOT at it "
+        "(external mode: nothing is started locally).",
+    )
+    if platform_name.startswith("darwin-x64"):
+        reason = bilingual(
+            "Intel Mac 没有原生离线载荷（本轮明确不做 x86_64 载荷）；arm64 那份**不能**在 Rosetta 下跑"
+            "（内含的 JDK 与 Python 是原生 arm64 二进制）。",
+            "Intel Macs have no native offline payload (x86_64 is deliberately not built); the arm64 payload "
+            "cannot run under Rosetta (its embedded JDK and Python are native arm64 binaries).",
+        )
+    elif platform_name.startswith("linux"):
+        reason = bilingual(
+            "Linux 没有发布载荷（实验性）；可自建载荷，或走网关模式。",
+            "No Linux payload is published (experimental); build your own payload or use gateway mode.",
+        )
+    elif platform_name.startswith("win32-arm64"):
+        reason = bilingual(
+            "Windows on ARM 会自动安装 x64 载荷走 Windows 11 的 x64 仿真——走到这里说明清单里连 win32-x64 "
+            "都没有（发布不完整），请稍后重试或换一个清单 URL。",
+            "Windows on ARM normally installs the x64 payload under Windows 11 x64 emulation; reaching this "
+            "error means the manifest lacks even win32-x64 (incomplete release) — retry later or use another manifest URL.",
+        )
+    else:
+        reason = bilingual(
+            f"平台 `{platform_name}` 没有发布载荷。",
+            f"No payload is published for platform `{platform_name}`.",
+        )
+    confirm = bilingual(
+        "`horosa-skill doctor --explain` 会给出本机的平台判定（platform_supported）与同样的出路。",
+        "`horosa-skill doctor --explain` prints this platform verdict (platform_supported) and the same way out.",
+    )
+    return {
+        "reason": reason,
+        "next_action": f"{gateway} {confirm}",
+        "agent_recovery": {
+            "must_ask_user": False,
+            "prompt_to_user": f"{reason} {gateway} {confirm}",
+            "commands": ["horosa-skill doctor --explain"],
+        },
+    }
+
+
+# E-12（surface 批）：setup 在「本平台没有载荷」时跳过安装并给同一条出路——公开名供 surfaces 层用（tests/test_layering.py）。
+def platform_dead_end_advice(platform_name: str) -> dict[str, Any]:
+    return _platform_dead_end_advice(platform_name)
+
+
+def platform_has_payload(platform_name: str | None = None) -> bool:
+    """这个宿主平台能不能装到离线载荷（原生或经 PLATFORM_FALLBACKS 仿真）。"""
+    key = platform_name or _platform_key()
+    return key in SUPPORTED_PAYLOAD_PLATFORMS or key in PLATFORM_FALLBACKS
+
+
+def _content_range_total(value: str | None) -> int | None:
+    """`Content-Range: bytes */5000` 里的总长；没有或是 `*` 时 None。"""
+    match = re.search(r"/\s*(\d+)\s*$", value or "")
+    return int(match.group(1)) if match else None
+
+
+def _hand_lock_to(lock_path: Path, pid: Any) -> None:
+    """把启动锁的持有者改写成启动器自己的 pid（锁的寿命 = 一次启动的寿命）。
+
+    改写失败就直接释放：宁可放两个启动器进来（启动脚本本身对「端口已占用」是拒绝而非覆盖），
+    也不要留下一把没人能回收的锁把后续所有启动挡死。
+    """
+    if not isinstance(pid, int) or pid <= 0:
+        release_lock(lock_path)
+        return
+    try:
+        payload = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        release_lock(lock_path)
+        return
+    payload["pid"] = pid
+    payload["owner"] = LAUNCHER_OWNER
+    # 口令跟着 pid 一起换成启动器的；取不到就删掉旧的（留着本进程的口令会让启动器的锁被立刻判成「换人了」）。
+    token = process_start_token(pid)
+    if token:
+        payload["start_token"] = token
+    else:
+        payload.pop("start_token", None)
+    try:
+        lock_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        release_lock(lock_path)
+
+
+_PARTIAL_REPROBE_ATTEMPTS = 3
+_PARTIAL_REPROBE_INTERVAL_SECONDS = 0.5
+
+
+def _reprobe_sleep(seconds: float) -> None:
+    """复探间隔的接缝。测试替换它而不是全局 time.sleep——后者会把别的线程（如 subprocess 轮询）的 sleep 也记进去。"""
+    time.sleep(seconds)
+
+
+class HorosaRuntimeManager(EngineAssetMixin, MacLauncherPatchMixin, WindowsBootJarPatchMixin):
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.runtime_root = settings.runtime_root
+        self.current_dir = settings.runtime_current_dir
+        self.tracer = TraceRecorder(settings)
+        self._service_lock = threading.Lock()
+        # 上一次「Java 起不来、只剩 chart」的启动时刻（monotonic）；冷却期内 start_local_services 不重启。
+        self._last_degraded_start_at: float | None = None
+
+    def java_backend_cooldown_remaining(self) -> float:
+        """Seconds left in the degraded-chart-only retry cooldown (0 when healthy / expired / disabled).
+
+        In-process timestamp first; falls back to the runtime state file so a fresh CLI process after an
+        MCP server's degraded start does not immediately tear the healthy chart service down again.
+        """
+        cooldown = float(self.settings.runtime_java_retry_cooldown_seconds)
+        if cooldown <= 0:
+            return 0.0
+        if self._last_degraded_start_at is not None:
+            return max(0.0, cooldown - (time.monotonic() - self._last_degraded_start_at))
+        state = self.load_runtime_state()
+        if not isinstance(state, dict) or state.get("status") != "degraded_chart_only":
+            return 0.0
+        try:
+            updated = datetime.fromisoformat(str(state.get("updated_at") or ""))
+        except ValueError:
+            return 0.0
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=UTC)
+        return max(0.0, cooldown - (datetime.now(UTC) - updated).total_seconds())
+
+    def load_installed_manifest(self, *, strict: bool = False) -> dict[str, Any] | None:
+        manifest_path = self.current_dir / "runtime-manifest.json"
+        if not manifest_path.is_file():
+            return None
+        try:
+            manifest = self._normalize_manifest_data(
+                json.loads(manifest_path.read_text(encoding="utf-8")),
+                manifest_path=manifest_path,
+            )
+        except (OSError, json.JSONDecodeError, RuntimeValidationError) as exc:
+            if strict:
+                if isinstance(exc, RuntimeValidationError):
+                    raise
+                raise RuntimeValidationError(
+                    "Installed runtime manifest is invalid.",
+                    code="runtime.manifest_invalid",
+                    details={"manifest_path": str(manifest_path), "error": str(exc)},
+                ) from exc
+            return None
+        return manifest
+
+    def load_runtime_state(self, *, strict: bool = False) -> dict[str, Any] | None:
+        path = self.settings.runtime_state_path
+        if not path.is_file():
+            return None
+        payload = runtime_registry.read_state(path)
+        if payload is None and strict:
+            raise RuntimeValidationError(
+                "Runtime state file is invalid.",
+                code="runtime.state_invalid",
+                details={"path": str(path)},
+            )
+        return payload
+
+    def install(
+        self,
+        *,
+        archive: str | None = None,
+        manifest_url: str | None = None,
+        platform_key: str | None = None,
+        force: bool = False,
+        progress: Any | None = None,
+        sha256: str | None = None,
+        engine_only: bool = False,
+        allow_downgrade: bool = False,
+    ) -> dict[str, Any]:
+        with self.tracer.span(
+            workflow_name="runtime.install",
+            metadata={"entrypoint": "runtime.install", "archive": archive, "manifest_url": manifest_url, "force": force,
+                      "engine_only": engine_only},
+        ) as trace:
+            platform_name = platform_key or self.settings.runtime_platform or _platform_key()
+            self._last_download = None
+            if engine_only:
+                # v0.50.0-dev E-02：只装平台无关的 JS 引擎资产（任何平台；`current/` 不动）。
+                result = self.install_engine_only(archive=archive, manifest_url=manifest_url, force=force, progress=progress,
+                                                  sha256=sha256, reason="requested", platform_name=platform_name)
+                return {**result, "trace_id": trace["trace_id"], "group_id": trace["group_id"]}
+            # 下载 730 MB 之前就拒：装进去 Java 也起不来（只剩 chart），而修法只是换个路径。
+            self._require_ascii_runtime_root()
+            self._require_writable_runtime_root()
+            pinned_sha256 = self._normalize_sha256_pin(sha256)
+            self._sweep_install_temps()
+            source = archive
+            # `--sha256` 给的摘要：手工下载的归档（`--archive`）没有清单可对，这是唯一的核对手段。
+            expected_sha256: str | None = pinned_sha256 if source is not None else None
+            asset_meta: dict[str, Any] | None = None
+            manifest_data: dict[str, Any] | None = None
+            fallback_note: dict[str, Any] | None = None
+            install_warnings: list[dict[str, Any]] = []
+
+            if source is None:
+                manifest_location = manifest_url or self.settings.runtime_manifest_url
+                pinned_default = not manifest_location
+                if not manifest_location:
+                    manifest_location = self.settings.default_runtime_manifest_url
+                try:
+                    manifest_data = self._read_json_location(manifest_location)
+                except RuntimeInstallError:
+                    if not pinned_default:
+                        raise
+                    # 本包版本的清单不存在（未发布的开发版 / 发布不完整）：退到 latest，说清楚。
+                    manifest_location = self.settings.latest_runtime_manifest_url
+                    manifest_data = self._read_json_location(manifest_location)
+                    install_warnings.append({"code": "runtime.manifest_pin_missing", "message": bilingual(
+                        "本包版本的 runtime 清单取不到，改用 latest 清单（runtime 版本可能与包不一致）。",
+                        "This package version's runtime manifest is unavailable; using the latest manifest (the runtime may not match the package).")})
+                self._remember_latest_manifest(manifest_data, manifest_location)
+                install_warnings.extend(self._mirror_trust_warnings())
+                platforms = manifest_data.get("platforms", {})
+                asset_meta = platforms.get(platform_name)
+                if not isinstance(asset_meta, dict):
+                    # v0.38.0 A4: Windows on ARM installs the x64 payload under emulation — announced, never silent.
+                    fallback = PLATFORM_FALLBACKS.get(platform_name)
+                    if fallback and isinstance(platforms.get(fallback[0]), dict):
+                        fallback_note = {"requested": platform_name, "installed": fallback[0], "mode": fallback[1]}
+                        install_warnings.append(
+                            {
+                                "code": "runtime.platform_emulated",
+                                "message": (
+                                    f"本机是 {platform_name}，没有原生载荷；改装 {fallback[0]} 载荷走 {fallback[1]}"
+                                    "（Java / Python / Node 在 Windows 11 x64 仿真下可用，冷启动更慢）。"
+                                ),
+                                "requested": platform_name,
+                                "installed": fallback[0],
+                                "mode": fallback[1],
+                            }
+                        )
+                        # the caller sees this in the result's `warnings[]`; the log line is for launcher.log readers
+                        logger.log(logging.WARNING, "no %s payload; installing %s under %s", platform_name, fallback[0], fallback[1])
+                        platform_name = fallback[0]
+                        asset_meta = platforms[platform_name]
+                if not isinstance(asset_meta, dict) and engine_asset.manifest_has_engine_asset(manifest_data):
+                    # v0.50.0-dev E-02：本平台没有 runtime 归档（Linux / Intel Mac / 发布缺这一半），但清单带着平台无关的 JS 引擎资产：
+                    # 装它，而不是报「不支持」——此前这里一失败，这些机器上所有本地 JS 技法都是 js_engine.cli_missing。
+                    result = self.install_engine_only(
+                        manifest_url=manifest_location, force=force, progress=progress, sha256=pinned_sha256,
+                        manifest_data=manifest_data, manifest_location=manifest_location,
+                        # 支持的平台却不在清单里 = 这次发布不完整（不是「本平台没有载荷」），告警要说对原因。
+                        reason="manifest_lacks_platform" if platform_has_payload(platform_name) else "no_payload_for_platform",
+                        platform_name=platform_name, warnings=install_warnings,
+                    )
+                    advice = _platform_dead_end_advice(platform_name)
+                    return {**result, "platform_fallback": fallback_note, "supported_platforms": sorted(k for k in platforms if isinstance(k, str)),
+                            "gateway_advice": advice.get("next_action"),
+                            "trace_id": trace["trace_id"], "group_id": trace["group_id"]}
+                if not isinstance(asset_meta, dict):
+                    raise RuntimeInstallError(
+                        f"Runtime manifest does not include platform `{platform_name}`.",
+                        code="runtime.install_missing_platform",
+                        details={
+                            "platform": platform_name,
+                            "manifest_url": manifest_location,
+                            "supported_platforms": sorted(k for k in platforms if isinstance(k, str)),
+                            **_platform_dead_end_advice(platform_name),
+                        },
+                    )
+                _assert_min_os(asset_meta.get("min_os"), platform_name)
+                source = str(asset_meta.get("url") or "").strip()
+                expected_sha256 = str(asset_meta.get("sha256") or "").strip() or None
+                if pinned_sha256 and expected_sha256 and expected_sha256.lower() != pinned_sha256:
+                    # 下载 730 MB 之前就拒：用户钉的摘要与清单说的不是同一个文件。
+                    raise RuntimeValidationError(
+                        bilingual(
+                            "`--sha256` 给的摘要与发布清单里本平台归档的 sha256 不一致。",
+                            "The `--sha256` digest differs from the one the release manifest lists for this platform.",
+                        ),
+                        code="runtime.install_sha256_mismatch",
+                        details={"expected_sha256": pinned_sha256, "manifest_sha256": expected_sha256.lower(),
+                                 "manifest_url": manifest_location, "platform": platform_name},
+                    )
+                expected_sha256 = expected_sha256 or pinned_sha256
+                if not source:
+                    raise RuntimeInstallError(
+                        f"Runtime asset URL missing for platform `{platform_name}`.",
+                        code="runtime.install_missing_url",
+                        details={"platform": platform_name, "manifest_url": manifest_location},
+                    )
+                # 版本短路：manifest 版本与已装 current 版本一致且非 --force → 直接跳过大包下载。
+                # （损坏 manifest 读为 None 不短路 → 自然走重装；--archive 路径仍由解包后深比较兜底。）
+                if self.current_dir.exists():
+                    previous_version = str((self.load_installed_manifest() or {}).get("version") or "").strip() or None
+                    target = str(manifest_data.get("version") or "").strip()
+                    # 审计 PF-04：清单比已装的旧 → 拒（apt 降级要 --allow-downgrades）；以前不分升降、当场删旧副本。
+                    if previous_version and target and _version_key(target) < _version_key(previous_version) and not allow_downgrade:
+                        raise RuntimeInstallError(
+                            bilingual(f"清单里的 runtime {target} 比已装的 {previous_version} 旧：不降级。确要降级请加 --allow-downgrade。",
+                                      f"The manifest's runtime {target} is older than the installed {previous_version}: not downgrading. Pass --allow-downgrade to do it."),
+                            code="runtime.install_downgrade_refused",
+                            details={"previous_version": previous_version, "version": target, "manifest_url": manifest_location},
+                        )
+                    self._previous_version = previous_version
+                if not force and self.current_dir.exists():
+                    installed_manifest = self.load_installed_manifest()
+                    installed_version = str((installed_manifest or {}).get("version") or "").strip()
+                    target_version = str(manifest_data.get("version") or "").strip()
+                    if installed_version and target_version and installed_version == target_version:
+                        return {
+                            "ok": True,
+                            "installed": True,
+                            "changed": False,
+                            "skipped_download": True,
+                            "version": installed_version,
+                            "platform": platform_name,
+                            "platform_fallback": fallback_note,
+                            "warnings": install_warnings,
+                            "runtime_root": str(self.runtime_root),
+                            "current_dir": str(self.current_dir),
+                            "manifest": installed_manifest,
+                            "next_action": "已是最新版本，无需重新下载；如需强制重装请加 --force。",
+                            "trace_id": trace["trace_id"],
+                            "group_id": trace["group_id"],
+                        }
+                # 版本短路之后才判摘要：什么都不下载时没有东西要校验（重跑 setup 不该因此被拒）。
+                if not expected_sha256:
+                    self._refuse_or_note_unverified(manifest_location, source, platform_name, install_warnings)
+
+            self._require_install_disk_space(asset_meta)
+            self.runtime_root.mkdir(parents=True, exist_ok=True)
+            # 临时目录置于 runtime_root 同卷（非系统 /tmp）：最终 shutil.move(payload_root→current)
+            # 落到同一文件系统即为原子 rename，避免跨卷退化成「复制+删除」（慢，且中途失败留半装）。
+            # 短前缀（v0.38.0 B6）：`.horosa-install-XXXXXXXX/extract/` 白吃 20 个字符——Windows 260 上限下这 20 个
+            # 字符就是「装得上 / 装不上」的差别（最深载荷条目本身已近 200）。doctor.windows.headroom_chars 按同一常量估。
+            with tempfile.TemporaryDirectory(prefix=_INSTALL_TEMP_PREFIX, dir=self.runtime_root) as temp_dir_raw:
+                temp_dir = Path(temp_dir_raw)
+                (temp_dir / INSTALL_TEMP_OWNER).write_text(str(os.getpid()), encoding="utf-8")
+                archive_path = self._materialize_archive(source, temp_dir, progress=progress, expected_sha256=expected_sha256)
+                already_verified = bool((self._last_download or {}).get("sha256_verified"))
+                actual_sha256: str | None = expected_sha256.lower() if expected_sha256 and already_verified else None
+                if actual_sha256 is None and (expected_sha256 or archive is not None):
+                    # 手工给的归档即使没钉摘要也算一遍放进结果：用户可以拿它和发布页对。
+                    actual_sha256 = _sha256_file(archive_path).lower()
+                if expected_sha256 and actual_sha256 != expected_sha256.lower():
+                    raise RuntimeValidationError(
+                        "Runtime archive checksum mismatch.",
+                        code="runtime.install_sha256_mismatch",
+                        details={"archive": str(archive_path), "expected_sha256": expected_sha256.lower(), "actual_sha256": actual_sha256},
+                    )
+                via_mirror = getattr(self, "_manifest_via_mirror", None)
+                integrity = {"archive_sha256": actual_sha256, "sha256_verified": bool(expected_sha256) and not via_mirror,
+                             **({"integrity": "mirror_asserted", "manifest_mirror": via_mirror} if via_mirror and expected_sha256 else {})}
+                # manifest 声明的归档类型必须与资产扩展名一致（防声明 zip 实传 tar.gz 之类的静默错配）。
+                declared_type = str((asset_meta or {}).get("archive_type") or "").strip().lower()
+                if declared_type:
+                    lower_name = archive_path.name.lower()
+                    is_tar = lower_name.endswith(".tar.gz") or lower_name.endswith(".tgz")
+                    is_zip = lower_name.endswith(".zip")
+                    # 仅当文件名带可识别扩展名却与声明相矛盾时才拒装（真错配）；无扩展名的
+                    # 下载 URL（预签名/?asset= 式）无从判断 → 放行，交由后续解压按魔数处理，
+                    # 避免把合法资产误判为类型不符。
+                    contradicts = (
+                        (declared_type in {"tar.gz", "tgz"} and is_zip)
+                        or (declared_type == "zip" and is_tar)
+                    )
+                    if contradicts:
+                        raise RuntimeValidationError(
+                            "Runtime archive type mismatch between manifest and asset.",
+                            code="runtime.install_archive_type_mismatch",
+                            details={"archive": str(archive_path), "declared_archive_type": declared_type},
+                        )
+
+                extract_dir = temp_dir / _INSTALL_EXTRACT_DIRNAME
+                extract_dir.mkdir(parents=True, exist_ok=True)
+                self._extract_archive(archive_path, extract_dir)
+                payload_root = self._locate_payload_root(extract_dir)
+                manifest = self._validate_payload_root(payload_root)
+                # a derived payload states its own floor (platform_requirements.min_os); re-check after extraction
+                _assert_min_os((manifest.get("platform_requirements") or {}).get("min_os"), platform_name)
+                manifest = self._bind_service_urls(manifest)
+                (payload_root / "runtime-manifest.json").write_text(
+                    json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+
+                previous_dir = self.runtime_root / "previous"
+                if self.current_dir.exists() and not force:
+                    current_manifest = self.load_installed_manifest()
+                    if current_manifest == manifest:
+                        return {
+                            "ok": True,
+                            "installed": True,
+                            "changed": False,
+                            "platform": platform_name,
+                            "platform_fallback": fallback_note,
+                            "warnings": install_warnings,
+                            "runtime_root": str(self.runtime_root),
+                            "current_dir": str(self.current_dir),
+                            "manifest": manifest,
+                            **integrity,
+                            "trace_id": trace["trace_id"],
+                            "group_id": trace["group_id"],
+                        }
+                was_running = self._swap_in_payload(payload_root, manifest, previous_dir, warnings=install_warnings)
+                cleanup_warning = self._remove_previous_dir_best_effort(previous_dir)
+                if cleanup_warning:
+                    install_warnings.append(cleanup_warning)
+
+            # 安装成功后清理断点续传缓存（失败路径保留 .part 供下次续传）。
+            downloads_dir = self.runtime_root / "downloads"
+            if downloads_dir.exists():
+                shutil.rmtree(downloads_dir, ignore_errors=True)
+
+            # 升级前在跑 → 换完目录用全预算重新拉起；拉不起来不算安装失败（载荷已就位），记 warning 让人看得见。
+            restarted: dict[str, Any] | None = None
+            if was_running:
+                try:
+                    started = self.start_local_services()
+                    restarted = {
+                        "ok": bool(started.get("ok")),
+                        "starting": bool(started.get("starting")),
+                        "already_running": bool(started.get("already_running")),
+                    }
+                except (HorosaSkillError, RuntimeError) as exc:
+                    restarted = {"ok": False, "code": getattr(exc, "code", None), "message": str(exc)}
+                    install_warnings.append({
+                        "code": "runtime.restart_after_upgrade_failed",
+                        "message": f"新 runtime 已装好，但重新启动失败：{getattr(exc, 'code', '')} {exc}",
+                        "next_action": "跑 `horosa-skill runtime start`；仍失败看 `horosa-skill doctor`。",
+                    })
+
+            trace["platform"] = platform_name
+            trace["manifest_version"] = manifest.get("version")
+            return {
+                "ok": True,
+                "installed": True,
+                "changed": True,
+                "platform": platform_name,
+                "platform_fallback": fallback_note,
+                "warnings": install_warnings,
+                "runtime_root": str(self.runtime_root),
+                "current_dir": str(self.current_dir),
+                "manifest": manifest,
+                "stopped_before_swap": was_running,
+                "restarted": restarted,
+                "previous_version": getattr(self, "_previous_version", None),
+                "version": manifest.get("version"),
+                "download": getattr(self, "_last_download", None),
+                **integrity,
+                "asset": asset_meta or {},
+                "release_manifest": manifest_data or {},
+                "next_action": _contextualize(bilingual(
+                    "接下来：`horosa-skill doctor` 确认体检，`horosa-skill setup --client <你的客户端>` 把本服务接进 AI 客户端。",
+                    "Next: `horosa-skill doctor` to check, then `horosa-skill setup --client <your-client>` to connect your AI client.",
+                )),
+                "trace_id": trace["trace_id"],
+                "group_id": trace["group_id"],
+            }
+
+    # ---- v0.38.1 R3：升级就地（先停自己的服务，再换目录，再拉起） --------------------------------
+
+    def _swap_in_payload(
+        self, payload_root: Path, manifest: dict[str, Any], previous_dir: Path, *, warnings: list[dict[str, Any]]
+    ) -> bool:
+        """停自己的服务 → 换目录，全程持启动锁。返回换之前服务是否在跑（换完要重新拉起，所以这里放锁）。
+
+        没有这把锁时，别的会话的调用在 stop 之后发现连不上，会从旧树起启动器；旧树随后被删，新载荷永远不启动，
+        install 还报成功。持锁期间它们只看到一次 `runtime.starting`。
+        """
+        lock_path = self.runtime_root / ".runtime-start.lock"
+        self._acquire_swap_lock(lock_path)
+        try:
+            # 上次崩在两次改名之间：先把好副本挪回来，下面的回滚才有东西可回滚（否则 _remove_previous_dir 会先删掉它）。
+            self._restore_previous_locked()
+            was_running = False
+            if self.current_dir.exists():
+                # 🔴 v0.38.1 R3：换目录之前先停**自己起的**服务。此前直接 replace + rmtree：Windows 上正在跑的
+                # java.exe / python.exe 锁着文件 → WinError 32/5；macOS 上旧进程继续从已删路径服务、新载荷永远
+                # 不启动（本机就是活例：已装 0.3.0、doctor 说 ready、从不提示过期）。不是我们起的服务一律拒绝，
+                # `--force` 也不例外 ——「不杀陌生人」是不变量。
+                was_running = self._stop_own_services_before_swap(warnings=warnings)
+            self._remove_previous_dir(previous_dir)
+            if self.current_dir.exists():
+                self.current_dir.replace(previous_dir)
+
+            target_parent = self.current_dir.parent
+            target_parent.mkdir(parents=True, exist_ok=True)
+            # 原子换入 + 失败回滚：move/overrides 任一失败即把旧运行时从 previous 还原回 current，
+            # 绝不留下缺失/半装的 current（否则下次 install 会先 rmtree previous 毁掉唯一好副本）。
+            # 注意 overrides 失败时 move 已成功 → current 存在但半装，必须先清掉再从 previous 还原
+            # （不能只在 current 缺失时才回滚）。
+            try:
+                shutil.move(str(payload_root), str(self.current_dir))
+                self._apply_runtime_overrides(manifest)
+            except Exception:
+                if previous_dir.exists():
+                    try:
+                        if self.current_dir.exists():
+                            shutil.rmtree(self.current_dir, ignore_errors=True)
+                        previous_dir.replace(self.current_dir)
+                    except Exception:  # noqa: BLE001 - best-effort restore; surface original error
+                        logger.exception("runtime install rollback failed")
+                raise
+            return was_running
+        finally:
+            release_lock(lock_path)
+
+    def _acquire_swap_lock(self, lock_path: Path) -> None:
+        """等正在进行的启动结束，等不到就拒绝：启动器正从 current/ 起服务时换目录，等于把文件从它脚下搬走。"""
+        deadline = time.monotonic() + float(self.settings.runtime_start_timeout_seconds)
+        while not self._try_start_lock(lock_path, owner=INSTALL_OWNER):
+            if time.monotonic() >= deadline:
+                raise RuntimeInstallError(
+                    bilingual("runtime 正在启动，安装未动 current/。", "The runtime is starting; current/ was left untouched."),
+                    code="runtime.install_start_in_progress",
+                    details={
+                        "holder": describe_lock(lock_path),
+                        "next_action": "等启动结束（`horosa-skill runtime status` 看进度）后重试 install / upgrade。",
+                    },
+                )
+            time.sleep(0.25)
+
+    def _payload_is_complete(self, root: Path) -> bool:
+        try:
+            manifest = self._validate_payload_root(root)
+        except (OSError, ValueError, RuntimeValidationError):
+            return False
+        return all(
+            (root / relative).is_dir() if kind == "dir" else (root / relative).is_file()
+            for _, relative, kind in self._required_paths(manifest)
+        )
+
+    def _restore_previous_locked(self) -> bool:
+        """调用方须持启动锁。current/ 缺失且 previous/ 完整时把它挪回去（崩在两次改名之间的现场）。"""
+        previous_dir = self.runtime_root / "previous"
+        if self.current_dir.exists() or not self._payload_is_complete(previous_dir):
+            return False
+        previous_dir.replace(self.current_dir)
+        # 启动 / 安装路径上的恢复通知：结果照常，不是降级点（verify_silent_degrades 只盯 logger.warning）。
+        logger.log(logging.WARNING, "current/ was missing; restored the complete previous/ runtime left by an interrupted install")
+        return True
+
+    def _restore_previous_after_crash(self) -> None:
+        """启动路径的自愈。只在这里做，不放进 `_require_runtime`：卸载的停服务路径也调它，会把要删的东西挪回 current/。
+
+        要拿启动锁：install 两次改名之间同样只有 previous/，这时挪回去，新载荷会被 `shutil.move` 搬进 current/ 里面。"""
+        if self.current_dir.exists() or not (self.runtime_root / "previous").is_dir():
+            return
+        lock_path = self.runtime_root / ".runtime-start.lock"
+        if not self._try_start_lock(lock_path, owner=INSTALL_OWNER):
+            return
+        try:
+            self._restore_previous_locked()
+        finally:
+            release_lock(lock_path)
+
+    def _install_temp_in_use(self, path: Path) -> bool:
+        marker = path / INSTALL_TEMP_OWNER
+        now = time.time()
+        try:
+            pid = int(marker.read_text(encoding="utf-8").strip())
+            age = now - marker.stat().st_mtime
+        except (OSError, ValueError):
+            try:
+                return now - path.stat().st_mtime < _INSTALL_TEMP_UNMARKED_AGE_SECONDS
+            except OSError:
+                return False
+        return pid_alive(pid) != "dead" and age < _INSTALL_TEMP_MAX_AGE_SECONDS
+
+    def _sweep_install_temps(self) -> None:
+        """清掉被杀的 install 留下的 `.hi-*`（归档 + 解开的树，真载荷约 2 GB）。SIGTERM / 断电时 TemporaryDirectory 来不及清。
+
+        在 install 一进来就做：磁盘预检要 4 倍归档大小，留着它重试可能直接被拦。清不掉（Windows 文件占用）留给下一次。"""
+        for path in self.runtime_root.glob(f"{_INSTALL_TEMP_PREFIX}*"):
+            if path.is_dir() and not self._install_temp_in_use(path):
+                try:
+                    _rmtree_force(path)
+                except OSError as exc:
+                    logger.debug("could not sweep %s: %s", path, exc)
+
+    def _stop_own_services_before_swap(
+        self, *, warnings: list[dict[str, Any]] | None = None
+    ) -> bool:
+        """返回 True = 之前在跑且已由我们停下（换完目录要重新拉起）。
+
+        可达但**不是我们起的**（foreign / unknown / 只有 app 标记）→ 抛 runtime.install_refused_running_foreign；
+        `--force` 不覆盖这条。**例外**：占着已装清单端口的服务若能证明全部跑在**别的根**（用户的星阙桌面端、
+        另一个 runtime root），它的文件不在本根，换 current/ 动不到它 —— 那只是端口被占，不是「正在替换别人在用的
+        runtime」，放行并记 runtime.install_ports_held_elsewhere 警告。v0.38.1 复审在 Windows 维护机上撞到：
+        rt-verify 根的旧清单钉着 8899/9999，被 %LOCALAPPDATA% 根的实例占着 → 拒装；而提示里的 HOROSA_PORTS=auto
+        对「旧清单钉着被占端口」无效（探的是旧清单的端口），桌面端 + 默认端口这一最常见组合会原地卡死。
+        证明不了在别处 → 仍拒。
+        """
+        endpoints = self.endpoint_identities()
+        reachable = [item for item in endpoints if item.get("reachable")]
+        if not reachable:
+            return False
+        ours = [item for item in reachable if (item.get("identity") or {}).get("started_by_us")]
+        foreign = [item for item in reachable if not ((item.get("identity") or {}).get("started_by_us"))]
+        if foreign:
+            elsewhere: list[dict[str, Any]] = []
+            for item in foreign:
+                port = (item.get("identity") or {}).get("port")
+                holders = holders_outside_runtime_root(port, self.runtime_root)
+                if not holders:
+                    break
+                elsewhere.append({"label": item.get("label"), "url": item.get("url"), "port": port, "holders": holders})
+            else:
+                if warnings is not None:
+                    warnings.append({
+                        "code": "runtime.install_ports_held_elsewhere",
+                        "message": bilingual(
+                            "已装清单里的端口正被另一份星阙实例占用（它的文件不在本 root 下，本次升级动不到它）；"
+                            "新 runtime 启动时会在这些端口上撞车。",
+                            "The ports in the installed manifest are held by another Horosa instance (its files are not "
+                            "under this runtime root, so this upgrade cannot affect it); the new runtime will collide on "
+                            "those ports at start.",
+                        ),
+                        "held_by": elsewhere,
+                        "next_action": bilingual(
+                            "关掉那份实例（可能是你自己开着的星阙桌面端），或用 HOROSA_PORTS=auto / "
+                            "HOROSA_LOCAL_BACKEND_PORT + HOROSA_LOCAL_CHART_PORT 给本 runtime 换端口后再 start。",
+                            "Close that instance (possibly your own Horosa desktop app), or move this runtime's ports with "
+                            "HOROSA_PORTS=auto / HOROSA_LOCAL_BACKEND_PORT + HOROSA_LOCAL_CHART_PORT before start.",
+                        ),
+                    })
+                foreign = []
+        if foreign:
+            raise RuntimeInstallError(
+                bilingual(
+                    "端口上正在运行的服务不是本工具启动的，升级/重装拒绝替换一份正在被别人使用的 runtime。",
+                    "The services on the runtime ports were not started by this tool; install/upgrade refuses to "
+                    "replace a runtime someone else is running.",
+                ),
+                code="runtime.install_refused_running_foreign",
+                details={
+                    "conflicts": foreign,
+                    "force_ignored": True,
+                    "next_action": bilingual(
+                        "先关掉那些服务（可能是你自己开着的星阙桌面端），或用 HOROSA_PORTS=auto 换端口后再装；"
+                        "--force 不会覆盖这条。",
+                        "Close those services first (possibly your own Horosa desktop app), or move ports with "
+                        "HOROSA_PORTS=auto and retry; --force does not override this.",
+                    ),
+                },
+            )
+        if not ours:
+            return False  # 端口被别处占着、本根没有在跑的服务 → 不停任何东西，换完目录也不必重启
+        # 挂着的客户端不拦升级：服务换完目录马上回来，它们下一次调用只见一次 runtime.starting。
+        stopped = self.stop_local_services(ignore_clients=True)
+        if not (stopped.get("ok") or stopped.get("already_stopped")):
+            raise RuntimeInstallError(
+                bilingual("升级前停止本工具自己的服务失败，未动 current/。", "Stopping our own services before the swap failed; current/ was left untouched."),
+                code="runtime.install_stop_failed",
+                details={
+                    "stop": {key: stopped.get(key) for key in ("code", "message", "returncode", "stderr", "survivors", "endpoints")},
+                    "next_action": "看 details.stop；`horosa-skill runtime stop` 成功后重试 install/upgrade。",
+                },
+            )
+        return True
+
+    def _remove_previous_dir(self, previous_dir: Path) -> None:
+        if not previous_dir.exists():
+            return
+        try:
+            _rmtree_force(previous_dir)
+        except OSError as exc:
+            raise RuntimeInstallError(
+                bilingual(
+                    "上一版 runtime 目录（previous/）里还有文件被进程占用，无法清理，安装中止（current/ 未动）。",
+                    "The previous runtime directory (previous/) is still held by a process and cannot be removed; "
+                    "install aborted (current/ untouched).",
+                ),
+                code="runtime.install_previous_locked",
+                details={
+                    "path": str(previous_dir), "error": f"{type(exc).__name__}: {exc}",
+                    "holders": [
+                        {"port": port, "holders": port_holders(port)}
+                        for port in (self.settings.local_backend_port, self.settings.local_chart_port)
+                    ],
+                    "next_action": "关掉 details.holders 里的进程（或重启后）再试；也可手动删除 previous/。",
+                },
+            ) from exc
+
+    def _remove_previous_dir_best_effort(self, previous_dir: Path) -> dict[str, Any] | None:
+        if not previous_dir.exists():
+            return None
+        try:
+            _rmtree_force(previous_dir)
+        except OSError as exc:
+            return {
+                "code": "runtime.previous_cleanup_deferred",
+                "message": f"新 runtime 已就位；旧目录 {previous_dir} 暂时删不掉（{type(exc).__name__}: {exc}）。",
+                "path": str(previous_dir),
+                "next_action": "文件句柄释放后（通常重启后）手动删除 previous/，或下次 install 时自动清理。",
+            }
+        return None
+
+    # ---- v0.38.1 R4：最新清单缓存 + 载荷新鲜度 --------------------------------------------------------
+
+    @property
+    def latest_manifest_cache_path(self) -> Path:
+        return self.runtime_root / LATEST_MANIFEST_CACHE_NAME
+
+    def _remember_latest_manifest(self, manifest_data: dict[str, Any] | None, location: str) -> None:
+        """把刚抓到的发布清单版本记下来（尽力而为，绝不让写缓存失败影响安装）。"""
+        if not isinstance(manifest_data, dict) or not manifest_data.get("version"):
+            return
+        platforms = manifest_data.get("platforms") or {}
+        payload = {
+            "schema": 1,
+            "fetched_at": self._utc_now(),
+            "location": str(location),
+            "version": str(manifest_data.get("version")),
+            "platforms": sorted(k for k in platforms if isinstance(k, str)),
+        }
+        try:
+            self.runtime_root.mkdir(parents=True, exist_ok=True)
+            tmp = self.latest_manifest_cache_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            tmp.replace(self.latest_manifest_cache_path)
+        except OSError:
+            logger.debug("could not write %s", self.latest_manifest_cache_path, exc_info=True)
+
+    def latest_manifest_cache(self) -> dict[str, Any] | None:
+        path = self.latest_manifest_cache_path
+        if not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) and data.get("version") else None
+
+    def payload_freshness(self, manifest: dict[str, Any] | None) -> dict[str, Any]:
+        """已装载荷相对「最后一次看到的发布清单」与「本包期望的导出契约」新不新。
+
+        `outdated` 三态：True / False / None（没有缓存 = 不知道，doctor 提示 `--probe-network`）。
+        导出契约（export_registry_version）低于本包 exports.registry 的常量时无论版本号都算过期 ——
+        本机就是这样：已装 0.3.0 / 契约 6，而包期望 14，此前 doctor 一直说 ready。
+        """
+        from horosa_skill.exports.registry import AI_EXPORT_SETTINGS_VERSION
+
+        cache = self.latest_manifest_cache()
+        installed_version = str(manifest.get("version")) if manifest and manifest.get("version") else None
+        latest_version = str(cache.get("version")) if cache else None
+        outdated = version_is_newer(latest_version, installed_version) if (installed_version and latest_version) else None
+        erv_installed = manifest.get("export_registry_version") if manifest else None
+        try:
+            erv_installed_int = int(erv_installed) if erv_installed is not None else None
+        except (TypeError, ValueError):
+            erv_installed_int = None
+        erv_outdated = erv_installed_int is not None and erv_installed_int < int(AI_EXPORT_SETTINGS_VERSION)
+        return {
+            "installed_version": installed_version,
+            "latest_version": latest_version,
+            "latest_checked_at": cache.get("fetched_at") if cache else None,
+            "latest_source": cache.get("location") if cache else None,
+            "outdated": outdated,
+            "export_registry_version": {
+                "installed": erv_installed_int,
+                "expected": int(AI_EXPORT_SETTINGS_VERSION),
+                "outdated": erv_outdated,
+            },
+            "payload_outdated": bool(outdated) or erv_outdated,
+        }
+
+    def uninstall(
+        self, *, purge_data: bool = False, purge_knowledge: bool = False, purge_profiles: bool = False, yes: bool = False,
+        engine_only: bool = False,
+    ) -> dict[str, Any]:
+        """卸载离线 runtime：默认 dry-run 返回将删清单；yes=True 才执行（先停服务再删）。
+
+        purge_data=True 时额外删除用户数据目录里的 memory.db / runs / traces / reports 等——不可恢复，需显式选择。
+        **自备知识库（用户亲手写的笔记）与其回收站默认保留**：此前 --purge-data 整个删掉数据目录，连同
+        `<data_dir>/knowledge/`，而提示语只说删 memory/runs/traces（v0.43 知识库审查 H1）。要连它一起删须再给
+        purge_knowledge=True。**命主档案（`<data_dir>/profiles/`，用户给的出生信息）同一口径**：缺省保留，purge_profiles=True 才删。
+        """
+        from horosa_skill.runtime import purge
+
+        if engine_only:
+            if purge_data or purge_knowledge or purge_profiles:
+                raise RuntimeInstallError(
+                    bilingual("--engine-only 只删 JS 引擎资产，不能和 --purge-* 一起用。",
+                              "--engine-only removes the JS engine asset only and cannot be combined with --purge-*."),
+                    code="runtime.uninstall_engine_only_conflict",
+                    details={"purge_data": purge_data, "purge_knowledge": purge_knowledge, "purge_profiles": purge_profiles},
+                )
+            return self.uninstall_engine_only(yes=yes)
+        runtime_paths: list[Path] = []
+        # v0.50.0-dev E-02：engine-only 的 JS 引擎资产（core-js/、core-js.previous/）也是 runtime 根下本工具装的东西。
+        for path in (self.current_dir, self.runtime_root / "previous", self.runtime_root / "downloads",
+                     *engine_asset.engine_paths(self.runtime_root)):
+            if path.exists():
+                runtime_paths.append(path)
+        runtime_paths.extend(path for path in sorted(self.runtime_root.glob(f"{_INSTALL_TEMP_PREFIX}*")) if path.is_dir())
+        state_path = self.settings.runtime_state_path
+        if state_path.exists():
+            runtime_paths.append(state_path)
+        data_dir = self.settings.data_dir
+        data_plan = purge.DataPurgePlan()
+        if purge_data:
+            # 🔴 先判「这个目录可能整个不是我们的」，再谈删什么：拒绝发生在任何删除之前，dry-run 与真删同一口径。
+            self._refuse_purge_if_not_ours(data_dir, what="data_dir")
+            data_plan = purge.plan_data_purge(self.settings, purge_knowledge=purge_knowledge, purge_profiles=purge_profiles)
+            for path in data_plan.remove:
+                if not path.resolve().is_relative_to(data_dir.resolve()):
+                    self._refuse_purge_if_not_ours(path, what="knowledge_dir")  # 配在数据目录外的知识库同一把尺
+        removal_plan = [str(path) for path in (*runtime_paths, *data_plan.remove)]
+        if data_plan.rmdir_data_dir and data_dir.exists():
+            removal_plan.append(str(data_dir))
+        kept = [str(path) for path in data_plan.kept]
+        left_in_place = [str(path) for path in data_plan.left_in_place]
+        report: dict[str, Any] = {
+            "kept": kept,
+            "left_in_place": left_in_place,
+            "purge_data": purge_data,
+            "purge_knowledge": purge_knowledge,
+            "purge_profiles": purge_profiles,
+        }
+        if data_plan.outside_data_dir:
+            report["outside_data_dir"] = [str(path) for path in data_plan.outside_data_dir]
+        if left_in_place:
+            report["left_in_place_note"] = bilingual(
+                "数据目录里这些不是本工具写的，原地保留；数据目录因此也留着。",
+                "These entries in the data directory were not written by this tool and are left in place, so the data directory itself stays.",
+            )
+
+        if not yes:
+            return {
+                "ok": True,
+                "dry_run": True,
+                "would_remove": removal_plan,
+                **report,
+                "next_action": (
+                    "确认无误后追加 --yes 执行删除；用户数据默认保留（--purge-data 删 memory/runs/traces/reports，"
+                    "自备知识库与其回收站、命主档案仍保留，除非再加 --purge-knowledge / --purge-profiles）。"
+                ),
+            }
+
+        stop_error: str | None = None
+        try:
+            self.stop_local_services(ignore_clients=True)
+        except Exception as exc:  # noqa: BLE001 - 卸载前停服务尽力而为，失败不阻断删除
+            # v0.41.1：记下来——随后删除若在 Windows 上撞文件锁，用户要知道是「服务没停掉」。
+            # 审计 PF-07：本来就没装 runtime 时「停不了」不是问题，不报。
+            if getattr(exc, "code", None) != "runtime.not_installed":
+                stop_error = f"{type(exc).__name__}: {exc}"
+        removed: list[str] = []
+        for text in removal_plan:
+            path = Path(text)
+            try:
+                if path == data_dir:
+                    # 数据目录本身只 rmdir：计划之后才冒出来的文件（别的进程刚写的）不是清单上的东西，留着并如实报。
+                    try:
+                        path.rmdir()
+                    except OSError:
+                        left_in_place.extend(str(child) for child in sorted(path.iterdir()) if str(child) not in left_in_place)
+                        continue
+                else:
+                    purge.remove_owned(path)
+                removed.append(text)
+            except OSError as exc:
+                raise RuntimeInstallError(
+                    f"Failed to remove {path}: {exc}",
+                    code="runtime.uninstall_failed",
+                    details={"path": text, "removed_so_far": removed, **({"stop_error": stop_error} if stop_error else {})},
+                ) from exc
+        return {"ok": True, "dry_run": False, "removed": removed, **report,
+                **({"stop_error": stop_error} if stop_error else {})}
+
+    def _refuse_purge_if_not_ours(self, path: Path, *, what: str) -> None:
+        from horosa_skill.runtime import purge
+
+        reason = purge.refusal_reason(path, runtime_root=self.runtime_root)
+        if reason is None:
+            return
+        why_zh, why_en = {
+            "filesystem_root": ("是文件系统的根", "is a filesystem root"),
+            "home": ("就是你的家目录", "is your home directory"),
+            "above_home": ("是家目录的上级", "is a parent of your home directory"),
+            "contains_runtime_root": ("把 runtime 根包在里面", "contains the runtime root"),
+        }[reason]
+        label_zh, label_en, env_name = {
+            "data_dir": ("数据目录", "The data directory", "HOROSA_SKILL_DATA_DIR"),
+            "knowledge_dir": ("自备知识库目录", "The knowledge folder", "HOROSA_USER_KNOWLEDGE_DIR"),
+        }[what]
+        candidates = [str(child) for child in purge.owned_children_present(path)] if what == "data_dir" else []
+        raise RuntimeValidationError(
+            bilingual(
+                f"{label_zh} {path} {why_zh}：里面的东西不可能都是本工具写的，--purge-data 在这里一样都不删"
+                f"（runtime 也没有动）。把 {env_name} 指回一个专用目录，或手工删除 details.skill_named_children 里你确认要删的。",
+                f"{label_en} {path} {why_en}: not everything in it can belong to this tool, so --purge-data removes "
+                f"nothing here (the runtime was not touched either). Point {env_name} at a dedicated directory, or "
+                f"delete by hand the entries in details.skill_named_children that you are sure about.",
+            ),
+            code="runtime.purge_refused",
+            details={
+                "reason": reason,
+                "data_dir": str(self.settings.data_dir),
+                "path": str(path),
+                "runtime_root": str(self.runtime_root),
+                "skill_named_children": candidates,
+                "next_action": bilingual(
+                    "不带 --purge-data 的 `uninstall --yes` 照常可用（只删 runtime）。",
+                    "`uninstall --yes` without --purge-data still works (it removes the runtime only).",
+                ),
+            },
+        )
+
+    def doctor(self) -> dict[str, Any]:
+        with self.tracer.span(workflow_name="runtime.doctor", metadata={"entrypoint": "runtime.doctor"}) as trace:
+            manifest_issue: dict[str, Any] | None = None
+            runtime_state_issue: dict[str, Any] | None = None
+            installed = self.current_dir.exists()
+            try:
+                manifest = self.load_installed_manifest(strict=True)
+            except RuntimeValidationError as exc:
+                manifest = None
+                manifest_issue = {"code": exc.code, "message": str(exc), "details": exc.details}
+            try:
+                runtime_state = self.load_runtime_state(strict=True)
+            except RuntimeValidationError as exc:
+                runtime_state = None
+                runtime_state_issue = {"code": exc.code, "message": str(exc), "details": exc.details}
+            required = [(label, path, kind, True) for label, path, kind in self._required_paths(manifest)]
+            optional = self._optional_paths(manifest)
+            files = []
+            for label, relative_path, kind, required_flag in [*required, *optional]:
+                absolute = self.current_dir / relative_path
+                exists = absolute.is_dir() if kind == "dir" else absolute.is_file()
+                files.append(
+                    {
+                        "label": label,
+                        "path": str(absolute),
+                        "exists": exists,
+                        "required": required_flag,
+                    }
+                )
+
+            python_path = self._relative_manifest_path(manifest, "runtimes", "python")
+            java_path = self._relative_manifest_path(manifest, "runtimes", "java")
+            start_script = self._relative_manifest_path(manifest, "services", "start_script")
+            stop_script = self._relative_manifest_path(manifest, "services", "stop_script")
+            endpoints = self._service_status_settled()
+
+            # 🔴 E-05 / E-06：先定模式，再让每条 issue 从模式里推出来。旧实现不分模式地逐个比对 12 个载荷文件：
+            # 网关（external）用户永远 12 条 missing:* + 「重新解包」，一台什么都没装的新机器也是 12 条 missing:*。
+            mode = self.runtime_mode()
+            deployment = "external" if mode == "external" else ("managed" if installed else "not_installed")
+            issues = []
+            if manifest_issue and deployment == "managed":
+                issues.append(manifest_issue["code"])
+            if runtime_state_issue:
+                issues.append(runtime_state_issue["code"])
+            if deployment == "managed":
+                for entry in files:
+                    if not entry["exists"]:
+                        issues.append(f"missing:{entry['label']}")
+            elif deployment == "not_installed":
+                issues.append("runtime:not_installed")
+            elif not self._all_services_reachable(endpoints):
+                issues.append("external:unreachable")
+            # E-08：runtime 根写不了时 install / start 会被拒（runtime.root_not_writable）。doctor 只读：不建目录、不落文件。
+            write_problem = self.runtime_root_write_problem(probe=False) if deployment != "external" else None
+            if write_problem:
+                issues.append("runtime:root_not_writable")
+            # macOS Gatekeeper（v0.38.0 B6）：浏览器下载的归档解出来的二进制带 com.apple.quarantine，
+            # 首次执行被系统拦下时症状是「起不来 + 无日志」。只报不动：修复命令交给用户。
+            quarantine = self._quarantine_report(manifest) if installed else {"checked": [], "flagged": [], "fix": None}
+            if quarantine["flagged"]:
+                issues.append("quarantine:runtime_binaries")
+            # v0.38.1：Windows 上随包的 java.exe 与 Swiss Ephemeris 都用窄字符 API，runtime 根必须纯 ASCII（见 windows_runtime_path_ok）。
+            if _host_is_windows() and not windows_runtime_path_ok(self.runtime_root):
+                issues.append("windows:runtime_root_not_ascii")
+            degraded: str | None = None
+            java_diagnostics: dict[str, Any] | None = None
+            if deployment == "managed" and not self._all_services_reachable(endpoints):
+                if self._chart_only_degraded(endpoints):
+                    # Issue #14: name the half that is down and surface WHY — a silently dead
+                    # Java backend was previously indistinguishable from "nothing running".
+                    issues.append("services:java_backend_not_running")
+                    degraded = "chart_only"
+                    java_diagnostics = self._java_boot_diagnostics(manifest)
+                elif self._any_services_reachable(endpoints):
+                    issues.append("services:chart_not_running")
+                else:
+                    issues.append("services:not_running")
+
+            trace["issues"] = issues
+            freshness = self.payload_freshness(manifest)
+            previous_dir = self.runtime_root / "previous"
+            manifest_version = manifest.get("version") if manifest else None
+            runtime_payload_version = manifest.get("runtime_payload_version") if manifest else None
+            host_platform = self.settings.runtime_platform or _platform_key()
+            payload_platform = str(manifest.get("platform") or "") if manifest else None
+            return {
+                "ok": not issues,
+                "installed": installed,
+                # managed（本机 runtime 由本工具启停）/ external（网关：HOROSA_SERVER_ROOT 指到别处，只探不起）/ not_installed
+                "deployment": deployment,
+                "runtime_root_writable": {"ok": write_problem is None, "problem": write_problem},
+                "platform": host_platform,
+                # v0.38.0 A4: host vs payload — Windows on ARM runs the win32-x64 payload under emulation.
+                "host_platform": host_platform,
+                "payload_platform": payload_platform,
+                "emulated": bool(
+                    payload_platform
+                    and payload_platform != host_platform
+                    and PLATFORM_FALLBACKS.get(host_platform, ("",))[0] == payload_platform
+                ),
+                "platform_requirements": (manifest.get("platform_requirements") if manifest else None),
+                "arch": arch_report(),
+                "windows": windows_path_report(self.runtime_root),
+                "privacy": data_privacy_report(self.settings),
+                "quarantine": quarantine,
+                "runtime_root": str(self.runtime_root),
+                "current_dir": str(self.current_dir),
+                "manifest_version": manifest_version,
+                "runtime_payload_version": runtime_payload_version,
+                # v0.38.1 R4：只读缓存，不碰网络；`doctor --probe-network` 会刷新它。
+                "latest_version": freshness["latest_version"],
+                "freshness": freshness,
+                "previous_dir": str(previous_dir) if previous_dir.exists() else None,
+                "manifest": manifest,
+                "manifest_issue": manifest_issue,
+                "runtime_state": runtime_state,
+                "runtime_state_issue": runtime_state_issue,
+                "paths": {
+                    "python": str(self.current_dir / python_path),
+                    "java": str(self.current_dir / java_path),
+                    "node": str(self.current_dir / self._relative_manifest_path(manifest, "runtimes", "node")),
+                    "start_script": str(self.current_dir / start_script),
+                    "stop_script": str(self.current_dir / stop_script),
+                },
+                "files": files,
+                "endpoints": endpoints,
+                "issues": issues,
+                "degraded": degraded,
+                "java_diagnostics": java_diagnostics,
+                "trace_id": trace["trace_id"],
+                "group_id": trace["group_id"],
+            }
+
+    def start_local_services(self, *, wait_seconds: float | None = None) -> dict[str, Any]:
+        """启动本机 runtime。
+
+        `wait_seconds=None` = 用满 runtime_start_timeout_seconds（`runtime start`/install/selfcheck）；
+        工具调用路径传一个小预算，超出即返回 `{"starting": True, "retry_after_seconds": …}`。
+        """
+        mode = self.runtime_mode()
+        if mode == "external":
+            # 外部模式：地址是用户给的，只探不起不停。
+            manifest = self.load_installed_manifest() if self.current_dir.exists() else None
+            endpoints = self.endpoint_identities()
+            reachable = self._all_services_reachable(endpoints)
+            if not reachable:
+                raise RuntimeInstallError(
+                    "外部模式（已显式设置 HOROSA_SERVER_ROOT / HOROSA_CHART_SERVER_ROOT）下服务不可达。",
+                    code="runtime.external_unreachable",
+                    details={
+                        "endpoints": endpoints,
+                        "next_action": (
+                            "确认那台机器上的 Horosa 服务在跑且地址可达；"
+                            "要改用本机 runtime，请取消 HOROSA_SERVER_ROOT / HOROSA_CHART_SERVER_ROOT。"
+                        ),
+                        "will_not_start": "外部模式下本工具不会在本机启动 runtime。",
+                    },
+                )
+            self._write_runtime_state({
+                "managed": False,
+                "mode": "external",
+                "status": "external",
+                "updated_at": self._utc_now(),
+                "endpoints": endpoints,
+            })
+            return {
+                "ok": True, "already_running": True, "mode": "external", "command": None,
+                "stdout": "", "stderr": "", "endpoints": endpoints,
+                "trace_id": None, "group_id": None,
+            }
+        with self._service_lock:
+            with self.tracer.span(workflow_name="runtime.start", metadata={"entrypoint": "runtime.start"}) as trace:
+                self._restore_previous_after_crash()
+                self._require_runtime()
+                # 启动要在 runtime 根下写锁、状态文件与 launcher.log。写不了就现在说，别让锁那一步把它答成「别人在启动」。
+                self._require_writable_runtime_root()
+                manifest = self.load_installed_manifest(strict=True)
+                # 🔴 macOS：带 com.apple.quarantine 的 python/java 一被启动器 exec 就被 Gatekeeper SIGKILL，
+                # 没有任何输出。此前只有 doctor 会查它；start 路径上用户要等满整个就绪预算，
+                # 然后拿到一个只有 command / timeout_seconds / endpoints 的 runtime.start_timeout ——
+                # 指不到任何地方。这里先查，flagged 就直接给带 xattr 命令的结构化错误。
+                if self._host_is_darwin():
+                    quarantine = self._quarantine_report(manifest)
+                    if quarantine.get("flagged"):
+                        raise RuntimeInstallError(
+                            "runtime 的可执行文件带 macOS 隔离属性（com.apple.quarantine），Gatekeeper 会在启动时直接终止它们。",
+                            code="runtime.start_blocked_quarantine",
+                            details={
+                                "quarantine": quarantine,
+                                "next_action": f"先执行 {quarantine.get('fix')} 再重试；这只影响手动下载归档后 `install --archive` 的安装方式。",
+                            },
+                        )
+                patched_files: list[str] = []
+                initial_status = self.endpoint_identities()
+                # 可达但不是我们的 → 报冲突并退出；绝不采用、绝不代为终止。
+                self._require_no_foreign_holders(initial_status)
+                lock_path = self.runtime_root / ".runtime-start.lock"
+                if self._all_services_reachable(initial_status):
+                    release_launcher(lock_path)  # 上一次启动的 hand-off 没人释放；服务都在，它的活儿已经干完了
+                    if self.load_runtime_state() is None:
+                        self._write_runtime_state(
+                            {
+                                "managed": False,
+                                "status": "already_running",
+                                "updated_at": self._utc_now(),
+                                "manifest_version": manifest.get("version") if manifest else None,
+                                "platform": manifest.get("platform") if manifest else (self.settings.runtime_platform or _platform_key()),
+                            }
+                        )
+                    return {
+                        "ok": True,
+                        "already_running": True,
+                        "command": None,
+                        "stdout": "",
+                        "stderr": "",
+                        "endpoints": initial_status,
+                        "trace_id": trace["trace_id"],
+                        "group_id": trace["group_id"],
+                    }
+
+                recovered_partial_state = False
+                recovery_details: dict[str, Any] | None = None
+                if self._chart_only_degraded(initial_status):
+                    remaining = self.java_backend_cooldown_remaining()
+                    if remaining > 0:
+                        # Java 挂、chart 健康、冷却期内：不许为了再试 Java 先杀掉健康的 chart 服务再全量重启
+                        # （v0.36.0 前每个碰 Java 的调用都这么干一次——含 qimen 等前置 /nongli/time 的技法）。
+                        return {
+                            "ok": True,
+                            "already_running": True,
+                            "degraded": True,
+                            "skipped_restart": True,
+                            "cooldown_remaining_seconds": round(remaining, 1),
+                            "command": None,
+                            "stdout": "",
+                            "stderr": "",
+                            "endpoints": initial_status,
+                            "trace_id": trace["trace_id"],
+                            "group_id": trace["group_id"],
+                        }
+                # 🔴 旧实现在「部分可达」时先 stop 一遍再全量重启（L715-717）。那一步会把**健康的**
+                # 那半边也停掉：Java 起不来时，每一次碰 Java 的调用都要顺手弄死正常的 chart 服务，
+                # 再赌一次全量启动。既然此刻已确认可达的那些都是我们自己的（上面的冲突检查放行了），
+                # 就让启动脚本自己去补齐缺的那半边 —— 它本来就是幂等的。
+                # 跨进程启动锁：`self._service_lock` 只挡得住**本进程**。两个 MCP 客户端
+                # （Claude Desktop 与 Cursor，或一个 serve 与一次 doctor）同时冷启动时，两边各起
+                # 一个启动器：抢同一个端口、互相覆盖 pid 文件，后到的看见「pid files already
+                # exist」就先 stop 再 start —— 把先到的那个刚起好的服务停掉。
+                # 锁的持有者写成**启动器自己的 pid**，于是锁的寿命恰好等于一次启动；启动器崩了
+                # 锁自动可回收（pidlock 的死持有者判定），不需要看门狗线程。
+                budget = (
+                    float(self.settings.runtime_start_timeout_seconds)
+                    if wait_seconds is None
+                    else max(0.0, float(wait_seconds))
+                )
+                if not self._try_start_lock(lock_path, owner="runtime-start"):
+                    holder = describe_lock(lock_path)
+                    waited = self._wait_for_service_state(
+                        expected_reachable=True, timeout_seconds=budget
+                    )
+                    if waited["ready"]:
+                        release_launcher(lock_path)
+                        return {
+                            "ok": True, "already_running": True, "started_by_other_process": True,
+                            "command": None, "stdout": "", "stderr": "", "endpoints": waited["endpoints"],
+                            "trace_id": trace["trace_id"], "group_id": trace["group_id"],
+                        }
+                    return {
+                        "ok": True, "starting": True, "started_by_other_process": True,
+                        "retry_after_seconds": 5,
+                        "elapsed_seconds": round(budget, 1),
+                        "budget_seconds": round(budget, 1),
+                        "cap_seconds": float(self.settings.runtime_start_timeout_seconds),
+                        "launcher": holder,
+                        "command": None, "stdout": "", "stderr": "",
+                        "endpoints": waited["endpoints"],
+                        "trace_id": trace["trace_id"], "group_id": trace["group_id"],
+                    }
+                lock_released = False
+                # 加锁之后的**每一条**出口都必须释放：抛 runtime.start_failed / start_timeout /
+                # launcher_patch_anchor_missing 时若把锁留着，而本进程（一个长命的 serve）还活着，
+                # pidlock 的「活持有者永不回收」就会把后续所有启动永久挡死。
+                try:
+                    patched_files = self._apply_runtime_overrides(manifest)
+                    script = self.current_dir / self._relative_manifest_path(manifest, "services", "start_script")
+                    if not script.exists():
+                        raise RuntimeValidationError(
+                            f"Runtime start script missing: {script}",
+                            code="runtime.start_script_missing",
+                            details={"path": str(script)},
+                        )
+
+                    # 一次性身份口令：写进注册表并透给启动器，`/horosaIdentity` 会原样回报。
+                    # 这是「这个端口上的服务是不是**这次**启动的那一份」唯一可靠的答案 —— 仅靠 app
+                    # 标记分不出用户自己开着的星阙桌面端。
+                    launch_nonce = secrets.token_urlsafe(16)
+
+                    def _remember_nonce(state: dict[str, Any]) -> dict[str, Any]:
+                        state["launch_nonce"] = launch_nonce
+                        state["mode"] = "managed"
+                        state["ports"] = {
+                            "backend": self.settings.local_backend_port,
+                            "chart": self.settings.local_chart_port,
+                        }
+                        return state
+
+                    self._update_runtime_state(_remember_nonce)
+
+                    # 🔴 E-07：HTTP 探针看不见的监听者（不说 HTTP / 只 accept 不应答）也占着端口：现在就点名，
+                    # 别起了启动器再让用户等满预算拿一个 conflicts 为空的 runtime.start_timeout。
+                    self._require_ports_free_of_others(initial_status)
+
+                    env = self._launcher_env()
+                    env["HOROSA_LAUNCH_NONCE"] = launch_nonce
+
+                    command = self._platform_command(script)
+                    completed, readiness = self._run_start_command(
+                        command=command,
+                        script=script,
+                        env=env,
+                        wait_seconds=budget,
+                    )
+                    if readiness.get("starting"):
+                        # 启动器还在跑。锁交给它的 pid 持有（谁都别再起第二个），本次调用先回
+                        # 「正在启动」，让调用方过几秒重试同一个调用，而不是干等几分钟被客户端掐断。
+                        _hand_lock_to(lock_path, readiness.get("launcher_pid"))
+                        lock_released = True
+                        self._write_runtime_state({
+                            "managed": True, "mode": "managed", "status": "starting",
+                            "updated_at": self._utc_now(),
+                            "manifest_version": manifest.get("version") if manifest else None,
+                            "platform": manifest.get("platform") if manifest else (self.settings.runtime_platform or _platform_key()),
+                            "command": command,
+                        })
+                        return {
+                            "ok": True, "starting": True,
+                            "retry_after_seconds": 5,
+                            "elapsed_seconds": readiness.get("elapsed_seconds"),
+                            "budget_seconds": readiness.get("budget_seconds"),
+                            "cap_seconds": readiness.get("cap_seconds"),
+                            "first_start": not (self.runtime_root / ".started-once").exists(),
+                            "launcher_log": readiness.get("launcher_log"),
+                            "launcher_pid": readiness.get("launcher_pid"),
+                            "command": command, "stdout": completed.stdout[-4000:], "stderr": "",
+                            "endpoints": readiness["endpoints"],
+                            "patched_files": patched_files,
+                            "trace_id": trace["trace_id"], "group_id": trace["group_id"],
+                        }
+                    retried_after_cleanup = False
+                    combined_output = f"{completed.stdout}\n{completed.stderr}".lower()
+                    if (
+                        completed.returncode != 0
+                        and not readiness["ready"]
+                        and (
+                            self._any_services_reachable(readiness["endpoints"])
+                            or "pid files already exist" in combined_output
+                        )
+                    ):
+                        recovery_details = self.stop_local_services()
+                        recovered_partial_state = True
+                        retried_after_cleanup = True
+                        completed, readiness = self._run_start_command(
+                            command=command,
+                            script=script,
+                            env=env,
+                            wait_seconds=budget,
+                        )
+                    degraded = bool(readiness.get("degraded"))
+                    self._last_degraded_start_at = time.monotonic() if degraded else None
+                    startup_warning: dict[str, Any] | None = None
+                    if degraded:
+                        startup_warning = {
+                            "code": "runtime.start_degraded_chart_only",
+                            "message": (
+                                "Java backend (:9999) did not become ready; running degraded on the chart service only. "
+                                "Chart-side techniques (三式 ken/神数/地占/塔罗/西占 chart 族) stay available; "
+                                "Java-side ones (nongli/bazi/ziwei/liureng and 占时 casts) will error until it recovers. "
+                                + _contextualize("Run `horosa-skill doctor` for the captured Java boot error.")
+                            ),
+                            "details": {
+                                "command": command,
+                                "returncode": completed.returncode,
+                                "stdout": completed.stdout[-4000:],
+                                "stderr": completed.stderr[-4000:],
+                                "retried_after_cleanup": retried_after_cleanup,
+                                "java_diagnostics": self._java_boot_diagnostics(manifest),
+                            },
+                        }
+                    elif completed.returncode != 0 and readiness["ready"]:
+                        startup_warning = {
+                            "code": "runtime.start_nonzero_but_ready",
+                            "message": "Runtime start script exited non-zero, but all required services became reachable.",
+                            "details": {
+                                "command": command,
+                                "returncode": completed.returncode,
+                                "stdout": completed.stdout[-4000:],
+                                "stderr": completed.stderr[-4000:],
+                                "retried_after_cleanup": retried_after_cleanup,
+                            },
+                        }
+                    elif completed.returncode != 0:
+                        raise RuntimeInstallError(
+                            "Failed to start local Horosa runtime.",
+                            code="runtime.start_failed",
+                            details={
+                                "command": command,
+                                "stdout": completed.stdout[-4000:],
+                                "stderr": completed.stderr[-4000:],
+                                "endpoints": readiness["endpoints"],
+                                **self._start_failure_context(manifest),
+                            },
+                        )
+                    if not readiness["ready"]:
+                        taken = self._ports_taken_by_others(readiness["endpoints"])
+                        raise RuntimeInstallError(
+                            bilingual(
+                                "本机 Horosa runtime 没有在时限内就绪。"
+                                + (f"端口被别的进程占着：{_describe_takers(taken)}。" if taken else ""),
+                                "The local Horosa runtime did not become ready in time."
+                                + (f" A port is held by another process: {_describe_takers(taken)}." if taken else ""),
+                            ),
+                            code="runtime.start_timeout",
+                            details={
+                                "command": command,
+                                "timeout_seconds": self.settings.runtime_start_timeout_seconds,
+                                "endpoints": readiness["endpoints"],
+                                "port_takers": taken,
+                                **self._start_failure_context(manifest),
+                            },
+                        )
+                    if degraded:
+                        runtime_status = "degraded_chart_only"
+                    elif startup_warning:
+                        runtime_status = "running_with_warnings"
+                    else:
+                        runtime_status = "running"
+                    self._write_runtime_state(
+                        {
+                            "managed": True,
+                            "status": runtime_status,
+                            "updated_at": self._utc_now(),
+                            "manifest_version": manifest.get("version") if manifest else None,
+                            "platform": manifest.get("platform") if manifest else (self.settings.runtime_platform or _platform_key()),
+                            "command": command,
+                            "startup_warning": startup_warning,
+                            "recovered_partial_state": recovered_partial_state,
+                        }
+                    )
+                    if not lock_released:
+                        release_lock(lock_path)
+                        lock_released = True
+                    try:
+                        (self.runtime_root / ".started-once").touch()
+                    except OSError:
+                        pass
+                    trace["command"] = command
+                    trace["patched_files"] = patched_files
+                    return {
+                        "ok": True,
+                        "already_running": False,
+                        "degraded": degraded,
+                        "command": command,
+                        "stdout": completed.stdout[-4000:],
+                        "stderr": completed.stderr[-4000:],
+                        "endpoints": readiness["endpoints"],
+                        "warning": startup_warning,
+                        "patched_files": patched_files,
+                        "recovered_partial_state": recovered_partial_state,
+                        "recovery": recovery_details,
+                        "trace_id": trace["trace_id"],
+                        "group_id": trace["group_id"],
+                    }
+                finally:
+                    if not lock_released:
+                        release_lock(lock_path)
+
+    def stop_local_services(self, *, force: bool = False, ignore_clients: bool = False) -> dict[str, Any]:
+        """停止本机 runtime。**只停我们自己起的那一份**，且默认不在别的 MCP 客户端还挂着时停（v0.38.1 R14）。
+
+        `ignore_clients=True`：install/upgrade 的换目录前置停止与 `runtime restart` 用——服务马上会回来，
+        挂着的客户端下一次调用只会看到一次 runtime.starting 然后自动重试。`force=True` 两条都绕过。
+
+        🔴 停脚本按端口/pid 文件动手。如果那个端口上跑的其实是用户自己开着的星阙桌面端（同一个
+        app 标记、同一个默认端口），一次 `runtime stop`（或旧代码里那些「先 stop 再重启」的反射）
+        就会把用户正在用的程序关掉。所以这里要求**强证据**（nonce 相等 / 命令行含我方 runtime 根 /
+        我方注册表里的 pid 仍活着）才动手；只有 app 标记不算数。
+        """
+        if self.runtime_mode() == "external":
+            return {
+                "ok": True, "already_stopped": True, "mode": "external", "refused": True,
+                "reason": "external_mode",
+                "message": "外部模式（HOROSA_SERVER_ROOT/HOROSA_CHART_SERVER_ROOT 已显式设置）下不会停止任何服务。",
+                "command": None, "stdout": "", "stderr": "", "returncode": 0,
+                "endpoints": self.endpoint_identities(), "trace_id": None, "group_id": None,
+            }
+        with self.tracer.span(workflow_name="runtime.stop", metadata={"entrypoint": "runtime.stop"}) as trace:
+            self._require_runtime()
+            manifest = self.load_installed_manifest(strict=True)
+            script = self.current_dir / self._relative_manifest_path(manifest, "services", "stop_script")
+            initial_status = self.endpoint_identities()
+            reachable_now = [item for item in initial_status if item.get("reachable")]
+            not_ours = [
+                item for item in reachable_now
+                if not ((item.get("identity") or {}).get("started_by_us"))
+            ]
+            if reachable_now and not_ours and not force:
+                return {
+                    "ok": False, "already_stopped": False, "refused": True,
+                    "reason": "not_started_by_us",
+                    "code": "runtime.stop_refused_foreign",
+                    "message": (
+                        "这些端口上的服务不是本工具启动的（可能是你自己开着的星阙桌面端或另一个实例），"
+                        "已拒绝停止。"
+                    ),
+                    "next_action": (
+                        "确认要停的就是它们时用 `runtime stop --force`；"
+                        "只是想腾出端口给本工具，请改端口"
+                        "（HOROSA_LOCAL_BACKEND_PORT / HOROSA_LOCAL_CHART_PORT，或 HOROSA_PORTS=auto）。"
+                    ),
+                    "conflicts": not_ours,
+                    "command": None, "stdout": "", "stderr": "", "returncode": 0,
+                    "endpoints": initial_status,
+                    "trace_id": trace["trace_id"], "group_id": trace["group_id"],
+                }
+            if not any(item["reachable"] for item in initial_status):
+                self._clear_runtime_state()
+                return {
+                    "ok": True,
+                    "already_stopped": True,
+                    "command": None,
+                    "stdout": "",
+                    "stderr": "",
+                    "returncode": 0,
+                    "endpoints": initial_status,
+                    "trace_id": trace["trace_id"],
+                    "group_id": trace["group_id"],
+                }
+            if not force and not ignore_clients:
+                # 🔴 别的 MCP 客户端（另一个 Claude Code / Cursor 会话的 stdio server）还挂在这份 runtime 上：
+                # 在它脚下抽走服务 = 那边下一次排盘失败。登记表里只算**仍存活**的进程（崩溃的客户端不拦 stop）。
+                from horosa_skill.runtime.registry import live_clients
+
+                attached = live_clients(self.load_runtime_state(), exclude_pid=os.getpid())
+                if attached:
+                    return {
+                        "ok": False, "already_stopped": False, "refused": True,
+                        "reason": "clients_attached",
+                        "code": "runtime.stop_refused_clients_attached",
+                        "message": bilingual(
+                            f"还有 {len(attached)} 个 MCP 客户端挂在这份 runtime 上，已拒绝停止。",
+                            f"{len(attached)} MCP client(s) are still attached to this runtime; stop refused.",
+                        ),
+                        "next_action": bilingual(
+                            "关掉那些客户端会话（或等它们退出）后再停；确认要在它们脚下停就 `runtime stop --force`；"
+                            "只是想重启请用 `runtime restart`（服务马上回来，客户端自动重连）。",
+                            "Close those client sessions first (or let them exit); `runtime stop --force` stops anyway; "
+                            "use `runtime restart` if you only need a restart (clients reconnect automatically).",
+                        ),
+                        "clients": attached,
+                        "command": None, "stdout": "", "stderr": "", "returncode": 0,
+                        "endpoints": initial_status,
+                        "trace_id": trace["trace_id"], "group_id": trace["group_id"],
+                    }
+            if not script.exists():
+                raise RuntimeValidationError(
+                    f"Runtime stop script missing: {script}",
+                    code="runtime.stop_script_missing",
+                    details={"path": str(script)},
+                )
+            command = self._platform_command(script)
+            # 🔴 停脚本按 pid 文件名里的**端口**找进程（`.horosa_py.<CHART_PORT>.pid`）。它必须拿到与启动器相同的
+            # HOROSA_SERVER_PORT / HOROSA_CHART_PORT —— 此前这里传的是裸 os.environ：端口一改（HOROSA_PORTS=auto、
+            # HOROSA_LOCAL_BACKEND_PORT / HOROSA_LOCAL_CHART_PORT、矩阵 lane），停脚本找默认端口的 pid 文件 → "not running" → 服务永远停不掉，
+            # 状态卡在 stop_requested（v0.38.0 A5 真机 lane 首跑抓到）。
+            stop_budget = max(30.0, min(float(self.settings.runtime_start_timeout_seconds), 180.0))
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=str(script.parent),
+                    env=self._launcher_env(),
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=stop_budget,
+                    creationflags=NO_WINDOW,
+                )
+            except subprocess.TimeoutExpired as exc:
+                # 🔴 此前没有 timeout：mac 的停脚本来自只读的上游树，它要是哪天多等一轮，`uninstall --yes`
+                # 与 `runtime stop` 就会无限期挂住。超时按「没停干净」处理，把还活着的持有者点出来。
+                # TimeoutExpired.stdout 即便 text=True 也是 bytes（POSIX 上原样带出已读到的输出）→ 自己解码。
+                partial = exc.stdout or ""
+                partial_text = partial.decode("utf-8", errors="replace") if isinstance(partial, bytes) else str(partial)
+                self._write_runtime_state({
+                    "managed": True, "status": "stop_requested", "updated_at": self._utc_now(),
+                    "manifest_version": manifest.get("version") if manifest else None,
+                })
+                return {
+                    "ok": False, "already_stopped": False, "code": "runtime.stop_timeout",
+                    "message": f"停止脚本 {stop_budget:.0f} 秒内未返回。",
+                    "command": command,
+                    "stdout": partial_text[-4000:],
+                    "stderr": "", "returncode": None,
+                    "survivors": [
+                        {"port": port, "holders": port_holders(port)}
+                        for port in (self.settings.local_backend_port, self.settings.local_chart_port)
+                    ],
+                    "endpoints": initial_status,
+                    "trace_id": trace["trace_id"], "group_id": trace["group_id"],
+                }
+            shutdown = self._wait_for_service_state(
+                expected_reachable=False,
+                timeout_seconds=max(3.0, min(self.settings.runtime_start_timeout_seconds, 10.0)),
+            )
+            if completed.returncode == 0 and shutdown["ready"]:
+                self._clear_runtime_state()
+                release_launcher(self.runtime_root / ".runtime-start.lock")
+            else:
+                self._write_runtime_state(
+                    {
+                        "managed": True,
+                        "status": "stop_requested",
+                        "updated_at": self._utc_now(),
+                        "manifest_version": manifest.get("version") if manifest else None,
+                        "platform": manifest.get("platform") if manifest else (self.settings.runtime_platform or _platform_key()),
+                    }
+                )
+            trace["command"] = command
+            return {
+                "ok": completed.returncode == 0 and shutdown["ready"],
+                "already_stopped": False,
+                "command": command,
+                "stdout": completed.stdout[-4000:],
+                "stderr": completed.stderr[-4000:],
+                "returncode": completed.returncode,
+                "endpoints": shutdown["endpoints"],
+                "trace_id": trace["trace_id"],
+                "group_id": trace["group_id"],
+            }
+
+    def _launcher_env(self) -> dict[str, str]:
+        """启动器与停脚本共用的环境：端口（pid 文件按端口命名）+ HOME 族。两边必须同源，否则停不掉自己起的服务。"""
+        env = os.environ.copy()
+        # 🔴 无条件赋值，不是 setdefault：这两个是 internal 变量，用户环境里若残留一份（名字与
+        # HOROSA_LOCAL_BACKEND_PORT 只差一个词），启动器就听旧端口而 manager 探新端口 → runtime.start_timeout
+        # 且没有任何提示。端口的权威是 settings（含 HOROSA_PORTS=auto 的结果），启动器只负责照办。
+        env["HOROSA_SERVER_PORT"] = str(self.settings.local_backend_port)
+        env["HOROSA_CHART_PORT"] = str(self.settings.local_chart_port)
+        home_value = self._default_home_value()
+        env.setdefault("HOME", home_value)
+        if os.name == "nt":
+            env.setdefault("USERPROFILE", home_value)
+            drive, tail = os.path.splitdrive(home_value)
+            if drive:
+                env.setdefault("HOMEDRIVE", drive)
+                env.setdefault("HOMEPATH", tail or "\\")
+        return env
+
+    def _require_runtime(self) -> None:
+        if self.current_dir.exists():
+            return
+        # 🔴 A9：Intel Mac / Linux 上此前第一次工具调用报的是 runtime.not_installed，把人打发去
+        # `install`，再由 install 报 install_missing_platform —— 两跳才知道「这台机器根本装不了」。
+        # 没有载荷的平台在第一跳就给出路（网关模式），且 code 与 RECOVERY_TABLE 的 kind 对得上。
+        platform_name = self.settings.runtime_platform or _platform_key()
+        if not platform_has_payload(platform_name):
+            advice = _platform_dead_end_advice(platform_name)
+            raise RuntimeValidationError(
+                bilingual(
+                    f"本机平台 {platform_name} 没有离线 runtime 载荷。",
+                    f"No offline runtime payload exists for this platform ({platform_name}).",
+                ),
+                code="runtime.platform_unsupported",
+                details={"platform": platform_name, "supported": list(SUPPORTED_PAYLOAD_PLATFORMS),
+                         "fallbacks": {k: v[0] for k, v in PLATFORM_FALLBACKS.items()}, **advice},
+            )
+        from horosa_skill.runtime.hints import install_commands_for_error
+
+        raise RuntimeValidationError(
+            "Horosa 离线 runtime 尚未安装（runtime is not installed）。",
+            code="runtime.not_installed",
+            details={"current_dir": str(self.current_dir), **install_commands_for_error()},
+        )
+
+    def _materialize_archive(
+        self, source: str, temp_dir: Path, *, progress: Any | None = None, expected_sha256: str | None = None
+    ) -> Path:
+        if _is_url(source):
+            parsed = urlparse(source)
+            if parsed.scheme == "file":
+                return self._file_url_to_path(source)
+            return self._download_with_resume(source, temp_dir, progress=progress, expected_sha256=expected_sha256)
+        local_path = Path(source).expanduser().resolve()
+        if not local_path.is_file():
+            # 结构化错误（CLI 的 except RuntimeInstallError/RuntimeValidationError 能干净接住并出
+            # {ok:false,code,...}），而非内置 RuntimeError 冒泡成 traceback。
+            raise RuntimeInstallError(
+                f"Runtime archive not found: {local_path}",
+                code="runtime.install_archive_missing",
+                details={"archive": str(local_path)},
+            )
+        return local_path
+
+    def _mirror_trust_warnings(self) -> list[dict[str, Any]]:
+        """审计 PF-01：清单来自镜像（原站不通）/ 配了明文 http 镜像被拒 → 结果 warnings 里说清楚。"""
+        from horosa_skill.runtime.mirrors import mirror_prefixes
+
+        warnings: list[dict[str, Any]] = []
+        host = getattr(self, "_manifest_via_mirror", None)
+        if host:
+            warnings.append({"code": "runtime.install_mirror_trusted", "mirror": host, "message": bilingual(
+                f"原站取不到发布清单，用的是镜像 {host} 给的清单：归档摘要只是这个镜像自己的说法（integrity: mirror_asserted）。"
+                "只在信任这个镜像时继续；能连 github.com 时重装一次即可换成原站摘要。",
+                f"The release manifest came from mirror {host} (github.com unreachable): the archive digest is only that mirror's claim "
+                "(integrity: mirror_asserted). Proceed only if you trust it; reinstall once github.com is reachable.")})
+        _usable, rejected = mirror_prefixes()
+        if rejected:
+            warnings.append({"code": "runtime.mirror_insecure_ignored", "mirrors": rejected, "message": bilingual(
+                f"明文 http 镜像已忽略（中间人能换掉清单与归档）：{', '.join(rejected)}；改用 https，或确知风险时设 HOROSA_RUNTIME_MIRROR_ALLOW_HTTP=1。",
+                f"Plain-http mirrors were ignored (a man-in-the-middle could swap the manifest and archive): {', '.join(rejected)}; "
+                "use https, or set HOROSA_RUNTIME_MIRROR_ALLOW_HTTP=1 if you accept the risk.")})
+        return warnings
+
+    def _mirror_candidates(self, url: str) -> list[str]:
+        """HOROSA_RUNTIME_MIRROR（逗号分隔前缀）对 github.com URL 做前缀替换：镜像在前、原始 URL 兜底。
+
+        v0.38.0 B3 起真身在 `runtime/mirrors.py`（客户端配置生成器也要给 wheel URL 做同一套改写）。
+        """
+        from horosa_skill.runtime.mirrors import mirror_candidates
+
+        return mirror_candidates(url)
+
+    # 一次下载里「有进展」的尝试不计入重试次数，但总轮数封顶：一个每次只给几字节就断的源不能把 install 拖成无限循环。
+    _MAX_PROGRESSING_ROUNDS = 50
+    DOWNLOAD_OWNER = "runtime-download"
+
+    def _partial_paths(self, source: str, expected_sha256: str | None) -> tuple[Path, Path, Path]:
+        """断点文件、旁注（url / etag / 长度 / sha）、下载锁 —— 按**内容**定名，不按文件名。
+
+        🔴 v0.50.0-dev（E-09）：旧实现用 `downloads/<文件名>.part`。同名的另一个资产（发布 repack、换了版本却同名、
+        另一个镜像给的坏字节）留下的半截会被当成前半截续上，最后 sha 对不上；两个 install 同时跑还会争同一个文件。
+        有期望 sha 时按 sha 定名（同一份内容从哪个镜像续都对），没有时按 URL 定名。
+        """
+        filename = Path(urlparse(source).path).name or "runtime-archive"
+        key = (expected_sha256 or "").strip().lower() or hashlib.sha256(source.encode("utf-8")).hexdigest()
+        downloads_dir = self.runtime_root / "downloads"
+        stem = f"{filename}.{key[:16]}"
+        return downloads_dir / f"{stem}.part", downloads_dir / f"{stem}.part.json", downloads_dir / f"{stem}.lock"
+
+    def _download_with_resume(
+        self,
+        source: str,
+        temp_dir: Path,
+        *,
+        attempts: int | None = None,
+        progress: Any | None = None,
+        expected_sha256: str | None = None,
+    ) -> Path:
+        """流式下载 + HTTP Range 断点续传 + 有限退避重试 + 多镜像回退。
+
+        断点存 runtime_root/downloads（跨 install 调用可续传），按内容定名并带旁注（`_partial_paths`）；续传带 `If-Range`
+        （资源变了服务器回 200 整份，不会把新尾巴接到旧前半截上）。206 续写、200 重下；416 看 Content-Range：分块已到头就直接用，
+        否则丢掉从头下。给了 `expected_sha256` 就逐候选校验：续出来的文件对不上时先丢掉断点**从头再下一次**，仍不对才算这个候选坏了。
+        有进展的尝试不消耗重试次数（慢网上断三次不该等于失败）。同一份内容同时只有一个进程在下（下载锁）。
+        progress(done, total|None) 供 CLI 回调。
+        """
+        filename = Path(urlparse(source).path).name or "runtime-archive"
+        part_path, sidecar_path, lock_path = self._partial_paths(source, expected_sha256)
+        part_path.parent.mkdir(parents=True, exist_ok=True)
+        if not try_pid_lock(lock_path, stale_after_seconds=6 * 3600.0, owner=self.DOWNLOAD_OWNER):
+            holder = describe_lock(lock_path) or {}
+            raise RuntimeInstallError(
+                bilingual(
+                    f"另一个 install（pid {holder.get('pid')}）正在下载同一个 runtime 归档。等它结束再看结果，不用重复下载。",
+                    f"Another install (pid {holder.get('pid')}) is downloading the same runtime archive. Wait for it to finish; "
+                    "there is no need to download it twice.",
+                ),
+                code="runtime.install_download_in_progress",
+                details={"lock": str(lock_path), "holder": holder},
+            )
+        try:
+            return self._download_locked(source, temp_dir, filename=filename, part_path=part_path, sidecar_path=sidecar_path,
+                                         attempts=attempts, progress=progress, expected_sha256=expected_sha256)
+        finally:
+            release_lock(lock_path)
+
+    def _download_locked(
+        self,
+        source: str,
+        temp_dir: Path,
+        *,
+        filename: str,
+        part_path: Path,
+        sidecar_path: Path,
+        attempts: int | None,
+        progress: Any | None,
+        expected_sha256: str | None,
+    ) -> Path:
+        candidates = self._mirror_candidates(source)
+        # v0.38.0 B6：慢网 / 企业代理下可调（HOROSA_RUNTIME_DOWNLOAD_TIMEOUT_SECONDS / _ATTEMPTS）。
+        if attempts is None:
+            attempts = max(1, int(getattr(self.settings, "runtime_download_attempts", 3) or 3))
+        read_timeout = float(getattr(self.settings, "runtime_download_timeout_seconds", 120.0) or 120.0)
+        connect_timeout = min(60.0, read_timeout)
+        failures: list[str] = []
+        download_started = time.monotonic()
+        checksum_failed = False
+        rounds = 0
+        self._drop_partial_if_foreign(part_path, sidecar_path, source=source, expected_sha256=expected_sha256)
+        self._sweep_legacy_partials(part_path.parent)
+        for candidate in candidates:
+            checksum_failed = False
+            fruitless = 0           # 没有任何进展的失败次数：这个才和 attempts 比
+            clean_retry_used = False
+            while fruitless < attempts and rounds < self._MAX_PROGRESSING_ROUNDS:
+                rounds += 1
+                offset = part_path.stat().st_size if part_path.exists() else 0
+                done = offset
+                try:
+                    headers: dict[str, str] = {}
+                    if offset:
+                        headers["Range"] = f"bytes={offset}-"
+                        validator = self._sidecar_validator(sidecar_path)
+                        if validator:
+                            headers["If-Range"] = validator  # 资源变了 → 服务器回 200 整份，不续到旧前半截上
+                    stale_part = False
+                    with httpx.Client(timeout=httpx.Timeout(connect_timeout, read=read_timeout), follow_redirects=True) as client:
+                        with client.stream("GET", candidate, headers=headers) as response:
+                            if response.status_code == 416 and offset:
+                                # 分块已到头（崩在挪走之前），或比对方的文件还长（同名资产重新打包变小）。
+                                stale_part = _content_range_total(response.headers.get("Content-Range")) != offset
+                            else:
+                                response.raise_for_status()
+                                if response.status_code == 206:
+                                    mode = "ab"
+                                    total = offset + int(response.headers.get("Content-Length") or 0) or None
+                                else:
+                                    # 服务器不支持 Range / If-Range 判定资源变了 / 没有断点 → 从头重下。
+                                    mode = "wb"
+                                    total = int(response.headers.get("Content-Length") or 0) or None
+                                    done = 0
+                                self._write_sidecar(sidecar_path, source=source, url=candidate, response=response,
+                                                    total=total, expected_sha256=expected_sha256)
+                                with open(part_path, mode) as handle:
+                                    for chunk in response.iter_bytes(chunk_size=1024 * 1024):
+                                        handle.write(chunk)
+                                        done += len(chunk)
+                                        if progress is not None:
+                                            progress(done, total)
+                    if stale_part:
+                        self._drop_partial(part_path, sidecar_path)
+                        failures.append(f"{candidate}: HTTP 416, dropped a stale partial of {offset} bytes")
+                        continue
+                    if expected_sha256 and _sha256_file(part_path).lower() != expected_sha256.lower():
+                        self._drop_partial(part_path, sidecar_path)  # 坏字节不能留给下一个候选当断点续传的前半截
+                        if offset and not clean_retry_used:
+                            # 续出来的不对：可能是前半截有问题，不一定是这个源坏了。从头干净地再下一次。
+                            clean_retry_used = True
+                            failures.append(f"{candidate}: sha256 mismatch after resuming at {offset} bytes, retrying from scratch")
+                            continue
+                        failures.append(f"{candidate}: sha256 mismatch")
+                        checksum_failed = True
+                        break
+                    target = temp_dir / filename
+                    shutil.move(str(part_path), str(target))
+                    sidecar_path.unlink(missing_ok=True)
+                    # v0.38.1 R1：真机矩阵要证明「真的下载过」——把这次传输的事实带回 install 结果。
+                    self._last_download = {
+                        "url": candidate, "mirror_used": candidate != source, "bytes": done, "resumed_from": offset,
+                        "seconds": round(time.monotonic() - download_started, 1), "attempts": len(failures) + 1,
+                        "sha256_verified": bool(expected_sha256),
+                    }
+                    return target
+                except httpx.HTTPStatusError as exc:
+                    failures.append(f"{candidate}: HTTP {exc.response.status_code}")
+                    if exc.response.status_code < 500:
+                        break  # 4xx 换 URL 无益重试同 URL
+                except httpx.HTTPError as exc:
+                    failures.append(f"{candidate}: {exc}")
+                except OSError as exc:
+                    raise RuntimeInstallError(
+                        f"Failed to write runtime archive to disk: {exc}",
+                        code="runtime.install_write_failed",
+                        details={"target": str(part_path)},
+                    ) from exc
+                if done > offset:
+                    continue  # 有进展（断在半路）：马上续，不计数也不等
+                fruitless += 1
+                if fruitless < attempts:
+                    time.sleep(3 ** (fruitless - 1))  # 1s/3s 退避（最后一次不等）
+        if checksum_failed:
+            raise RuntimeValidationError(
+                bilingual("所有下载地址给的归档都与清单的 sha256 不符。", "Every source served an archive that fails the manifest sha256."),
+                code="runtime.install_sha256_mismatch",
+                details={"archive": source, "expected_sha256": expected_sha256, "failures": failures[-6:]},
+            )
+        raise RuntimeInstallError(
+            "Failed to download runtime archive from all sources.",
+            code="runtime.install_download_failed",
+            details={
+                "source": source,
+                "attempts_per_source": attempts,
+                "failures": failures[-6:],
+                "resume_note": f"已下载分块保留在 {part_path}（若存在），重试 install 会从断点续传。",
+            },
+        )
+
+    @staticmethod
+    def _sweep_legacy_partials(downloads_dir: Path) -> None:
+        """v0.50.0 前按文件名存的断点（`<文件名>.part`，没有旁注）：新代码不会再续它们，留着只是占几百 MB。
+        新格式的断点在写第一个字节前就有旁注，所以「没有旁注的 .part」只可能是旧的。"""
+        try:
+            leftovers = [p for p in downloads_dir.glob("*.part") if not p.with_name(p.name + ".json").exists()]
+        except OSError:
+            return
+        for path in leftovers:
+            try:
+                path.unlink()
+            except OSError:
+                pass  # 删不掉（Windows 上被占用）不影响这次下载
+
+    @staticmethod
+    def _drop_partial(part_path: Path, sidecar_path: Path) -> None:
+        part_path.unlink(missing_ok=True)
+        sidecar_path.unlink(missing_ok=True)
+
+    def _drop_partial_if_foreign(self, part_path: Path, sidecar_path: Path, *, source: str, expected_sha256: str | None) -> None:
+        """断点的来历对不上就不续：没有旁注（来历不明）、旁注记的是别的资产 / 别的 sha、或比旁注记的总长还长。"""
+        if not part_path.exists():
+            sidecar_path.unlink(missing_ok=True)
+            return
+        meta = self._read_sidecar(sidecar_path)
+        if meta is None:
+            self._drop_partial(part_path, sidecar_path)
+            return
+        same_content = (expected_sha256 or "").lower() == str(meta.get("sha256") or "").lower()
+        if not same_content or (not expected_sha256 and meta.get("source") != source):
+            self._drop_partial(part_path, sidecar_path)
+            return
+        length = meta.get("length")
+        if isinstance(length, int) and part_path.stat().st_size > length:
+            self._drop_partial(part_path, sidecar_path)
+
+    @staticmethod
+    def _read_sidecar(sidecar_path: Path) -> dict[str, Any] | None:
+        try:
+            meta = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return meta if isinstance(meta, dict) else None
+
+    def _sidecar_validator(self, sidecar_path: Path) -> str | None:
+        meta = self._read_sidecar(sidecar_path) or {}
+        etag = meta.get("etag")
+        if isinstance(etag, str) and etag and not etag.startswith("W/"):  # If-Range 只认强校验值
+            return etag
+        modified = meta.get("last_modified")
+        return modified if isinstance(modified, str) and modified else None
+
+    @staticmethod
+    def _write_sidecar(sidecar_path: Path, *, source: str, url: str, response: Any, total: int | None,
+                       expected_sha256: str | None) -> None:
+        payload = {
+            "source": source, "url": url, "etag": response.headers.get("ETag"),
+            "last_modified": response.headers.get("Last-Modified"), "length": total,
+            "sha256": (expected_sha256 or "").lower() or None,
+        }
+        tmp = sidecar_path.with_name(sidecar_path.name + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        fsretry.replace(tmp, sidecar_path)
+
+    def _read_json_location(self, location: str) -> dict[str, Any]:
+        """读发布清单。读不到 / 不是 JSON / 不是清单 → 结构化错误，带上「它实际是什么」（E-15：旧实现本地清单是 JSONDecodeError traceback）。"""
+        if _is_url(location) and urlparse(location).scheme != "file":
+            last_error: Exception | None = None
+            failures: list[str] = []
+            self._manifest_via_mirror = None
+            candidates = self._mirror_candidates(location)
+            # 审计 PF-01 第 1 层：清单只有几 KB、摘要只来自它——先试原站（5 秒），成了镜像只送归档字节；原站不通才退到镜像，
+            # 那时完整性只是镜像自己的说法（integrity: mirror_asserted + 告警），不写 sha256_verified: true。
+            if len(candidates) > 1:
+                candidates = [location, *(c for c in candidates if c != location)]
+            for index, candidate in enumerate(candidates):
+                timeout = 5.0 if index == 0 and len(candidates) > 1 else 60.0
+                try:
+                    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                        response = client.get(candidate)
+                        response.raise_for_status()
+                        payload, problem = _parse_manifest_text(response.text)
+                except httpx.HTTPError as exc:
+                    last_error = exc
+                    failures.append(f"{candidate}: {type(exc).__name__}: {exc}"[:240])
+                    continue
+                if payload is not None:
+                    if candidate != location:
+                        self._manifest_via_mirror = urlparse(candidate).hostname or candidate
+                    return payload
+                # 镜像常回 200 + 错误页（HTML，或 {"message": …}）：内容不对同样换下一个候选，原始 URL 永远是最后一个。
+                failures.append(f"{candidate}: {problem}"[:240])
+            raise RuntimeInstallError(
+                bilingual(
+                    f"取不到 runtime 发布清单（{location}）：{failures[-1] if failures else last_error}",
+                    f"Could not fetch the runtime release manifest ({location}): {failures[-1] if failures else last_error}",
+                ),
+                code="runtime.install_manifest_fetch_failed",
+                details={"location": location, "failures": failures[-6:]},
+            ) from last_error
+        path = self._file_url_to_path(location) if _is_url(location) else Path(location).expanduser()
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raise RuntimeInstallError(
+                bilingual(f"读不了 runtime 清单文件 {path}：{exc.strerror or exc}", f"Cannot read the runtime manifest file {path}: {exc.strerror or exc}"),
+                code="runtime.install_manifest_fetch_failed",
+                details={"location": location, "path": str(path)},
+            ) from exc
+        payload, problem = _parse_manifest_text(text)
+        if payload is None:
+            raise RuntimeInstallError(
+                bilingual(f"{path} 不是 runtime 发布清单：{problem}", f"{path} is not a runtime release manifest: {problem}"),
+                code="runtime.install_manifest_invalid",
+                details={"location": location, "path": str(path), "reason": problem},
+            )
+        return payload
+
+    def _file_url_to_path(self, location: str) -> Path:
+        parsed = urlparse(location)
+        path_text = url2pathname(parsed.path or "")
+        if parsed.netloc and parsed.netloc not in {"", "localhost"}:
+            if os.name == "nt":
+                path_text = f"\\\\{parsed.netloc}{path_text}"
+            else:
+                path_text = f"//{parsed.netloc}{path_text}"
+        elif os.name == "nt" and path_text.startswith("\\") and len(path_text) >= 3 and path_text[2] == ":":
+            path_text = path_text[1:]
+        return Path(path_text)
+
+    @staticmethod
+    def _host_is_darwin() -> bool:
+        return sys.platform == "darwin"
+
+    def _start_failure_context(self, manifest: dict[str, Any] | None) -> dict[str, Any]:
+        """启动失败/超时时随错误附上的现场：macOS 隔离属性 + 启动器日志路径 —— 让错误指得到地方。"""
+        context: dict[str, Any] = {"launcher_log": str(self._launcher_log_path())}
+        if self._host_is_darwin():
+            try:
+                context["quarantine"] = self._quarantine_report(manifest)
+            except Exception:  # noqa: BLE001 - 附加现场绝不能把原错误换成别的错误
+                pass
+        return context
+
+    def _quarantine_report(self, manifest: dict[str, Any] | None) -> dict[str, Any]:
+        """python / java / node 三个可执行文件是否带 com.apple.quarantine（仅 macOS；只查不改）。"""
+        report: dict[str, Any] = {"checked": [], "flagged": [], "fix": None}
+        # 平台判断与调用方的 _host_is_darwin() 看似重复，但 doctor 路径不经那层直接调本函数，所以留在这里。
+        if sys.platform != "darwin" or not self.current_dir.exists():
+            return report
+        for key in ("python", "java", "node"):
+            path = self.current_dir / self._relative_manifest_path(manifest, "runtimes", key)
+            if not path.is_file():
+                continue
+            report["checked"].append(str(path))
+            try:
+                completed = subprocess.run(
+                    ["/usr/bin/xattr", "-p", "com.apple.quarantine", str(path)],
+                    capture_output=True, text=True, timeout=5, check=False, encoding="utf-8", errors="replace",
+                    creationflags=NO_WINDOW,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if completed.returncode == 0 and completed.stdout.strip():
+                report["flagged"].append(str(path))
+        if report["flagged"]:
+            report["fix"] = f'xattr -dr com.apple.quarantine "{self.current_dir}"'
+        return report
+
+    def runtime_root_write_problem(self, *, probe: bool = True) -> str | None:
+        """runtime 根写不了的原因；可写返回 None。
+
+        `probe=True`（install / start）：根不存在就建，再真建一个临时文件删掉 —— `os.access` 在 Windows ACL 与网络盘上
+        不可信。`probe=False`（doctor，只读）：不建目录、不落文件，只对最近的已存在祖先问 `os.access`，答不出问题不等于没问题。
+        """
+        root = self.runtime_root
+        if not probe:
+            target = root
+            while not target.exists() and target.parent != target:
+                target = target.parent
+            if not target.is_dir():
+                return f"{target} is not a directory"
+            if not os.access(target, os.W_OK | os.X_OK):
+                return f"no write permission on {target}"
+            return None
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            fd, name = tempfile.mkstemp(prefix=".write-probe-", dir=str(root))
+        except OSError as exc:
+            return str(exc)
+        os.close(fd)
+        try:
+            fsretry.unlink(Path(name))
+        except OSError:
+            pass
+        return None
+
+    def _root_not_writable_error(self, cause: object) -> RuntimeInstallError:
+        return RuntimeInstallError(
+            bilingual(
+                f"runtime 目录写不进去：{self.runtime_root}。安装和启动都要在这里写文件。",
+                f"The runtime directory is not writable: {self.runtime_root}. Installing and starting both write files there.",
+            ),
+            code="runtime.root_not_writable",
+            details={
+                "runtime_root": str(self.runtime_root),
+                "error": str(cause),
+                "next_action": bilingual(
+                    "修好这个目录的写权限（或腾出磁盘空间），或者把 HOROSA_RUNTIME_ROOT 指到一个可写的目录后重试。",
+                    "Fix write permission on that directory (or free disk space), or point HOROSA_RUNTIME_ROOT at a writable "
+                    "directory, then retry.",
+                ),
+            },
+        )
+
+    def _require_writable_runtime_root(self) -> None:
+        problem = self.runtime_root_write_problem()
+        if problem is not None:
+            raise self._root_not_writable_error(problem)
+
+    def _try_start_lock(self, lock_path: Path, *, owner: str) -> bool:
+        """`.runtime-start.lock` 的唯一入口：False 只表示「有人持锁」，目录写不了是 `runtime.root_not_writable`。"""
+        try:
+            return try_pid_lock(lock_path, stale_after_seconds=960.0, owner=owner)
+        except LockDirNotWritableError as exc:
+            raise self._root_not_writable_error(exc.cause) from exc
+
+    @staticmethod
+    def _refuse_or_note_unverified(manifest_location: str, asset_url: str, platform_name: str,
+                                   install_warnings: list[dict[str, Any]]) -> None:
+        """清单里本平台条目没有 sha256（C-15 / E-15）。
+
+        🔴 旧实现：没有摘要 = 不校验，一声不吭。下载走网络（还可能经镜像）时这等于关掉了唯一的完整性检查 —— 拒绝，
+        除非用户自己用 `--sha256` 给出摘要。清单和归档**都在本机**（file:// 或本地路径，自建 / 离线拷贝的场景）时没有
+        网络这一跳，用户对两样东西都负责：放行，但在结果的 warnings 里明说没校验。
+        """
+        if _is_local_location(manifest_location) and _is_local_location(asset_url):
+            install_warnings.append({
+                "code": "runtime.install_unverified",
+                "message": bilingual(
+                    "本机清单里这个平台的条目没有 sha256，归档没有经过校验就装了（清单与归档都在本机，按你自己提供的处理）。",
+                    "The local manifest has no sha256 for this platform, so the archive was installed unverified "
+                    "(both the manifest and the archive are on this machine and treated as yours).",
+                ),
+                "platform": platform_name,
+            })
+            return
+        raise RuntimeValidationError(
+            bilingual(
+                f"发布清单里 {platform_name} 的条目没有 sha256，下载来的归档无法校验，所以不装。要装就从可信来源拿到这个归档的 "
+                "sha256，用 `install --sha256 <摘要>` 再跑一次。",
+                f"The release manifest has no sha256 for {platform_name}, so a downloaded archive cannot be verified and was "
+                "not installed. Get the archive's sha256 from a source you trust and rerun with `install --sha256 <digest>`.",
+            ),
+            code="runtime.install_sha256_missing",
+            details={"manifest_url": manifest_location, "asset_url": asset_url, "platform": platform_name},
+        )
+
+    @staticmethod
+    def _normalize_sha256_pin(value: str | None) -> str | None:
+        """`--sha256` 的值：64 位十六进制，容许 `sha256:` 前缀（GitHub 资产 API 的 `digest` 就这么印）。空 = 没给。"""
+        text = str(value or "").strip().lower()
+        if not text:
+            return None
+        if text.startswith("sha256:"):
+            text = text[len("sha256:"):]
+        if not re.fullmatch(r"[0-9a-f]{64}", text):
+            raise RuntimeInstallError(
+                bilingual("`--sha256` 要的是 64 位十六进制的 SHA-256 摘要。", "`--sha256` takes a 64-hex-digit SHA-256 digest."),
+                code="runtime.install_sha256_invalid",
+                details={"given_length": len(text)},
+            )
+        return text
+
+    def _require_ascii_runtime_root(self) -> None:
+        """Windows：runtime 根必须纯 ASCII，否则随包的 java.exe 找不到 java.dll、Swiss Ephemeris 打不开星历（v0.38.1）。"""
+        if not _host_is_windows() or windows_runtime_path_ok(self.runtime_root):
+            return
+        acp = windows_ansi_code_page()
+        raise RuntimeInstallError(
+            bilingual(
+                f"Windows 上 runtime 目录必须是纯英文路径（随包的 Java 17 与 Swiss Ephemeris 用窄字符 API 访问文件）：{self.runtime_root}。",
+                f"On Windows the runtime directory must be an ASCII-only path (the bundled Java 17 and Swiss Ephemeris "
+                f"access files through narrow-character APIs): {self.runtime_root}.",
+            ),
+            code="runtime.path_not_ascii",
+            details={
+                "runtime_root": str(self.runtime_root),
+                "ansi_code_page": acp,
+                "why": "java.exe: GetModuleFileNameA / GetCommandLineA (ANSI); pyswisseph: UTF-8 path into C fopen (ANSI)",
+                "next_action": bilingual(
+                    "换一个纯英文路径再装：`setx HOROSA_RUNTIME_ROOT C:\\horosa`，新开终端（并重启 AI 客户端）后重跑 install / setup。",
+                    "Install to an ASCII-only path: `setx HOROSA_RUNTIME_ROOT C:\\horosa`, open a new terminal (and restart "
+                    "your AI client), then rerun install / setup.",
+                ),
+                "agent_recovery": {
+                    "must_ask_user": True,
+                    "prompt_to_user": bilingual(
+                        "Windows 上 Horosa 离线 runtime 必须装在纯英文路径下（当前路径含中文等非英文字符，常见于中文用户名），"
+                        "否则 Java 与星历引擎起不来。请设 HOROSA_RUNTIME_ROOT 为纯英文路径（例如 C:\\horosa）后重装。",
+                        "On Windows the Horosa offline runtime must live under an ASCII-only path (the current one contains "
+                        "non-ASCII characters, e.g. from the user name), otherwise Java and the ephemeris engine cannot start. "
+                        "Set HOROSA_RUNTIME_ROOT to an ASCII-only path (e.g. C:\\horosa) and reinstall.",
+                    ),
+                    "commands": ["setx HOROSA_RUNTIME_ROOT C:\\horosa"],
+                },
+            },
+        )
+
+    def _guard_windows_long_paths(self, archive_path: Path, extract_dir: Path) -> None:
+        r"""解包前先算最长目标路径，>259 且没开长路径支持就明说，别让 winerror 3/206 裸奔。
+
+        🔴 Horosa 载荷里最深的条目（嵌入式 JDK 的 module 目录 + Horosa-Web 的多层 vendor 树）
+        接近 200 字符。用户把 runtime 装在 `C:\Users\<长名字>\OneDrive\文档\...` 下时就会越过
+        260 上限，解包报 `[WinError 3] 系统找不到指定的路径` —— 那句话对「路径太长」毫无提示。
+        """
+        if os.name != "nt":
+            return
+        names = archives.list_names(archive_path)  # 读不了 = 空列表：预检失败不该挡住真正的解包（它会报得更准）
+        if not names:
+            return
+        longest = max(names, key=len)
+        projected = len(str(extract_dir)) + 1 + len(longest)
+        if projected <= WINDOWS_PATH_LIMIT or _windows_long_paths_enabled():
+            return
+        raise RuntimeInstallError(
+            "Windows 路径长度会超过 260 字符上限，解包必定失败。",
+            code="runtime.install_long_path",
+            details={
+                "projected_length": projected,
+                "extract_dir": str(extract_dir),
+                "longest_entry": longest,
+                "next_action": (
+                    "二选一：① 开启 Windows 长路径支持（注册表 "
+                    "HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem\\LongPathsEnabled = 1，需重启）；"
+                    "② 把 runtime 装到更短的路径：设 HOROSA_RUNTIME_ROOT=C:\\horosa 后重试。"
+                ),
+            },
+        )
+
+    def _extract_archive(self, archive_path: Path, extract_dir: Path) -> str:
+        """解包，返回识别出的格式。格式看内容（`archives.sniff_format`），不看文件名：文档教用户 `curl -o runtime.zip`
+        存下来的 macOS 资产是 tar.gz；预签名 URL 下回来的文件干脆没有后缀。"""
+        self._guard_windows_long_paths(archive_path, extract_dir)
+        try:
+            # tar 分支带 filter="data"（拒绝绝对路径 / .. 穿越 / 设备 / symlink 逃逸）→ 无需再对整棵 2GB 树逐文件
+            # resolve 断言（冗余且慢）；纵深断言只留给下方没有 filter 保护的 zip 分支。
+            detected = archives.extract(archive_path, extract_dir)
+        except archives.ArchiveUnreadable as exc:
+            raise self._archive_invalid_error(archive_path, exc.detected, exc.reason) from exc
+        except tarfile.FilterError as exc:
+            raise RuntimeValidationError(
+                bilingual(
+                    "runtime 归档里有会写到解压目录之外的条目（或设备文件 / 逃逸的链接），已拒绝解压。",
+                    "The runtime archive contains an entry that would land outside the extraction directory (or a device / escaping link); refused.",
+                ),
+                code="runtime.install_path_traversal",
+                details={"archive": str(archive_path), "error": str(exc)},
+            ) from exc
+        if detected == "zip":
+            # CPython zipfile 已消毒 ../ 与盘符前缀，但显式纵深断言：与 tar 分支对称、且对未来
+            # 换用会保留 symlink 的库（zip-slip 复发）多一道防线。
+            self._assert_extracted_within(extract_dir)
+        return detected
+
+    def _archive_invalid_error(self, archive_path: Path, detected: str, reason: str) -> RuntimeInstallError:
+        try:
+            size = archive_path.stat().st_size
+        except OSError:
+            size = None
+        last = getattr(self, "_last_download", None)
+        source = last.get("url") if isinstance(last, dict) else None
+        if detected in {"html", "json"}:
+            zh = "下到的是一个网页 / 接口报错，不是 runtime 归档——多半是代理的登录页、过期的直链或 404。"
+            en = "The download is a web page / API error body, not the runtime archive (a proxy login page, an expired link or a 404)."
+        elif detected == "empty":
+            zh, en = "文件是空的（0 字节）——下载没有开始就结束了。", "The file is empty (0 bytes): the download ended before it began."
+        elif detected == "unknown":
+            zh, en = "文件开头不是 zip 也不是 tar：下错了文件，或者内容被改过。", "The file does not start like a zip or tar archive: wrong file, or altered content."
+        else:
+            zh = f"文件开头像 {detected}，但读到一半断了——多半是下载没下完。"
+            en = f"The file starts like {detected} but ends early: most likely an incomplete download."
+        return RuntimeInstallError(
+            bilingual(f"runtime 归档读不了：{zh}", f"The runtime archive cannot be read. {en}"),
+            code="runtime.install_archive_invalid",
+            details={
+                "archive": str(archive_path),
+                "detected_format": detected,
+                "size_bytes": size,
+                "reason": reason,
+                **({"url": source} if source else {}),
+                "next_action": bilingual(
+                    "重新下载本平台的归档（macOS arm64 是 .tar.gz，Windows x64 是 .zip，约 0.7–0.95 GB），"
+                    "用 `--sha256 <发布清单里的 sha256>` 核对后再装；已装的 runtime 没有被动过。",
+                    "Download the archive for this platform again (macOS arm64: .tar.gz, Windows x64: .zip, ~0.7-0.95 GB) "
+                    "and pass `--sha256 <digest from the release manifest>` to check it; the installed runtime was not touched.",
+                ),
+            },
+        )
+
+    @staticmethod
+    def _assert_extracted_within(extract_dir: Path) -> None:
+        # 纵深防护：解压后每个真实路径（解引用 symlink）必须仍在 extract_dir 内，杜绝穿越逃逸。
+        root = extract_dir.resolve()
+        for path in extract_dir.rglob("*"):
+            try:
+                resolved = path.resolve()
+            except OSError:
+                resolved = path
+            if not (resolved == root or root in resolved.parents):
+                raise RuntimeValidationError(
+                    "Runtime archive contains a path that escapes the extraction directory.",
+                    code="runtime.install_path_traversal",
+                    details={"offending_path": str(path)},
+                )
+
+    def _locate_payload_root(self, extract_dir: Path) -> Path:
+        candidates = [
+            extract_dir / "runtime-payload",
+            extract_dir,
+        ]
+        for candidate in candidates:
+            if (candidate / "runtime-manifest.json").is_file():
+                return candidate
+        for child in extract_dir.iterdir():
+            if child.is_dir() and (child / "runtime-manifest.json").is_file():
+                return child
+        raise RuntimeValidationError(
+            "Extracted runtime archive does not contain runtime-manifest.json.",
+            code="runtime.install_manifest_missing",
+            details={"extract_dir": str(extract_dir)},
+        )
+
+    def _manifest_defaults(self) -> dict[str, dict[str, str]]:
+        return {
+            "services": {
+                "backend_url": self.settings.server_root.rstrip("/"),
+                "chart_url": self.settings.chart_server_root.rstrip("/"),
+                "start_script": str(self._platform_path("Horosa-Web/start_horosa_local.sh", "Horosa-Web/start_horosa_local.ps1")),
+                "stop_script": str(self._platform_path("Horosa-Web/stop_horosa_local.sh", "Horosa-Web/stop_horosa_local.ps1")),
+            },
+            "runtimes": {
+                "python": str(self._platform_path("runtime/mac/python/bin/python3", "runtime/windows/python/python.exe", "runtime/linux/python/bin/python3")),
+                "java": str(self._platform_path("runtime/mac/java/bin/java", "runtime/windows/java/bin/java.exe", "runtime/linux/java/bin/java")),
+                "node": str(self._platform_path("runtime/mac/node/bin/node", "runtime/windows/node/node.exe", "runtime/linux/node/bin/node")),
+            },
+            "artifacts": {
+                "horosa_web_root": "Horosa-Web",
+                "astropy_root": "Horosa-Web/astropy",
+                "flatlib_root": "Horosa-Web/flatlib-ctrad2/flatlib",
+                "swefiles_root": "Horosa-Web/flatlib-ctrad2/flatlib/resources/swefiles",
+                "boot_jar": str(self._platform_path("runtime/mac/bundle/astrostudyboot.jar", "runtime/windows/bundle/astrostudyboot.jar", "runtime/linux/bundle/astrostudyboot.jar")),
+                "horosa_core_js_root": "horosa-core-js",
+            },
+        }
+
+    def _bind_service_urls(self, manifest: dict[str, Any]) -> dict[str, Any]:
+        bound_manifest = dict(manifest)
+        services = dict(bound_manifest.get("services") or {})
+        services["backend_url"] = self.settings.server_root.rstrip("/")
+        services["chart_url"] = self.settings.chart_server_root.rstrip("/")
+        bound_manifest["services"] = services
+        return bound_manifest
+
+    def _validate_payload_root(self, payload_root: Path) -> dict[str, Any]:
+        manifest_path = payload_root / "runtime-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        return self._normalize_manifest_data(manifest, manifest_path=manifest_path)
+
+    @staticmethod
+    def _manifest_int(manifest: dict[str, Any], key: str, default: int, *, manifest_path: Path) -> int:
+        # 非数字的版本字段与非对象的段同理：报 runtime.manifest_invalid，别让 int() 的 ValueError 把 doctor 整个崩掉。
+        try:
+            return int(manifest.get(key, default))
+        except (TypeError, ValueError):
+            raise RuntimeValidationError(
+                bilingual(f"运行时清单字段 `{key}` 必须是整数。", f"Runtime manifest field `{key}` must be an integer."),
+                code="runtime.manifest_invalid",
+                details={"manifest_path": str(manifest_path), "field": key},
+            ) from None
+
+    def _normalize_manifest_data(self, manifest: Any, *, manifest_path: Path) -> dict[str, Any]:
+        if not isinstance(manifest, dict) or "version" not in manifest:
+            raise RuntimeValidationError(
+                "Runtime manifest missing version.",
+                code="runtime.manifest_invalid",
+                details={"manifest_path": str(manifest_path)},
+            )
+
+        # 🔴 类型检查必须落在**合并之前**的原始段上：合并后的 `{**defaults, **raw}` 恒为 dict，而非 dict 的原始段
+        # 在合并时就抛 TypeError —— load_installed_manifest 接不住，doctor 整个崩掉，而不是报 runtime.manifest_invalid。
+        sections: dict[str, dict[str, Any]] = {}
+        for section_name in ("services", "runtimes", "artifacts"):
+            raw_section = manifest.get(section_name) or {}
+            if not isinstance(raw_section, dict):
+                raise RuntimeValidationError(
+                    f"Runtime manifest section `{section_name}` must be an object.",
+                    code="runtime.manifest_invalid",
+                    details={"manifest_path": str(manifest_path), "section": section_name},
+                )
+            sections[section_name] = raw_section
+
+        defaults = self._manifest_defaults()
+        normalized = {
+            "schema_version": self._manifest_int(manifest, "schema_version", 1, manifest_path=manifest_path),
+            "version": str(manifest["version"]),
+            "platform": str(manifest.get("platform") or self.settings.runtime_platform or _platform_key()),
+            "runtime_layout_version": self._manifest_int(manifest, "runtime_layout_version", 1, manifest_path=manifest_path),
+            "runtime_payload_version": str(manifest.get("runtime_payload_version") or manifest["version"]),
+            "export_registry_version": self._manifest_int(manifest, "export_registry_version", 6, manifest_path=manifest_path),
+            "services": {**defaults["services"], **sections["services"]},
+            "runtimes": {**defaults["runtimes"], **sections["runtimes"]},
+            "artifacts": {**defaults["artifacts"], **sections["artifacts"]},
+        }
+        # Optional blocks carried through unchanged (derived payloads, v0.38.0 A2): what the payload was
+        # built from and what host it needs — doctor shows them, install checks `min_os`.
+        for optional in ("platform_requirements", "derived_from"):
+            if isinstance(manifest.get(optional), dict):
+                normalized[optional] = dict(manifest[optional])
+        for section_name in ("services", "runtimes", "artifacts"):
+            for key, value in normalized[section_name].items():
+                if not isinstance(value, str) or not value.strip():
+                    raise RuntimeValidationError(
+                        f"Runtime manifest field `{section_name}.{key}` must be a non-empty string.",
+                        code="runtime.manifest_invalid",
+                        details={"manifest_path": str(manifest_path), "field": f"{section_name}.{key}"},
+                    )
+        return normalized
+
+    def _platform_path(self, mac_relative: str, windows_relative: str, linux_relative: str | None = None) -> Path:
+        if os.name == "nt":
+            return Path(windows_relative)
+        if os.name == "posix" and platform.system().lower() == "linux":
+            return Path(linux_relative if linux_relative is not None else mac_relative)
+        return Path(mac_relative)
+
+    def _platform_command(self, script: Path) -> list[str]:
+        if os.name == "nt":
+            if script.suffix.lower() == ".ps1":
+                return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)]
+            return [str(script)]
+        return ["/bin/bash", str(script)]
+
+    def _apply_runtime_overrides(self, manifest: dict[str, Any] | None) -> list[str]:
+        patched: list[str] = []
+        if sys.platform == "darwin" and os.environ.get("HOROSA_RUNTIME_LAUNCHER_PATCH", "1") != "0":
+            start_script = self.current_dir / self._relative_manifest_path(manifest, "services", "start_script")
+            if start_script.is_file() and self._patch_mac_launcher(start_script):
+                patched.append(str(start_script))
+        if os.name == "nt":
+            template_root = self._runtime_template_root() / "windows"
+            if template_root.exists():
+                overrides = {
+                    "services.start_script": template_root / "start_horosa_local.ps1",
+                    "services.stop_script": template_root / "stop_horosa_local.ps1",
+                }
+                for field, source in overrides.items():
+                    if not source.exists():
+                        continue
+                    section, key = field.split(".", 1)
+                    destination = self.current_dir / self._relative_manifest_path(manifest, section, key)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, destination)
+                    patched.append(str(destination))
+                patched.extend(self._install_app_control_shims(manifest, template_root))
+
+        boot_jar = self.current_dir / self._relative_manifest_path(manifest, "artifacts", "boot_jar")
+        if boot_jar.is_file() and self._boot_jar_supports_patch(boot_jar):
+            self._patch_windows_boot_jar(manifest, boot_jar)
+            patched.append(str(boot_jar))
+        return patched
+
+    def _install_app_control_shims(self, manifest: dict[str, Any] | None, template_root: Path) -> list[str]:
+        """Windows：把应用控制替身拷进随包 Python 的 site-packages（每次 start 重拷，与启动器模板同一条路；v0.43.1-dev）。
+
+        Smart App Control 会拒绝加载载荷里流行度不够的原生扩展（实测 astropy 的 `_parse_times.pyd`，一拦太乙 / 三式合一全挂）。
+        替身只在真扩展被拦时生效，结果不变，见 `templates/windows/python/_horosa_app_control.py`。
+        """
+        runtimes = manifest.get("runtimes") if isinstance(manifest, dict) else None
+        python_rel = runtimes.get("python") if isinstance(runtimes, dict) else None
+        shim_root = template_root / "python"
+        if not python_rel or not shim_root.is_dir():
+            return []
+        site_packages = self.current_dir / Path(python_rel).parent / "Lib" / "site-packages"
+        if not site_packages.is_dir():
+            return []
+        copied: list[str] = []
+        for source in sorted(shim_root.iterdir()):
+            if source.suffix in {".py", ".pth"}:
+                shutil.copy2(source, site_packages / source.name)
+                copied.append(str(site_packages / source.name))
+        return copied
+
+    def _runtime_template_root(self) -> Path:
+        # 包内副本（wheel / uvx 安装）优先；源码树回退（scripts/runtime_templates 是 builder 共用的原件）。
+        packaged = Path(__file__).resolve().parent / "templates"
+        if packaged.is_dir():
+            return packaged
+        return Path(__file__).resolve().parents[3] / "scripts" / "runtime_templates"
+
+    def _require_install_disk_space(self, asset_meta: dict[str, Any] | None) -> None:
+        """下载前先看磁盘够不够——不够就当场说清还差多少，而不是下完 700MB 再在解压时炸。
+
+        峰值占用 ≈ 归档 + 解压后的树 + 保留的 previous，故按归档大小的 4 倍估（未知大小按 700MB 估）。
+        失败只在「确知不足」时抛；取不到用量（异常文件系统）一律放行，不因体检本身挡住安装。
+        """
+        try:
+            probe = self.runtime_root if self.runtime_root.exists() else self.runtime_root.parent
+            while not probe.exists() and probe != probe.parent:
+                probe = probe.parent
+            free_bytes = shutil.disk_usage(probe).free
+        except OSError:
+            return
+        archive_bytes = 0
+        try:
+            archive_bytes = int((asset_meta or {}).get("size") or 0)
+        except (TypeError, ValueError):
+            archive_bytes = 0
+        needed = (archive_bytes * 4) if archive_bytes else 3_000_000_000
+        if free_bytes >= needed:
+            return
+        gib = 1024 ** 3
+        raise RuntimeInstallError(
+            f"磁盘空间不足：安装离线 runtime 约需 {needed / gib:.1f} GiB（下载 + 解压 + 保留上一版），"
+            f"当前可用 {free_bytes / gib:.1f} GiB。请清理后重试，或用 HOROSA_RUNTIME_ROOT 指向空间更充裕的卷。",
+            code="runtime.install_insufficient_disk",
+            details={
+                "required_bytes": needed,
+                "free_bytes": free_bytes,
+                "runtime_root": str(self.runtime_root),
+                "next_action": "腾出空间后重跑 install（已下载的分片会断点续传）。",
+            },
+        )
+
+    def _http_reachable(self, url: str) -> bool:
+        # 回环目标绕开用户代理（Clash/VPN 会把 127.0.0.1 也塞进代理 → 后端健康却报 not_running，
+        # 见 engine.client.loopback_httpx_client 的说明）。下载/manifest 那两处仍走代理。
+        try:
+            with loopback_httpx_client(url, timeout=1.5, follow_redirects=True) as client:
+                response = client.get(url)
+                return response.status_code < 500
+        except Exception:  # noqa: BLE001 - 可达性探针：连不上本身就是答案
+            return False
+
+    def _backend_reachable(self, backend_url: str) -> bool:
+        parsed = urlparse(backend_url)
+        if not parsed.scheme or not parsed.netloc:
+            return False
+        server_root = f"{parsed.scheme}://{parsed.netloc}"
+        endpoint = parsed.path if parsed.path not in {"", "/"} else "/common/time"
+        client = HorosaApiClient(server_root, timeout=3.0)
+        return client.probe(endpoint=endpoint)
+
+    def _required_paths(self, manifest: dict[str, Any] | None = None) -> list[tuple[str, Path, str]]:
+        return [
+            ("manifest", Path("runtime-manifest.json"), "file"),
+            ("horosa_web", self._relative_manifest_path(manifest, "artifacts", "horosa_web_root"), "dir"),
+            ("astropy", self._relative_manifest_path(manifest, "artifacts", "astropy_root"), "dir"),
+            ("flatlib", self._relative_manifest_path(manifest, "artifacts", "flatlib_root"), "dir"),
+            ("swefiles", self._relative_manifest_path(manifest, "artifacts", "swefiles_root"), "dir"),
+            ("start_script", self._relative_manifest_path(manifest, "services", "start_script"), "file"),
+            ("stop_script", self._relative_manifest_path(manifest, "services", "stop_script"), "file"),
+            ("java_runtime", self._relative_manifest_path(manifest, "runtimes", "java"), "file"),
+            ("python_runtime", self._relative_manifest_path(manifest, "runtimes", "python"), "file"),
+            ("node_runtime", self._relative_manifest_path(manifest, "runtimes", "node"), "file"),
+            ("boot_jar", self._relative_manifest_path(manifest, "artifacts", "boot_jar"), "file"),
+            ("horosa_core_js_root", self._relative_manifest_path(manifest, "artifacts", "horosa_core_js_root"), "dir"),
+        ]
+
+    def _optional_paths(self, manifest: dict[str, Any] | None = None) -> list[tuple[str, Path, str, bool]]:
+        return []
+
+    def _relative_manifest_path(self, manifest: dict[str, Any] | None, section: str, key: str) -> Path:
+        if manifest and isinstance(manifest.get(section), dict):
+            value = manifest[section].get(key)
+            if isinstance(value, str) and value.strip():
+                return Path(value)
+        defaults = self._manifest_defaults()
+        return Path(defaults[section][key])
+
+    def _service_status(self) -> list[dict[str, Any]]:
+        # 探的必须是**现在**会起的那组地址：settings 的 URL 跟着 HOROSA_LOCAL_BACKEND_PORT / HOROSA_LOCAL_CHART_PORT /
+        # HOROSA_PORTS=auto 走，启动器与技法客户端用的也是它。安装时写进清单的 services.*_url 只是当时的快照 —— 旧实现
+        # 优先读它，装完再换端口，启停 / doctor 就一直探旧端口（stop 判「已停」、清掉 state，新端口上的服务却还在跑）。
+        backend_url = self.settings.server_root.rstrip("/")
+        chart_url = self.settings.chart_server_root.rstrip("/")
+        explicit_backend_url = os.environ.get("HOROSA_SERVER_ROOT", "").strip()
+        explicit_chart_url = os.environ.get("HOROSA_CHART_SERVER_ROOT", "").strip()
+        if explicit_backend_url:
+            backend_url = explicit_backend_url.rstrip("/")
+        if explicit_chart_url:
+            chart_url = explicit_chart_url.rstrip("/")
+        backend_probe = backend_url
+        parsed_backend = urlparse(backend_url)
+        if parsed_backend.scheme and parsed_backend.netloc and parsed_backend.path in {"", "/"}:
+            backend_probe = backend_url.rstrip("/") + "/common/time"
+        return [
+            {"label": "java_backend", "url": backend_probe, "reachable": self._backend_reachable(backend_probe)},
+            {"label": "python_chart", "url": chart_url, "reachable": self._http_reachable(chart_url)},
+        ]
+
+    def runtime_mode(self) -> str:
+        """`external` = 用户把地址指到了**我们管不着的地方**，只探不起不停；否则 `managed`。
+
+        🔴 旧实现对显式地址一视同仁：探到不可达就去跑**本机**的启动脚本，探到部分可达又会先
+        stop 一遍 —— 指着同事机器 / 容器网关（docker-compose 里就是 host.docker.internal:9999）
+        的用户，一次工具调用就可能让本机起一整套 runtime，或者去停一个根本不归自己管的服务。
+
+        但「显式设了地址」≠「外部」：把 HOROSA_SERVER_ROOT 指到本机 runtime 自己的
+        127.0.0.1:9999 是完全正常的用法，那种情况仍是 managed，`runtime start` 照常启动。
+        判据因此是**地址是否就是我们会去启动的那一个**（回环主机名等价，端口须相同）。
+        """
+        ours = {
+            (True, int(self.settings.local_backend_port)),
+            (True, int(self.settings.local_chart_port)),
+        }
+        for name in ("HOROSA_SERVER_ROOT", "HOROSA_CHART_SERVER_ROOT"):
+            raw = os.environ.get(name, "").strip()
+            if not raw:
+                continue
+            parsed = urlparse(raw if "//" in raw else f"//{raw}")
+            host = (parsed.hostname or "").lower()
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            if (host in {"127.0.0.1", "localhost", "::1"}, int(port)) not in ours:
+                return "external"
+        return "managed"
+
+    def _launch_nonce(self) -> str | None:
+        state = self.load_runtime_state() or {}
+        nonce = state.get("launch_nonce")
+        return str(nonce) if nonce else None
+
+    def endpoint_identities(
+        self, *, endpoints: list[dict[str, Any]] | None = None
+    ) -> list[dict[str, Any]]:
+        """给每个端点补上归属判定。
+
+        **只在决策点调用**（start 入口、stop 入口、doctor、runtime status），不要放进
+        `_wait_for_service_state` 的 0.25 秒轮询里 —— 判定要跑 netstat/ps 子进程，放进轮询会把
+        一次启动的开销翻好几倍。
+        """
+        items = endpoints if endpoints is not None else self._service_status()
+        state = self.load_runtime_state() or {}
+        nonce = self._launch_nonce()
+        service_pids = state.get("service_pids") or []
+        enriched: list[dict[str, Any]] = []
+        for item in items:
+            entry = dict(item)
+            if not entry.get("reachable"):
+                entry["identity"] = None
+                enriched.append(entry)
+                continue
+            verdict: EndpointIdentity = classify_endpoint(
+                str(entry.get("url") or ""),
+                runtime_root=self.runtime_root,
+                launch_nonce=nonce,
+                service_pids=service_pids,
+            )
+            entry["identity"] = verdict.as_dict()
+            enriched.append(entry)
+        return enriched
+
+    @staticmethod
+    def _verdict_of(entry: dict[str, Any]) -> str | None:
+        identity = entry.get("identity")
+        return (identity or {}).get("verdict") if isinstance(identity, dict) else None
+
+    def _require_no_foreign_holders(self, endpoints: list[dict[str, Any]]) -> None:
+        """可达但**不是我们的**服务：报冲突，绝不采用、绝不代为终止。
+
+        🔴 旧实现只看「HTTP 响应码 < 500」，于是 8899/9999 上任何应答者都被静默采用为后端：
+        用户自己开着的星阙桌面端、另一个项目的开发服务器、一个 `python -m http.server`。
+        症状不是「连不上」，而是排盘失败却 statusCode 200，或请求被发去一个无关服务。
+        """
+        conflicts = [
+            {
+                "port": (entry.get("identity") or {}).get("port"),
+                "url": entry.get("url"),
+                "label": entry.get("label"),
+                "evidence": (entry.get("identity") or {}).get("evidence"),
+                "app": (entry.get("identity") or {}).get("app"),
+                "holders": (entry.get("identity") or {}).get("holders") or [],
+            }
+            for entry in endpoints
+            if self._verdict_of(entry) == "foreign"
+        ]
+        if conflicts:
+            raise RuntimeInstallError(
+                "本机的 Horosa 服务端口被**其它进程**占用，已停止启动以免误用或误杀。",
+                code="runtime.port_conflict_foreign",
+                details={
+                    "conflicts": conflicts,
+                    "next_action": (
+                        "换端口：设 HOROSA_LOCAL_BACKEND_PORT 或 HOROSA_LOCAL_CHART_PORT，"
+                        "或设 HOROSA_PORTS=auto 让本工具自动挑空闲端口；"
+                        "若那正是你想用的服务，设 HOROSA_SERVER_ROOT / HOROSA_CHART_SERVER_ROOT 指向它（外部模式）。"
+                    ),
+                    "will_not_kill": "本工具不会终止不属于自己的进程；要腾出端口请你自己关掉上面点名的进程。",
+                },
+            )
+        unknown = [
+            {
+                "port": (entry.get("identity") or {}).get("port"),
+                "url": entry.get("url"),
+                "label": entry.get("label"),
+                "holders": (entry.get("identity") or {}).get("holders") or [],
+            }
+            for entry in endpoints
+            if self._verdict_of(entry) == "unknown"
+        ]
+        if unknown and not trust_unknown_ports():
+            raise RuntimeInstallError(
+                "端口上有服务在应答，但查不出它是不是 Horosa 的 —— 未予采用。",
+                code="runtime.port_conflict_unknown_holder",
+                details={
+                    "conflicts": unknown,
+                    "next_action": (
+                        "确认那确实是 Horosa 后端后，设 HOROSA_RUNTIME_TRUST_PORTS=1 采用它；"
+                        "否则换端口（HOROSA_LOCAL_BACKEND_PORT / HOROSA_LOCAL_CHART_PORT，或 HOROSA_PORTS=auto）。"
+                    ),
+                    "will_not_kill": "本工具不会终止不属于自己的进程。",
+                },
+            )
+
+    def _ports_taken_by_others(self, endpoints: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """HTTP 上没应答、socket 上却有监听者、且证明不了是我们自己的那些端点（E-07）。
+
+        「我们自己的」= 监听进程是注册表里记的 service_pids，或映像 / 命令行住在本 runtime 根下（启动到一半的自家服务，
+        交给启动器自己的「pid files already exist → 先停再起」处理）。点不出监听进程时不算我们的。
+        """
+        from horosa_skill.runtime.identity import _holder_evidence, _port_of
+
+        state = self.load_runtime_state() or {}
+        own_pids = {int(p) for p in state.get("service_pids") or [] if isinstance(p, int) or str(p).isdigit()}
+        takers: list[dict[str, Any]] = []
+        for entry in endpoints:
+            if entry.get("reachable"):
+                continue  # 答得上来的已经由身份握手判过了
+            port = _port_of(str(entry.get("url") or ""))
+            if port is None:
+                continue
+            taken = port_taken(port)
+            if not taken:
+                continue
+            holders = taken.get("holders") or []
+            if any(h.get("pid") in own_pids for h in holders):
+                continue
+            if any(_holder_evidence(int(h["pid"]), self.runtime_root, need_name=False)[0] for h in holders if h.get("pid")):
+                continue
+            takers.append({"label": entry.get("label"), "url": entry.get("url"), **taken})
+        return takers
+
+    def _require_ports_free_of_others(self, endpoints: list[dict[str, Any]]) -> None:
+        takers = self._ports_taken_by_others(endpoints)
+        if not takers:
+            return
+        raise RuntimeInstallError(
+            bilingual(
+                f"本机服务要用的端口被别的进程占着：{_describe_takers(takers)}。没有启动（也不会去终止它）。",
+                f"A port the local services need is held by another process: {_describe_takers(takers)}. Nothing was "
+                "started (and that process will not be stopped by this tool).",
+            ),
+            code="runtime.port_taken",
+            details={
+                "port_takers": takers,
+                "next_action": bilingual(
+                    "关掉占端口的进程，或换端口：HOROSA_PORTS=auto 自动挑空闲端口，或设 HOROSA_LOCAL_BACKEND_PORT / "
+                    "HOROSA_LOCAL_CHART_PORT。",
+                    "Stop the process holding the port, or move ports: HOROSA_PORTS=auto picks free ones, or set "
+                    "HOROSA_LOCAL_BACKEND_PORT / HOROSA_LOCAL_CHART_PORT.",
+                ),
+                "will_not_kill": "本工具不会终止不属于自己的进程。",
+            },
+        )
+
+    def _service_status_settled(self) -> list[dict[str, Any]]:
+        """doctor 用：一边通、一边不通时短暂复探，别把一次抖动报成「某服务没起」（tests/test_doctor_partial_reprobe.py）。
+        全通或全不通一次定论，所以没起的 runtime 上 doctor 不会变慢。"""
+        endpoints = self._service_status()
+        for _ in range(_PARTIAL_REPROBE_ATTEMPTS):
+            if self._all_services_reachable(endpoints) or not self._any_services_reachable(endpoints):
+                break
+            _reprobe_sleep(_PARTIAL_REPROBE_INTERVAL_SECONDS)
+            endpoints = self._service_status()
+        return endpoints
+
+    def _all_services_reachable(self, endpoints: list[dict[str, Any]]) -> bool:
+        return bool(endpoints) and all(bool(item.get("reachable")) for item in endpoints)
+
+    def _any_services_reachable(self, endpoints: list[dict[str, Any]]) -> bool:
+        return any(bool(item.get("reachable")) for item in endpoints)
+
+    def _chart_only_degraded(self, endpoints: list[dict[str, Any]]) -> bool:
+        chart = next((item for item in endpoints if item.get("label") == "python_chart"), None)
+        java = next((item for item in endpoints if item.get("label") == "java_backend"), None)
+        return bool(chart and chart.get("reachable")) and bool(java and not java.get("reachable"))
+
+    def _java_boot_diagnostics(self, manifest: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Best-effort excerpt of the Java backend's boot failure; never raises.
+
+        The launcher redirects the jar's stdout/stderr under <Horosa-Web>/.horosa-local-logs/<run>/.
+        A backend that dies during Spring bean construction takes its log4j file appenders with it,
+        so without this excerpt doctor can only say "not running" (issue #14).
+        """
+        try:
+            script = self._relative_manifest_path(manifest, "services", "start_script")
+            log_root = self.current_dir / script.parent / ".horosa-local-logs"
+            if not log_root.is_dir():
+                return None
+            run_dirs = sorted((path for path in log_root.iterdir() if path.is_dir()), key=lambda path: path.name)
+            if not run_dirs:
+                return None
+            latest = run_dirs[-1]
+            markers = (
+                "Application run failed",
+                "APPLICATION FAILED TO START",
+                "BeanInstantiationException",
+                "Caused by:",
+            )
+            excerpt: list[str] = []
+            for name in ("astrostudyboot.stderr.log", "astrostudyboot.stdout.log"):
+                log_path = latest / name
+                if not log_path.is_file():
+                    continue
+                lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                marked = [line.strip() for line in lines if any(marker in line for marker in markers)]
+                if marked:
+                    excerpt.extend(marked[:8])
+                else:
+                    excerpt.extend(line.strip() for line in lines[-5:] if line.strip())
+            if not excerpt:
+                return None
+            return {"log_dir": str(latest), "excerpt": excerpt[:12]}
+        except Exception:  # noqa: BLE001 - 附加诊断：读不到日志不该把原始启动错误换掉
+            return None
+
+    # 启动器日志：Popen 的 stdout/stderr 都往这里追加（O_APPEND，多进程写不会互相截断）。
+    LAUNCHER_LOG_NAME = "launcher.log"
+
+    def _launcher_log_path(self) -> Path:
+        return self.runtime_root / self.LAUNCHER_LOG_NAME
+
+    def _spawn_start_command(
+        self, *, command: list[str], script: Path, env: dict[str, str]
+    ) -> tuple[subprocess.Popen[bytes], Path]:
+        """把启动器**分离**着跑起来，立即返回。
+
+        🔴 旧实现是 `subprocess.run(...)` —— 而启动器自己会一直阻塞到服务就绪或 STARTUP_TIMEOUT
+        （首次运行要解压 + CDS 训练，实测可达 300–900 秒）。于是「第一次调用某个技法」会在**一次
+        MCP 请求内**卡上几分钟：Codex 的 tool_timeout_sec 默认 60 秒、其它客户端各有默认，
+        用户看到的是工具超时，而 runtime 其实正在正常启动。分离 + 有界等待把这件事变成
+        「先回一个 runtime.starting，让调用方过几秒重试同一个调用」。
+        """
+        log_path = self._launcher_log_path()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(log_path, "ab", buffering=0)  # noqa: SIM115 - 交给子进程持有，见 finally
+        try:
+            kwargs: dict[str, Any] = {
+                "cwd": str(script.parent),
+                "env": env,
+                "stdout": handle,
+                "stderr": subprocess.STDOUT,
+                "stdin": subprocess.DEVNULL,
+            }
+            if os.name == "nt":
+                # getattr 兜底：这些常量只在真 Windows 的 subprocess 上存在，而把 os.name
+                # 打成 "nt" 的跨平台模拟测试会走到这一支。
+                # 🔴 **绝不要 DETACHED_PROCESS**：它让子进程完全没有控制台，而启动器是
+                # `powershell -File …` —— 无控制台的 PowerShell 主机**立刻 exit 0 且一个字节都不写**。
+                # 实测（Windows 构建机，真 runtime）：DETACHED 下 12 秒内 poll()==0、launcher.log
+                # 0 字节、连启动器自己的 .horosa-local-logs 目录都没建、服务一个没起；manager 只能
+                # 看到「已退出且未就绪」→ 报 runtime.start_timeout 并建议「跑 doctor / install」，
+                # 而实际上启动器从未运行。于是 install/selfcheck/serve 在 Windows 上都起不了 runtime。
+                # CREATE_NO_WINDOW 才是要的东西：有控制台、只是不弹窗；实测父进程退出后启动器照旧
+                # 存活并把 chart 服务拉起来（Windows 的子进程本就不随父进程终止，无需 DETACHED）。
+                kwargs["creationflags"] = getattr(
+                    subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+                ) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            else:
+                kwargs["start_new_session"] = True
+            proc = subprocess.Popen(command, **kwargs)
+        finally:
+            # 父进程这边立刻关掉：句柄已经复制给子进程了。留着它会在 Windows 上让日志文件
+            # 无法被删除/轮转，在 POSIX 上则让 `tail -f` 看不到 EOF。
+            handle.close()
+        return proc, log_path
+
+    def _read_launcher_log(self, log_path: Path, *, limit: int = 8000) -> str:
+        try:
+            data = log_path.read_bytes()
+        except OSError:
+            return ""
+        return data[-limit:].decode("utf-8", errors="replace")
+
+    def _run_start_command(
+        self,
+        *,
+        command: list[str],
+        script: Path,
+        env: dict[str, str],
+        wait_seconds: float | None = None,
+    ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
+        """启动并在预算内等待就绪。预算用尽仍未就绪时 readiness["starting"]=True。
+
+        `wait_seconds=None` = 用满 runtime_start_timeout_seconds（`runtime start` / install /
+        selfcheck 走这条，行为与从前一致）；工具调用路径传一个小预算（默认 5 秒）。
+        """
+        budget = (
+            float(self.settings.runtime_start_timeout_seconds)
+            if wait_seconds is None
+            else max(0.0, float(wait_seconds))
+        )
+        started_at = time.monotonic()
+        log_before = self._launcher_log_path()
+        log_offset = log_before.stat().st_size if log_before.is_file() else 0
+        proc, log_path = self._spawn_start_command(command=command, script=script, env=env)
+        self._record_launcher(proc.pid, log_path)
+
+        deadline = started_at + budget
+        endpoints = self._service_status()
+        java_dead_deadline: float | None = None
+        while True:
+            if all(item["reachable"] for item in endpoints):
+                break
+            exited = proc.poll() is not None
+            tail = self._read_launcher_log(log_path)[max(0, 0):]
+            if java_dead_deadline is None and "java backend process exited" in tail.lower():
+                # Issue #14：启动器已明说 java 死了，别再耗满整个就绪窗口等一个永远不会来的端点。
+                java_dead_deadline = min(deadline, time.monotonic() + 20.0)
+            effective_deadline = min(deadline, java_dead_deadline) if java_dead_deadline else deadline
+            if exited:
+                # 启动器退出后再看最后一眼：它可能刚把服务拉起来。
+                endpoints = self._service_status()
+                break
+            if time.monotonic() >= effective_deadline:
+                break
+            time.sleep(0.25)
+            endpoints = self._service_status()
+
+        returncode = proc.poll()
+        output = self._read_launcher_log(log_path)
+        if log_offset and len(output) > 0:
+            # 只保留本次启动写进去的那一段（日志是追加的，上一次的内容不该被当成这次的诊断）。
+            try:
+                with open(log_path, "rb") as handle:
+                    handle.seek(log_offset)
+                    output = handle.read().decode("utf-8", errors="replace")
+            except OSError:
+                pass
+        completed = subprocess.CompletedProcess(
+            args=command,
+            returncode=0 if returncode is None else returncode,
+            stdout=output[-8000:],
+            stderr="",
+        )
+        ready = all(item["reachable"] for item in endpoints)
+        readiness: dict[str, Any] = {"ready": ready, "endpoints": endpoints, "degraded": False}
+        if not ready and returncode is None:
+            # 启动器还在跑 —— 这不是失败，是「还没好」。
+            readiness["starting"] = True
+            readiness["launcher_pid"] = proc.pid
+            readiness["launcher_log"] = str(log_path)
+            readiness["elapsed_seconds"] = round(time.monotonic() - started_at, 1)
+            readiness["budget_seconds"] = round(budget, 1)
+            readiness["cap_seconds"] = float(self.settings.runtime_start_timeout_seconds)
+            return completed, readiness
+        if not ready and self._chart_only_degraded(endpoints):
+            # A dead/blocked Java backend (e.g. WFP/proxy software vetoing JDK-17 AF_UNIX
+            # loopback pipes) must not lock out chart-only techniques: accept chart-up/java-down
+            # as a degraded start instead of failing the whole runtime.
+            readiness = {"ready": True, "degraded": True, "endpoints": endpoints}
+        return completed, readiness
+
+    def _record_launcher(self, pid: int, log_path: Path) -> None:
+        def _mutate(state: dict[str, Any]) -> dict[str, Any]:
+            state["launcher"] = {"pid": pid, "log": str(log_path), "started_at": runtime_registry.utc_now()}
+            return state
+
+        try:
+            self._update_runtime_state(_mutate)
+        except OSError:
+            pass
+
+    def _wait_for_service_state(
+        self,
+        *,
+        expected_reachable: bool,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        deadline = time.monotonic() + max(timeout_seconds, 0.1)
+        endpoints = self._service_status()
+        while time.monotonic() < deadline:
+            if all(item["reachable"] == expected_reachable for item in endpoints):
+                return {"ready": True, "endpoints": endpoints}
+            time.sleep(0.25)
+            endpoints = self._service_status()
+        return {"ready": all(item["reachable"] == expected_reachable for item in endpoints), "endpoints": endpoints}
+
+    def _write_runtime_state(self, payload: dict[str, Any]) -> None:
+        """整份覆盖写，原子（tmp + os.replace）。
+
+        🔴 旧实现是一次 `write_text`：两个进程同时冷启动时读者会读到半个 JSON（解析失败 →
+        `load_runtime_state` 返回 None → 调用方以为「没在跑」→ 再起一次），写者互相覆盖，
+        最后文件里记的是输的那一方。见 runtime/registry.py。
+        """
+        self.runtime_root.mkdir(parents=True, exist_ok=True)
+        merged = dict(payload)
+        # 保留 v2 的长寿字段（launch_nonce / clients / launcher …）：这些是别的进程写进来的，
+        # 一次 start/stop 的整份覆盖不该把它们抹掉。
+        existing = runtime_registry.read_state(self.settings.runtime_state_path) or {}
+        for key in ("launch_nonce", "clients", "launcher", "service_pids", "ports"):
+            if key not in merged and existing.get(key):
+                merged[key] = existing[key]
+        runtime_registry.write_state(self.settings.runtime_state_path, merged)
+
+    def _update_runtime_state(self, mutate: Any) -> dict[str, Any]:
+        self.runtime_root.mkdir(parents=True, exist_ok=True)
+        return runtime_registry.update_state(self.settings.runtime_state_path, mutate)
+
+    def _clear_runtime_state(self) -> None:
+        runtime_registry.clear_state(self.settings.runtime_state_path)
+
+    def _utc_now(self) -> str:
+        return datetime.now(UTC).isoformat()
+
+    def _default_home_value(self) -> str:
+        home = os.environ.get("HOME", "").strip()
+        if home:
+            return home
+        userprofile = os.environ.get("USERPROFILE", "").strip()
+        if userprofile:
+            return userprofile
+        data_dir = self.settings.data_dir
+        if data_dir.name == ".horosa-skill":
+            return str(data_dir.parent)
+        runtime_root = self.settings.runtime_root
+        runtime_parts = [part.lower() for part in runtime_root.parts]
+        if len(runtime_parts) >= 2 and runtime_parts[-1] == "runtime" and runtime_parts[-2] == ".horosa":
+            return str(runtime_root.parent.parent)
+        return str(Path.home())
+
+
+def _version_key(text: str) -> tuple:
+    """「0.50.1」→ (0, 50, 1)；带后缀的段按数字前缀比（0.50.1rc1 → 0.50.1），读不出的段当 0。"""
+    import re as _re
+
+    parts = []
+    for piece in str(text).lstrip("v").split("."):
+        match = _re.match(r"\d+", piece)
+        parts.append(int(match.group(0)) if match else 0)
+    return tuple(parts)

@@ -1,0 +1,53 @@
+[project]
+name = "alphaear-finance-codex"
+version = "0.1.0"
+description = "Local AlphaEar Finance skill runtime for Codex"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "akshare>=1.17",
+    "beautifulsoup4>=4.13",
+    "loguru>=0.7",
+    "lxml>=5.4",
+    "numpy>=2.0",
+    "pandas>=2.2",
+    "python-dotenv>=1.1",
+    "pyyaml>=6.0",
+    "requests>=2.32",
+    "yfinance>=0.2",
+]
+
+[project.optional-dependencies]
+research = [
+    "agno>=1.7",
+    "duckduckgo-search>=8.1",
+    "markdown>=3.8",
+    "matplotlib>=3.10",
+    "openai>=1.90",
+    "pydantic>=2.11",
+    "pyecharts>=2.0",
+    "rank-bm25>=0.2",
+    "scikit-learn>=1.7",
+    "sentence-transformers>=5.0",
+    "transformers>=4.53",
+]
+predictor = [
+    "agno>=1.7",
+    "duckduckgo-search>=8.1",
+    "einops>=0.8",
+    "huggingface-hub>=0.33",
+    "markdown>=3.8",
+    "matplotlib>=3.10",
+    "openai>=1.90",
+    "pydantic>=2.11",
+    "pyecharts>=2.0",
+    "rank-bm25>=0.2",
+    "scikit-learn>=1.7",
+    "sentence-transformers>=5.0",
+    "torch>=2.7",
+    "tqdm>=4.67",
+    "transformers>=4.53",
+]
+
+[tool.uv]
+package = false

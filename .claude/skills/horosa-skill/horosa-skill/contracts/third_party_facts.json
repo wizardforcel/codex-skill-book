@@ -1,0 +1,896 @@
+{
+  "_comment": "Ledger of third-party facts the skill depends on (client config paths, timeouts, budgets, SDK/API shapes, CI runtimes). Each entry records WHERE the fact was read and WHEN. scripts/verify_docs_sync.py asserts: every subject in `required_subjects` has an entry, every entry has an https source and a valid date, every `affects` path exists, and entries older than `max_age_days` are ::warning in CI and FAIL under --strict-staleness (the weekly docs-currency workflow files an issue). Re-verify = re-read the source, update `fact` if it changed, bump `verified_on`, and fix the code/docs in `affects` — that is the whole institution (AGENTS §2 v3).",
+  "max_age_days": 120,
+  "required_subjects": [
+    "claude-code",
+    "claude-desktop",
+    "codex",
+    "cursor",
+    "vscode",
+    "gemini",
+    "windsurf",
+    "cline",
+    "zed",
+    "openclaw",
+    "remote-connectors",
+    "mcp-python-sdk",
+    "mcpb",
+    "github-actions",
+    "github-runner-images",
+    "uv",
+    "node",
+    "python",
+    "swisseph",
+    "mcp-registry",
+    "agent-plugins",
+    "opencode",
+    "goose",
+    "kiro",
+    "copilot-cli",
+    "junie",
+    "qwen",
+    "kimi",
+    "qoder",
+    "codebuddy",
+    "trae",
+    "amp",
+    "warp",
+    "droid",
+    "augment",
+    "deepcode",
+    "dsh",
+    "agent-skills"
+  ],
+  "facts": [
+    {
+      "id": "claude-code.mcp-add",
+      "subject": "claude-code",
+      "fact": "`claude mcp add --transport http|sse|stdio --scope local|project|user -e KEY=V -- cmd`; `.mcp.json` supports ${VAR} / ${VAR:-default} and per-server `timeout` (ms); tool and property names 1–64 chars; MCP output capped by MAX_MCP_OUTPUT_TOKENS (25000); idle stdio servers reaped after 30 min; plugin manifests may declare mcpServers as .mcpb paths and use ${CLAUDE_PLUGIN_ROOT} / userConfig.",
+      "source_url": "https://docs.claude.com/en/docs/claude-code/mcp",
+      "verified_on": "2026-09-29",
+      "affects": [
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        ".claude-plugin/plugin.json",
+        ".mcp.json"
+      ]
+    },
+    {
+      "id": "claude-code.mcp-add-rerun",
+      "subject": "claude-code",
+      "fact": "Observed on Claude Code 2.1.304 in a temp HOME: `claude mcp add` and `claude mcp add-json` both refuse an existing name (`MCP server <name> already exists in user config`, exit 1), so re-registering is `remove` + `add` (`remove` of a missing name exits 1); `-e` is variadic, so the server name must come before it (`add --scope user -e K=V <name> -- cmd` fails with `Invalid environment variable format: <name>`); user scope is stored as {type, command, args, env} under top-level `mcpServers` of `$CLAUDE_CONFIG_DIR/.claude.json` (default `~/.claude.json`); `claude mcp get` health-checks by spawning the server.",
+      "source_url": "https://docs.claude.com/en/docs/claude-code/mcp",
+      "verified_on": "2026-11-11",
+      "affects": [
+        "horosa-skill/src/horosa_skill/client_config/claude_cli.py",
+        "horosa-skill/src/horosa_skill/surfaces/setup_flow.py",
+        "horosa-skill/tests/fake_claude.py"
+      ]
+    },
+    {
+      "id": "claude-desktop.config",
+      "subject": "claude-desktop",
+      "fact": "claude_desktop_config.json under ~/Library/Application Support/Claude (macOS) / %APPDATA%\\Claude (Windows); .mcpb bundles install via Settings → Extensions; GUI clients do not inherit the shell PATH (absolute `uv` path required).",
+      "source_url": "https://claude.com/docs/cowork/changelog",
+      "verified_on": "2026-09-29",
+      "affects": [
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        "horosa-skill/manifest.json",
+        "horosa-skill/examples/clients/claude_desktop_config.json"
+      ]
+    },
+    {
+      "id": "codex.mcp-config",
+      "subject": "codex",
+      "fact": "config.toml [mcp_servers.<name>]: startup_timeout_sec default 10, tool_timeout_sec default 60, `env` table sets vars, `env_vars` forwards Codex's own env (older Codex rejects unknown keys in the table — do not write env_vars); default env whitelist HOME LOGNAME PATH SHELL USER __CF_USER_TEXT_ENCODING LANG LC_ALL TERM TMPDIR TZ; Codex 0.158.0 (2026-09-28) added tool_input_schema_max_bytes default 5000 (oversize inputSchema is compacted: descriptions stripped) and startup_readiness = \"catalog\".",
+      "source_url": "https://learn.chatgpt.com/docs/config-file/config-reference",
+      "verified_on": "2026-09-29",
+      "affects": [
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        "horosa-skill/scripts/verify_mcp_list_budget.py",
+        ".agents/skills/horosa-agent/SKILL.md"
+      ]
+    },
+    {
+      "id": "cursor.mcp-json",
+      "subject": "cursor",
+      "fact": "~/.cursor/mcp.json (global) and .cursor/mcp.json (project); placeholders ${workspaceFolder} ${workspaceFolderBasename} ${env:X} ${userHome} ${pathSeparator}; deep link cursor://anysphere.cursor-deeplink/mcp/install?name=&config=base64; docs table lists `type` (stdio) though examples omit it; ~40-tool practical cap (older observation, not on the docs page).",
+      "source_url": "https://cursor.com/docs/context/mcp",
+      "verified_on": "2026-09-29",
+      "affects": [
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        ".cursor/mcp.json",
+        ".cursor/rules/horosa-skill.mdc"
+      ]
+    },
+    {
+      "id": "vscode.mcp-json",
+      "subject": "vscode",
+      "fact": ".vscode/mcp.json root key `servers`, `type` required, placeholders ${workspaceFolder} ${env:X} ${userHome} ${input:id}; new sandbox fields; 128-tool ceiling shared across servers (Copilot).",
+      "source_url": "https://code.visualstudio.com/docs/agents/reference/mcp-configuration",
+      "verified_on": "2026-09-29",
+      "affects": [
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        ".vscode/mcp.json"
+      ]
+    },
+    {
+      "id": "zed.context-servers",
+      "subject": "zed",
+      "fact": "settings.json `context_servers.<name>` = {command, args (optional since 2026-06), env, timeout (seconds, default 60)}; no `source` field; global context_server_timeout 60.",
+      "source_url": "https://github.com/zed-industries/zed/blob/main/crates/settings_content/src/project.rs",
+      "verified_on": "2026-09-29",
+      "affects": [
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config"
+      ]
+    },
+    {
+      "id": "gemini.settings",
+      "subject": "gemini",
+      "fact": "~/.gemini/settings.json and project .gemini/settings.json `mcpServers`; per-server `timeout` in ms (default 600000), `trust` default false; tool FQN is unconditionally mcp_{serverName}_{toolName}, names over 63 chars are middle-truncated; $schema/additionalProperties stripped from schemas.",
+      "source_url": "https://geminicli.com/docs/tools/mcp-server/",
+      "verified_on": "2026-09-29",
+      "affects": [
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        "horosa-skill/scripts/verify_mcp_client_compat.py",
+        "GEMINI.md"
+      ]
+    },
+    {
+      "id": "windsurf.devin-desktop",
+      "subject": "windsurf",
+      "fact": "Windsurf was renamed Devin Desktop on 2026-06-02; Cascade was removed in v3.9.19 (2026-09-08) and Devin Local is the only agent. It reads the Devin CLI MCP files: ~/.config/devin/mcp_config.json (macOS/Linux), %APPDATA%\\devin\\mcp_config.json (Windows), project .devin/mcp_config.json (+ .devin/mcp_config.local.json); root key mcpServers; stdio fields command/args/env/disabled; no per-server timeout. Legacy Cascade read ~/.codeium/windsurf/mcp_config.json with a 100-tool cap. UNVERIFIED: whether Devin Local still reads the legacy `.windsurf/rules/*.md` rules files — the repo keeps that mirror until a Devin rules path is documented.",
+      "source_url": "https://docs.devin.ai/cli/extensibility/mcp/configuration",
+      "verified_on": "2026-09-29",
+      "affects": [
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        ".windsurf/rules/horosa-skill.md",
+        "README.md",
+        "README_EN.md"
+      ]
+    },
+    {
+      "id": "cline.mcp-settings",
+      "subject": "cline",
+      "fact": "cline_mcp_settings.json under the host editor's globalStorage/saoudrizwan.claude-dev/settings/; per-server `timeout` in seconds, default 60, range 1–3600; `type: stdio`; CLI also reads ~/.cline/mcp.json.",
+      "source_url": "https://github.com/cline/cline/blob/main/sdk/packages/shared/src/mcp.ts",
+      "verified_on": "2026-09-29",
+      "affects": [
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        ".clinerules/horosa-skill.md"
+      ]
+    },
+    {
+      "id": "openclaw.mcporter",
+      "subject": "openclaw",
+      "fact": "OpenClaw consumes MCP through mcporter (npm, 0.9.0): `mcporter call <server>.<tool> --config <mcporter.json> --timeout <ms>`; first `npx mcporter` run downloads the package plus a native rolldown binding (~2 min on Windows runners); `mcporter` may hang after printing a result when a child server keeps stdio open (docs/hang-debug.md); MCPORTER_DEBUG_HANG=1 dumps handles.",
+      "source_url": "https://github.com/steipete/mcporter",
+      "verified_on": "2026-09-29",
+      "affects": [
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "remote-connectors.oauth-only",
+      "subject": "remote-connectors",
+      "fact": "claude.ai custom connectors accept only OAuth (client id/secret), no static Bearer; ChatGPT remote MCP requires OAuth (CIMD; DCR still supported when configured) and search/fetch tools for deep research. The skill offers a static Bearer over streamable-http, so both need an OAuth-terminating HTTPS gateway.",
+      "source_url": "https://developers.openai.com/api/docs/mcp",
+      "verified_on": "2026-09-29",
+      "affects": [
+        "README.md",
+        "README_EN.md",
+        "horosa-skill/examples/clients/remote-connectors-oauth-gateway.md"
+      ]
+    },
+    {
+      "id": "mcp-python-sdk.2x",
+      "subject": "mcp-python-sdk",
+      "fact": "mcp 2.3.0 (2026-10-02, Production/Stable; 1.x stays in maintenance, 1.30.0 2026-09-07). FastMCP is now mcp.server.mcpserver.MCPServer (keyword-only construction; host/port/streamable_http_path/transport_security go to run()); mcp.get_context() removed (Context is passed to call_tool); model attributes are snake_case (dump wire shape with by_alias=True); ClientSession.read_resource takes a str URI; streamable_http_client(url, http_client=) yields (read, write); in-process tests use mcp.client.Client(server, mode='legacy'|'2026-07-28'). MRTR: a tool may return InputRequiredResult(input_requests={key: ElicitRequest(...)}, request_state=...); the SDK seals request_state (AEAD, TTL, tool + argument digest) and rejects tampering with -32602; ctx.input_responses / ctx.request_state on the retry.",
+      "source_url": "https://py.sdk.modelcontextprotocol.io/migration/",
+      "verified_on": "2026-10-28",
+      "affects": [
+        "horosa-skill/pyproject.toml",
+        "horosa-skill/src/horosa_skill/surfaces/mcp_runner.py",
+        "horosa-skill/src/horosa_skill/surfaces/mcp_server.py",
+        "horosa-skill/src/horosa_skill/surfaces/mcp_elicitation.py"
+      ]
+    },
+    {
+      "id": "mcpb.bundle",
+      "subject": "mcpb",
+      "fact": "@anthropic-ai/mcpb latest 2.1.2 (2025-12-04); manifest_version 0.4 with `uv` server type, optional privacy_policies / compatibility / user_config; `npx mcpb validate` + `mcpb pack`; packing is not byte-reproducible (sha must come from the uploaded build).",
+      "source_url": "https://www.npmjs.com/package/@anthropic-ai/mcpb",
+      "verified_on": "2026-09-29",
+      "affects": [
+        "horosa-skill/scripts/build_mcpb.sh",
+        "horosa-skill/scripts/verify_mcpb_manifest.py",
+        "horosa-skill/manifest.json",
+        "server.json"
+      ]
+    },
+    {
+      "id": "github-actions.node20-removed",
+      "subject": "github-actions",
+      "fact": "Node 20 was removed from GitHub-hosted runners on 2026-09-23; JavaScript actions run on Node 24 and the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION opt-out is gone. Node-24 majors used here: checkout v5, setup-python v6, setup-node v5, upload-artifact v6, download-artifact v7, cache v5, astral-sh/setup-uv v7, attest-build-provenance v3, codeql-action v4, dependency-review-action v5. Avoid download-artifact v8 (no auto-unzip, digest mismatch errors) and setup-uv v10 (cache disabled on release/pull_request_target/workflow_run) until validated on a draft matrix.",
+      "source_url": "https://github.blog/changelog/2026-09-23-node-20-is-no-longer-available-in-github-actions/",
+      "verified_on": "2026-09-29",
+      "affects": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/release-runtime.yml",
+        ".github/workflows/runtime-matrix.yml",
+        ".github/workflows/release-completeness.yml",
+        ".github/workflows/codeql.yml",
+        ".github/workflows/dependency-review.yml",
+        ".github/workflows/publish-pypi.yml",
+        ".github/workflows/runner-probe.yml"
+      ]
+    },
+    {
+      "id": "github-runner-images.labels",
+      "subject": "github-runner-images",
+      "fact": "macos-latest = macOS 26 arm64 (default Python 3.14, cached 3.12); windows-latest = windows-2025 (Python 3.12.10, Node 22, pwsh 7.6); windows-11-arm re-imaged 2026-09-21..30 (default Node 24 / Python 3.13, cached 3.12.10, no uv); ubuntu-latest moves to 26.04 in 2026-11. The workflows pin Python 3.12 and Node 22 explicitly.",
+      "source_url": "https://github.com/actions/runner-images/issues/14602",
+      "verified_on": "2026-09-29",
+      "affects": [
+        ".github/workflows/runtime-matrix.yml",
+        ".github/workflows/runner-probe.yml",
+        "horosa-skill/scripts/verify_runtime_live.py"
+      ]
+    },
+    {
+      "id": "uv.uvx-from",
+      "subject": "uv",
+      "fact": "uv 0.12.14–0.12.20 (2026-09): no semantic change to `uvx --from <wheel URL|path>`; direct-URL dependencies are cached by URL and re-validated per HTTP cache headers (hence the local wheel cache in ~/.horosa/wheels/); 0.12.16 hash-verifies downloads; Windows MAX_PATH fix in 0.12.14.",
+      "source_url": "https://github.com/astral-sh/uv/releases",
+      "verified_on": "2026-09-29",
+      "affects": [
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        "README.md",
+        "README_EN.md"
+      ]
+    },
+    {
+      "id": "node.lts",
+      "subject": "node",
+      "fact": "Node 22 is Maintenance LTS until 2027-04-30 (payload ships the latest-v22.x line); Node 24 Active LTS; Node 26 enters LTS on 2026-10-28.",
+      "source_url": "https://github.com/nodejs/Release/blob/main/schedule.json",
+      "verified_on": "2026-09-29",
+      "affects": [
+        "horosa-skill/scripts/package_runtime_payload.sh",
+        "horosa-skill/Dockerfile"
+      ]
+    },
+    {
+      "id": "python.3.12",
+      "subject": "python",
+      "fact": "Python 3.12 is the runtime floor (requires-python >= 3.12) and the embedded payload interpreter; 3.13 is the default on the new windows-11-arm image, so workflows pin 3.12 explicitly.",
+      "source_url": "https://www.python.org/downloads/",
+      "verified_on": "2026-09-29",
+      "affects": [
+        "horosa-skill/pyproject.toml",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "swisseph.thread-local-state",
+      "subject": "swisseph",
+      "fact": "Swiss Ephemeris (libswe, built into pyswisseph) declares all of its state (ephemeris path, open files, sidereal mode) TLS: sweodef.h defines TLS as __thread (GCC) / __declspec(thread) (MSVC) unless __APPLE__, WIN32, DOS32 or TLSOFF is defined. A setuptools/MSVC build only has _WIN32, so on Windows swe_set_ephe_path applies to the calling thread only; on macOS the state is process-wide. Upstream v3.11.2's HOROSA_EPHE_PATH_FASTPATH caches 'path set' process-wide, so the Windows launcher turns it off (verified on windows-latest + windows-11-arm, diag runs 36802700937 / 36803364178). A thread that never set a path resolves one on first use through swe_set_ephe_path(NULL): the SE_EPHE_PATH environment variable comes first (it even beats an explicit set_ephe_path argument - verified 2026-10-01: SE_EPHE_PATH=C:\\sweph\\ephe made an explicit set_ephe_path(<bundled>) read C:\\sweph\\ephe\\seas_18.se1), otherwise the compiled-in default '\\sweph\\ephe\\' on the current drive: on a clean machine planets drop to Moshier and asteroids fail; where another astrology program left files there (maintainer box: C:\\sweph\\ephe, 2001-2014) the thread silently reads those (Chiron 0.14 arcsec off). Upstream astroextra calls swisseph without flatlib's ensureEphePath, so the Windows launcher also exports SE_EPHE_PATH=<bundled swefiles>, as the upstream desktop launcher does: published v0.40.0 cold start, 39 of 40 ephemeris responses off the bundled reference before, 40 of 40 identical after.",
+      "source_url": "https://github.com/astrorigin/swisseph/blob/master/sweodef.h",
+      "verified_on": "2026-10-01",
+      "affects": [
+        "horosa-skill/scripts/runtime_templates/windows/start_horosa_local.ps1",
+        "horosa-skill/scripts/verify_runtime_scripts.py",
+        "horosa-skill/tests/test_runtime_launcher_templates.py"
+      ]
+    },
+    {
+      "id": "mcp-registry.publish",
+      "subject": "mcp-registry",
+      "fact": "Official MCP Registry (preview; schema 2025-12-11; mcp-publisher 1.8.1 = production 1.8.1). GitHub OIDC grants exactly `io.github.<repository_owner>/*` with GitHub's casing and the permission check is a case-sensitive prefix match (issue #689) → our name must be `io.github.Horace-Maxwell/horosa-skill`. mcpb packages: fileSha256 required (registry does not download/verify it; clients do), identifier must be an https github.com/gitlab.com tag-pinned `releases/download/<tag>/<file>` URL containing 'mcp' (`releases/latest/download` rejected), package `version` optional; publish HEADs the asset (200 or 3xx+Location, no redirect following) so a draft asset 404s. pypi packages must exist with an `mcp-name:` README marker. `_meta…/publisher-provided` ≤ 4096 bytes, other _meta keys dropped; description ≤ 100 chars; versions immutable (republish fails). `/v0/validate` and `mcp-publisher validate` check schema + semantics only (said valid:true for our old pypi+mcpb file). Probe: GET /v0.1/servers/<urlencoded name>/versions/<v> → 200 {server, _meta} when listed.",
+      "source_url": "https://github.com/modelcontextprotocol/registry/blob/main/docs/modelcontextprotocol-io/package-types.mdx",
+      "verified_on": "2026-10-12",
+      "affects": [
+        "server.json",
+        "horosa-skill/scripts/verify_server_json.py",
+        "horosa-skill/scripts/render_registry_server_json.py",
+        ".github/workflows/publish-mcp-registry.yml",
+        ".github/workflows/release-runtime.yml"
+      ]
+    },
+    {
+      "id": "agent-plugins.v1",
+      "subject": "agent-plugins",
+      "fact": "Agent Plugins 1.0.0 (agent-plugins.org; 1.1.0 is a working draft whose schema URL 404s; Codex / VS Code / OpenHands hard-code 1.0.0). Root `plugin.json` with closed keys {$schema, name, version, description, author{name,email,url}, homepage, repository, license, keywords, extensions}; skills discovered as immediate children of `skills/`; MCP only in root `mcp.json` = {$schema, mcpServers}, stdio entries closed {type (required), command (single executable token, no placeholder expansion), args, env, cwd}; only ${PLUGIN_ROOT}/${PLUGIN_DATA} in args/env/cwd — Cursor does not expand them. No portable userConfig/secrets. Clients: VS Code, Copilot CLI (`copilot plugin install owner/repo`), Cursor, Codex (`codex plugin marketplace add owner/repo`), Kiro, OpenClaw, Hermes, OpenHands, NanoClaw, Grok Bot; Qwen Code documents support. VS Code / Copilot CLI / Codex / OpenHands prefer the root manifest over `.claude-plugin/`; OpenClaw and Claude Code keep the Claude format — no client loads both.",
+      "source_url": "https://github.com/agentplugins/agent-plugins-spec/blob/main/spec/1.0.0.md",
+      "verified_on": "2026-10-12",
+      "affects": [
+        "plugin.json",
+        "mcp.json",
+        "horosa-skill/scripts/verify_client_configs.py"
+      ]
+    },
+    {
+      "id": "opencode.mcp-config",
+      "subject": "opencode",
+      "fact": "OpenCode v1.19.0: user file ${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json[c] (XDG layout on Windows too); JSONC; root `mcp`; stdio entry {type:'local', command:[program, ...args] (ONE array, no `args` key), environment (not env), enabled, timeout ms}; connect/list default 30 s in code (docs say 5 s), calls fall back to the SDK 60 s → write timeout 600000. No tool cap or deferral. Skills: reads ~/.agents/skills, ~/.claude/skills, ~/.config/opencode/skills. Verify: `opencode mcp list`.",
+      "source_url": "https://github.com/anomalyco/opencode/blob/v1.19.0/packages/core/src/v1/config/mcp.ts",
+      "verified_on": "2026-10-12",
+      "affects": [
+        "horosa-skill/src/horosa_skill/clients_extra.py",
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        "horosa-skill/src/horosa_skill/skill_install.py"
+      ]
+    },
+    {
+      "id": "goose.mcp-config",
+      "subject": "goose",
+      "fact": "Goose v1.54.0: user file ${XDG_CONFIG_HOME:-~/.config}/goose/config.yaml on macOS/Linux, %APPDATA%\\Block\\goose\\config\\config.yaml on Windows, GOOSE_PATH_ROOT overrides; YAML holding all settings; root `extensions`; entry {enabled (required), type:stdio, name, cmd, args (required), envs, env_keys, timeout SECONDS (default 300, fixed wall clock per request)}; a malformed entry is skipped silently. Skills: ~/.agents/skills is the canonical writable folder. Verify: `goose info -v`.",
+      "source_url": "https://github.com/aaif-goose/goose/blob/v1.54.0/crates/goose/src/config/paths.rs",
+      "verified_on": "2026-10-12",
+      "affects": [
+        "horosa-skill/src/horosa_skill/clients_extra.py",
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        "horosa-skill/src/horosa_skill/skill_install.py"
+      ]
+    },
+    {
+      "id": "kiro.mcp-config",
+      "subject": "kiro",
+      "fact": "Kiro (IDE + CLI): user file ~/.kiro/settings/mcp.json (KIRO_HOME overrides; Windows path inferred); root mcpServers {command,args,env,disabled}; no timeout field documented for mcp.json; Kiro CLI global mcp.initTimeout defaults to 5000 ms (45 s cold start exceeds it → tell the user `kiro-cli settings mcp.initTimeout 120000`). Skills: ~/.kiro/skills only (no ~/.agents documented). Confidence medium.",
+      "source_url": "https://kiro.dev/docs/mcp/configuration.md",
+      "verified_on": "2026-10-12",
+      "affects": [
+        "horosa-skill/src/horosa_skill/clients_extra.py",
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        "horosa-skill/src/horosa_skill/skill_install.py"
+      ]
+    },
+    {
+      "id": "copilot-cli.mcp-config",
+      "subject": "copilot-cli",
+      "fact": "GitHub Copilot CLI 1.0.95: user file ~/.copilot/mcp-config.json (COPILOT_HOME overrides); root mcpServers {type:'local'|'stdio', command, args, env, tools (listed required → ['*']), timeout ms (discovery + calls, default 30000; connection floored at 60 s)}; docs: 'The PATH variable is automatically inherited … All other environment variables must be configured here' (not checked in source) → write HOME/USERPROFILE + runtime roots, probe with PATH only. Project .mcp.json is shared with Claude Code (never written). Skills: ~/.agents/skills unless COPILOT_HOME is set (then $COPILOT_HOME/skills).",
+      "source_url": "https://github.com/github/docs/blob/main/content/copilot/reference/copilot-cli-reference/cli-command-reference.md",
+      "verified_on": "2026-10-12",
+      "affects": [
+        "horosa-skill/src/horosa_skill/clients_extra.py",
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        "horosa-skill/src/horosa_skill/skill_install.py"
+      ]
+    },
+    {
+      "id": "junie.mcp-config",
+      "subject": "junie",
+      "fact": "JetBrains Junie CLI: user file ~/.junie/mcp/mcp.json (Windows path and JUNIE_HOME effect inferred); root mcpServers {command,args,env}; no timeout fields documented (write none). Its MCP installation assistant searches the official MCP Registry. Skills: ~/.junie/skills and ~/.agents/skills. Confidence medium.",
+      "source_url": "https://junie.jetbrains.com/docs/junie-cli-mcp-configuration.html",
+      "verified_on": "2026-10-12",
+      "affects": [
+        "horosa-skill/src/horosa_skill/clients_extra.py",
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        "horosa-skill/src/horosa_skill/skill_install.py"
+      ]
+    },
+    {
+      "id": "qwen.mcp-config",
+      "subject": "qwen",
+      "fact": "Qwen Code v0.25.1: user file ~/.qwen/settings.json (QWEN_HOME overrides); JSON with comments (no trailing commas), holds all settings; root mcpServers {command,args,env,discoveryTimeoutMs (connect+list, default 30000 stdio, 100..300000), timeout (tool call, default 600000)}; top-level mcp.allowed / mcp.excluded filter servers. Skills: ~/.qwen/skills and ~/.agents/skills (source).",
+      "source_url": "https://github.com/QwenLM/qwen-code/blob/main/packages/core/src/tools/mcp-discovery-timeout.ts",
+      "verified_on": "2026-10-12",
+      "affects": [
+        "horosa-skill/src/horosa_skill/clients_extra.py",
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        "horosa-skill/src/horosa_skill/skill_install.py"
+      ]
+    },
+    {
+      "id": "kimi.mcp-config",
+      "subject": "kimi",
+      "fact": "Kimi Code CLI 2.1.1: user file ~/.kimi-code/mcp.json (KIMI_CODE_HOME overrides); strict JSON — ONE invalid entry fails the whole file; root mcpServers {command,args,env,startupTimeoutMs (default 30000), toolTimeoutMs (SDK default 60000)}; no `type` (transport inferred). Skills: ~/.kimi-code/skills and ~/.agents/skills; a loose .md in a skills root registers as a skill.",
+      "source_url": "https://github.com/MoonshotAI/kimi-code/blob/@moonshot-ai/kimi-code@2.1.1/packages/agent-core-v2/src/app/bootstrap/bootstrap.ts",
+      "verified_on": "2026-10-12",
+      "affects": [
+        "horosa-skill/src/horosa_skill/clients_extra.py",
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        "horosa-skill/src/horosa_skill/skill_install.py"
+      ]
+    },
+    {
+      "id": "qoder.mcp-config",
+      "subject": "qoder",
+      "fact": "Qoder CLI / new desktop app: user file ~/.qoder/settings.json (QODER_CONFIG_DIR overrides; Windows inferred); JSON with // comments, holds every CLI setting; root mcpServers {command,args,env,timeout ms (connection + request)}; the older Qoder IDE configures MCP only in its UI. Skills: ~/.qoder/skills (~/.agents/skills home vs project undocumented). Confidence medium.",
+      "source_url": "https://docs.qoder.com/cli/mcp-servers.md",
+      "verified_on": "2026-10-12",
+      "affects": [
+        "horosa-skill/src/horosa_skill/clients_extra.py",
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        "horosa-skill/src/horosa_skill/skill_install.py"
+      ]
+    },
+    {
+      "id": "codebuddy.mcp-config",
+      "subject": "codebuddy",
+      "fact": "Tencent CodeBuddy Code: USER scope reads ONLY the first existing of ~/.codebuddy/.mcp.json, ~/.codebuddy/mcp.json (deprecated), ~/.codebuddy.json (legacy), never merged (CODEBUDDY_CONFIG_DIR replaces ~/.codebuddy); JSONC; root mcpServers {type:'stdio', command, args, env}; timeouts only via process env MCP_TIMEOUT / MCP_TOOL_TIMEOUT; over ~30 tools → deferred loading; output cap MAX_MCP_OUTPUT_TOKENS 20000. Skills: ~/.codebuddy/skills. Confidence medium (docs contradict on `type` and deferral).",
+      "source_url": "https://www.codebuddy.cn/docs/cli/mcp",
+      "verified_on": "2026-10-12",
+      "affects": [
+        "horosa-skill/src/horosa_skill/clients_extra.py",
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        "horosa-skill/src/horosa_skill/skill_install.py"
+      ]
+    },
+    {
+      "id": "trae.mcp-config",
+      "subject": "trae",
+      "fact": "TRAE IDE: NO documented user-level file — Settings > MCP > Add > Create Manually, or deep link trae://trae.ai-ide/mcp-import?type=stdio&name=<n>&config=<urlencoded base64 of the entry JSON> (Trae CN: trae-cn://); project .trae/mcp.json only after 'Enable Project MCP'; entry {command,args,env}; timeouts as env strings START_MCP_TIMEOUT_MS / RUN_MCP_TIMEOUT_MS; command must not contain spaces; HARD caps across all servers: 40 tools, 8000 description chars. Skills: ~/.trae/skills (~/.trae-cn/skills for Trae CN).",
+      "source_url": "https://docs.trae.ai/ide/add-mcp-servers",
+      "verified_on": "2026-10-12",
+      "affects": [
+        "horosa-skill/src/horosa_skill/clients_extra.py",
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        "horosa-skill/src/horosa_skill/skill_install.py"
+      ]
+    },
+    {
+      "id": "amp.mcp-config",
+      "subject": "amp",
+      "fact": "Amp: user file ~/.config/amp/settings.json (or .jsonc; JSONC); the root key is the LITERAL top-level string \"amp.mcpServers\" (a nested amp:{mcpServers} is invalid); stdio entry {command,args,env} with additionalProperties:false — no timeout or other keys. Skills: reads ~/.agents/skills, ~/.config/amp/skills, ~/.claude/skills. Verify: `amp mcp doctor`.",
+      "source_url": "https://ampcode.com/cli-settings.schema.json",
+      "verified_on": "2026-10-12",
+      "affects": [
+        "horosa-skill/src/horosa_skill/clients_extra.py",
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        "horosa-skill/src/horosa_skill/skill_install.py"
+      ]
+    },
+    {
+      "id": "warp.mcp-config",
+      "subject": "warp",
+      "fact": "Warp: user file ~/.warp/.mcp.json on every OS (%USERPROFILE%\\.warp\\.mcp.json; Warp deliberately avoids XDG/AppData); strict JSON; root mcpServers {command,args,env}; no timeout field (tool calls hard-coded 30 min); auto-detects saves. Optional auto-spawn of Claude Code / Codex servers can duplicate an entry. Skills: ~/.agents/skills (recommended by Warp).",
+      "source_url": "https://docs.warp.dev/agents/capabilities/mcp.md",
+      "verified_on": "2026-10-12",
+      "affects": [
+        "horosa-skill/src/horosa_skill/clients_extra.py",
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        "horosa-skill/src/horosa_skill/skill_install.py"
+      ]
+    },
+    {
+      "id": "droid.mcp-config",
+      "subject": "droid",
+      "fact": "Factory Droid: user file ~/.factory/mcp.json; root mcpServers {type:'stdio', command, args, env, connectTimeout ms (stdio default 30000), timeout ms (tool call), disabled}; reloads on change. Skills: ~/.factory/skills, ~/.agents/skills — duplicate names in one bucket are invalid configuration (install one copy).",
+      "source_url": "https://docs.factory.com/harness/mcp.md",
+      "verified_on": "2026-10-12",
+      "affects": [
+        "horosa-skill/src/horosa_skill/clients_extra.py",
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        "horosa-skill/src/horosa_skill/skill_install.py"
+      ]
+    },
+    {
+      "id": "augment.mcp-config",
+      "subject": "augment",
+      "fact": "Augment Auggie CLI 0.36.0: user file ~/.augment/settings.json (JSONC, comments preserved by its own writes); root mcpServers {type:'stdio', command, args, env}; no documented timeout keys (bundle: host init waits 15 s then proceeds; calls 600 s between progress, 1800 s total; a 30 s liveness ping during calls). The IDE extensions use their own settings panel. Skills: ~/.augment/skills, ~/.claude/skills, ~/.agents/skills.",
+      "source_url": "https://docs.augmentcode.com/cli/integrations.md",
+      "verified_on": "2026-10-12",
+      "affects": [
+        "horosa-skill/src/horosa_skill/clients_extra.py",
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        "horosa-skill/src/horosa_skill/skill_install.py"
+      ]
+    },
+    {
+      "id": "deepcode.mcp-config",
+      "subject": "deepcode",
+      "fact": "Deep Code 0.4.3 (recommended in DeepSeek API docs): user file ~/.deepcode/settings.json shared with its VS Code extension; STRICT JSON — JSON.parse with catch→null drops the WHOLE file (API key included) on one comment or trailing comma; root mcpServers {command,args,env} only; startup DEEPCODE_MCP_TIMEOUT process env (default 30000); tool calls FIXED at 60000 ms (not configurable). Skills: ~/.deepcode/skills, ~/.agents/skills.",
+      "source_url": "https://github.com/lessweb/deepcode-cli/blob/main/packages/core/src/mcp/mcp-manager.ts",
+      "verified_on": "2026-10-12",
+      "affects": [
+        "horosa-skill/src/horosa_skill/clients_extra.py",
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        "horosa-skill/src/horosa_skill/skill_install.py"
+      ]
+    },
+    {
+      "id": "dsh.mcp-config",
+      "subject": "dsh",
+      "fact": "DeepSeek Harness 0.2.0-rc.2 (developer preview, breaking changes promised): config ~/.dsh/cordis.patch.yml (DSH_HOME) is a YAML LIST of Cordis patch ops that may hold other user patches and !!js tags — do not edit it; ship a standalone patch [{insert:[{id, name:'@deepseek-ai/dsh-mcp-client', config:{serverName, transport:'stdio', command, args, env, toolCallTimeoutMs (default 60000)}}]}] used via `dsh web --patch <file>`; server instructions over 32 KiB are rejected. Skills: ~/.dsh/skills and ~/.agents/skills ($DSH_AGENTS_HOME).",
+      "source_url": "https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.md",
+      "verified_on": "2026-10-12",
+      "affects": [
+        "horosa-skill/src/horosa_skill/clients_extra.py",
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config",
+        "horosa-skill/src/horosa_skill/skill_install.py"
+      ]
+    },
+    {
+      "id": "agent-skills.user-dirs",
+      "subject": "agent-skills",
+      "fact": "User-level Agent Skills folders, 2026-10-12: ~/.agents/skills is read by Cursor, VS Code Copilot, Codex (the documented USER location; $CODEX_HOME/skills deprecated), Gemini CLI (alias, GEMINI_CLI_HOME relocates), Devin Desktop / Windsurf, Cline, Zed (ONLY there), OpenCode, Goose, Junie, Qwen Code, Kimi Code, Amp, Warp, Droid, Augment, Deep Code, dsh, and Copilot CLI unless COPILOT_HOME is set. Own folder only: Claude Code ~/.claude/skills ($CLAUDE_CONFIG_DIR/skills), Kiro ~/.kiro/skills, Qoder ~/.qoder/skills, CodeBuddy ~/.codebuddy/skills, TRAE ~/.trae/skills. Claude Desktop chat/Cowork take skills only as an uploaded ZIP. Cursor / VS Code / Codex also read ~/.claude/skills, so a copy in both folders is listed twice; Droid treats a duplicate name in one bucket as invalid configuration.",
+      "source_url": "https://github.com/openai/codex/blob/main/codex-rs/ext/skills/src/host_roots.rs",
+      "verified_on": "2026-10-12",
+      "affects": [
+        "horosa-skill/src/horosa_skill/skill_install.py",
+        "horosa-skill/src/horosa_skill/surfaces/cli.py",
+        "horosa-skill/src/horosa_skill/client_config"
+      ]
+    },
+    {
+      "id": "opencc.release-1.4.2",
+      "subject": "opencc",
+      "fact": "OpenCC 1.4.2 (PyPI `opencc`, uploaded 2026-08-22, Apache-2.0) ships wheels for macOS x86_64/arm64, manylinux x86_64/aarch64 and win_amd64 only — no win_arm64, so installing it on Windows ARM falls back to a C++ sdist build. Its s2tw / s2hk configs are: normalize CJK compatibility ideographs → mmseg segmentation on STPhrases → (STPhrases ∪ generated regional phrases, then STCharacters) → (TW|HK VariantsPhrases, then Variants). Horosa bundles the text dictionaries instead of the package; without the Horosa term table its longest-match converter equals official s2tw/s2hk on 2 072 209 characters of real output (2026-10-22).",
+      "source_url": "https://pypi.org/pypi/opencc/1.4.2/json",
+      "verified_on": "2026-10-22",
+      "affects": [
+        "horosa-skill/src/horosa_skill/textscript/converter.py",
+        "horosa-skill/src/horosa_skill/textscript/data/opencc/SOURCE.json"
+      ]
+    },
+    {
+      "id": "mcpb.user-config-boolean",
+      "subject": "mcpb",
+      "fact": "MCPB manifest user_config types are string / number / boolean (checkbox) / directory / file, referenced as ${user_config.KEY} in env; the spec does not state the string form a boolean takes when substituted, so a boolean setting must be parsed leniently (true/false, 1/0, on/off, yes/no).",
+      "source_url": "https://github.com/modelcontextprotocol/mcpb/blob/main/MANIFEST.md",
+      "verified_on": "2026-10-22",
+      "affects": [
+        "horosa-skill/manifest.json",
+        "horosa-skill/src/horosa_skill/textscript/__init__.py"
+      ]
+    },
+    {
+      "id": "claude-code.plugin-userconfig-types",
+      "subject": "claude-code",
+      "fact": "Claude Code plugin.json userConfig options are strict objects (unknown key = plugin fails to load) with type string / number / boolean / directory / file; `options` (a fixed picker for string fields) needs Claude Code v2.1.271+ and older versions cannot load a plugin that declares it, so Horosa uses a boolean for the Traditional-output switch.",
+      "source_url": "https://code.claude.com/docs/en/plugins-reference",
+      "verified_on": "2026-10-22",
+      "affects": [
+        ".claude-plugin/plugin.json",
+        ".claude-plugin/mcp.json"
+      ]
+    },
+    {
+      "id": "windows.smart-app-control",
+      "subject": "windows",
+      "fact": "Windows 11 Smart App Control blocks apps that are unsigned and whose cloud reputation is unknown (state in HKLM\\SYSTEM\\CurrentControlSet\\Control\\CI\\Policy VerifiedAndReputablePolicyState: 0 off / 1 on / 2 evaluation); a blocked spawn surfaces as os error 4551 (ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION). uv/uvx per-environment Scripts\\*.exe trampolines can be blocked while the interpreter's own python.exe is not. Recent Windows updates let users re-enable it from Windows Security without a clean install. The decision is cached per file instance and re-evaluated: an identical-hash unsigned .pyd (astropy 7.2.0 time/_parse_times.pyd) loaded in one runtime root and was refused (DLL load failed: An Application Control policy has blocked this file) in a freshly installed one.",
+      "source_url": "https://support.microsoft.com/en-us/topic/what-is-smart-app-control-285ea03d-fa88-4d56-882e-6698afdb7003",
+      "verified_on": "2026-10-23",
+      "affects": [
+        "horosa-skill/src/horosa_skill/__main__.py",
+        "horosa-skill/src/horosa_skill/client_config/payload.py",
+        "horosa-skill/src/horosa_skill/surfaces/setup_flow.py",
+        "horosa-skill/src/horosa_skill/runtime/manager.py",
+        "horosa-skill/scripts/run_ci_gates.py",
+        "horosa-skill/scripts/runtime_templates/windows/python/_horosa_app_control.py"
+      ]
+    },
+    {
+      "id": "reportlab.cjk-fonts-and-kinsoku",
+      "subject": "reportlab",
+      "fact": "reportlab TTFont loads TrueType-outline .ttf/.ttc only (CFF-outline .otf such as macOS STIX*.otf raises TTFError 'postscript outlines are not supported'); renderPM PNG export needs the separate rlPyCairo/_renderPM backend (absent in a plain install); Pillow is a hard reportlab dependency, so DOCX images are drawn with Pillow instead. reportlab.lib.textsplit.ALL_CANNOT_START contains ASCII , : ; but not the full-width ，：；？！）》, so wordWrap='CJK' still starts lines with them unless the table is extended. macOS system font coverage measured 2026-10-24: Songti.ttc lacks Latin Extended Additional (ḥ ṭ ṇ ṃ), Yijing hexagrams (U+4DC0–4DFF), trigrams, planet symbols and ✓ ✗ ⚠ ⟷; Supplemental/Arial Unicode.ttf covers ḥṭṇṃṛṣḍṁ ✓✗ ☰☴ ♃☿♄ ▶◀⇄; Apple Symbols.ttf covers ䷀–䷿ ⚊⚋ ⚠ ⟷ ♃☿♄; neither covers ȧ ᵢ or CJK Ext-B (Windows: SimSun-ExtB / MingLiU-ExtB; Segoe UI Symbol for symbols).",
+      "source_url": "https://docs.reportlab.com/reportlab/userguide/ch3_fonts/",
+      "verified_on": "2026-10-24",
+      "affects": [
+        "horosa-skill/src/horosa_skill/reports/renderers.py",
+        "horosa-skill/src/horosa_skill/reports/figures.py"
+      ]
+    },
+    {
+      "id": "sqlite.fts5-cjk-bm25",
+      "subject": "sqlite",
+      "fact": "SQLite FTS5: the `trigram` tokenizer (SQLite ≥ 3.34) cannot match substrings shorter than 3 characters through the index (2-character Chinese terms such as 命宫 find nothing), and `unicode61` treats a whole run of CJK characters as one token; the built-in bm25() clamps IDF to 1e-6 for any term present in more than half of the rows (fts5_aux.c), so scores are only comparable within one query; `contentless_delete=1` needs SQLite ≥ 3.43; FTS5 operators (AND / OR / NOT / NEAR) are upper-case only. python-build-standalone (uv) and python.org Windows builds compile FTS5 in.",
+      "source_url": "https://www.sqlite.org/fts5.html",
+      "verified_on": "2026-10-27",
+      "affects": [
+        "horosa-skill/src/horosa_skill/knowledge/index.py"
+      ]
+    },
+    {
+      "id": "sqlite.fts5-trigram-detail-none",
+      "subject": "sqlite",
+      "fact": "FTS5 trigram tables created with `detail=none` keep no position lists (about half the size of `detail=full` for chart text: 2000 bazi bodies 23 MB vs 47 MB) but refuse multi-trigram phrase queries in MATCH (\"phrase queries are not supported (detail!=full)\"); `col GLOB '*term*'` and `col LIKE '%term%'` with a term of 3+ characters are still answered through the index (query plan `INDEX 0:G0` / `L0`). Re-checked by experiment on SQLite 3.45.3.",
+      "source_url": "https://www.sqlite.org/fts5.html#the_trigram_tokenizer",
+      "verified_on": "2026-11-12",
+      "affects": [
+        "horosa-skill/src/horosa_skill/memory/store.py"
+      ]
+    },
+    {
+      "id": "mcp-spec.resource-link",
+      "subject": "mcp-spec",
+      "fact": "The `resource_link` content block (uri, name, mimeType, size) in tool results entered the MCP specification with revision 2025-06-18; servers should only send it to clients that negotiated that revision or later. Current revision 2026-07-28 (MRTR `input_required` replaces server-initiated elicitation; needs SDK 2.x).",
+      "source_url": "https://modelcontextprotocol.io/specification/2025-06-18/server/tools",
+      "verified_on": "2026-10-27",
+      "affects": [
+        "horosa-skill/src/horosa_skill/surfaces/mcp_runner.py",
+        "horosa-skill/src/horosa_skill/service/api/reports.py"
+      ]
+    },
+    {
+      "id": "claude-code.tool-search",
+      "subject": "claude-code",
+      "fact": "Claude Code defers MCP tools behind tool search by default; `_meta[\"anthropic/alwaysLoad\"]: true` keeps a tool loaded; tool search matches only the first 4,096 characters of a tool description, so keywords go first; MCP results above 10k tokens warn and are capped at MAX_MCP_OUTPUT_TOKENS (25,000).",
+      "source_url": "https://code.claude.com/docs/en/mcp",
+      "verified_on": "2026-10-27",
+      "affects": [
+        "horosa-skill/src/horosa_skill/surfaces/mcp_surface.py",
+        "horosa-skill/src/horosa_skill/surfaces/mcp_server.py",
+        "horosa-skill/src/horosa_skill/knowledge/user.py"
+      ]
+    },
+    {
+      "id": "reportlab.tagged-pdf",
+      "subject": "reportlab",
+      "fact": "Open-source reportlab (4.4.x / 5.1.0) does not create tagged PDF: StructTreeRoot / MarkInfo are only allowed catalog keys, tagging lives in the commercial rlextra. The Table renderCB hook fires startTable/startBG/endBG/startRow/startCell/endCell/startLines/endLines/endTable; Paragraph.split builds parts with self.__class__; Python True is formatted as `True` (write b\"true\"); PDFPage writable keys come from __NoDefault__.",
+      "source_url": "https://docs.reportlab.com/pdf-accessibility/",
+      "verified_on": "2026-10-27",
+      "affects": [
+        "horosa-skill/src/horosa_skill/reports/pdf_tagging.py",
+        "horosa-skill/src/horosa_skill/reports/renderers.py"
+      ]
+    },
+    {
+      "id": "reportlab.tounicode-astral",
+      "subject": "reportlab",
+      "fact": "reportlab 4.4.10 (read in the installed src/reportlab/pdfbase/ttfonts.py) builds each embedded TrueType subset's ToUnicode CMap in the module-level makeToUnicodeCMap(fontname, subset), called by name from TTFont.addObjects, writing every entry as \"<%02X> <%04X>\" % (index, code_point): a code point above U+FFFF (CJK Ext-B drawn by SimSun-ExtB, emoji drawn by Segoe UI Symbol) comes out as 5 hex digits instead of a UTF-16BE surrogate pair, so the glyph shows but copy / search / extraction return garbage (pypdf: 'Odd-length string'). The renderer rewrites only those entries.",
+      "source_url": "https://pypi.org/project/reportlab/4.4.10/",
+      "verified_on": "2026-11-13",
+      "affects": [
+        "horosa-skill/src/horosa_skill/reports/renderers.py"
+      ]
+    },
+    {
+      "id": "pikepdf.macos-floor",
+      "subject": "pikepdf",
+      "fact": "pikepdf macOS arm64 wheels need macOS 14 (10.0–10.13) or macOS 15 (10.14+, e.g. 10.17.0); win_amd64 / win_arm64 cp312 wheels exist (with lxml 6.1.3). Not used as a dependency because Horosa promises macOS 11+.",
+      "source_url": "https://pypi.org/project/pikepdf/#files",
+      "verified_on": "2026-10-27",
+      "affects": [
+        "horosa-skill/src/horosa_skill/reports/pdf_tagging.py"
+      ]
+    },
+    {
+      "id": "onnxruntime.vectors-extra",
+      "subject": "onnxruntime",
+      "fact": "onnxruntime ships cp312 win_arm64 wheels from 1.24.2 (1.31.1: macOS arm64 20.9 MB, win_amd64 14.9 MB, win_arm64 14.7 MB); tokenizers and numpy have all three; fastembed depends on py-rust-stemmers, which has no win_arm64 wheel. BAAI/bge-small-zh-v1.5 int8 ONNX via Xenova @75c43b06 = 23.9 MB (MIT), query instruction 为这个句子生成表示以用于检索相关文章：, CLS pooling.",
+      "source_url": "https://pypi.org/project/onnxruntime/#files",
+      "verified_on": "2026-10-27",
+      "affects": [
+        "horosa-skill/src/horosa_skill/knowledge/vectors.py",
+        "horosa-skill/pyproject.toml"
+      ]
+    },
+    {
+      "id": "uv.extras-launchers",
+      "subject": "uv",
+      "fact": "uv 0.10.7: `uvx --from 'horosa-skill[vectors]@file:///…/x.whl' <cmd>` and the spaced form both install the extra; a percent-encoded path resolves; `uv run --directory D --extra vectors` works and a later plain `uv run` keeps the extra's packages (inexact sync). zsh treats an unquoted `name[extra]@url` as a glob: `no matches found`.",
+      "source_url": "https://docs.astral.sh/uv/concepts/tools/",
+      "verified_on": "2026-11-06",
+      "affects": [
+        "horosa-skill/src/horosa_skill/client_config/payload.py",
+        "horosa-skill/src/horosa_skill/surfaces/setup_flow.py"
+      ]
+    },
+    {
+      "id": "typer.click-85",
+      "subject": "typer",
+      "fact": "click 8.5.0 (2026-08-26) with typer 0.24.x drops positional-argument help from `--help`; typer 0.27.3 vendors its own click (typer._click) and renders it correctly — its command objects are no longer instances of the installed click.Group, so walk command trees by duck typing (`hasattr(cmd, 'commands')`).",
+      "source_url": "https://pypi.org/project/typer/",
+      "verified_on": "2026-10-27",
+      "affects": [
+        "horosa-skill/pyproject.toml",
+        "horosa-skill/tests/test_agent_surface_audit.py",
+        "horosa-skill/tests/test_skill_shell_contract.py"
+      ]
+    },
+    {
+      "id": "mcp-python-sdk.sse-event-limit",
+      "subject": "mcp-python-sdk",
+      "fact": "mcp 2.3.0 streamable-HTTP client caps one Server-Sent Event at DEFAULT_MAX_SSE_EVENT_SIZE = 1024 * 1024 bytes (src/mcp/client/streamable_http.py:61; `max_sse_event_size=` overrides); a larger tool result fails the whole call with 'SSE stream failed: Server-sent event exceeded the 1048576 byte limit'. A tool result travels as one event, and its JSON text block is ~2.9x the compact data size, so the skill keeps each result under MCP_RESULT_WIRE_BUDGET (900 000 B).",
+      "source_url": "https://github.com/modelcontextprotocol/python-sdk/blob/main/src/mcp/client/streamable_http.py",
+      "verified_on": "2026-10-30",
+      "affects": [
+        "horosa-skill/src/horosa_skill/surfaces/mcp_runner.py",
+        "horosa-skill/tests/test_mcp_result_budget.py"
+      ]
+    },
+    {
+      "id": "windows.append-data-atomic",
+      "subject": "windows",
+      "fact": "NtWriteFile ignores ByteOffset and writes at the current end of file when the handle was opened with only FILE_APPEND_DATA (no FILE_WRITE_DATA); having only FILE_APPEND_DATA access does not allow writing anywhere except the end-of-file mark. The MSVC CRT's O_APPEND (used by Python os.open / open(..., 'a')) instead opens with write access and seeks to the end before each write, so concurrent appenders from several processes overwrite each other.",
+      "source_url": "https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntwritefile",
+      "verified_on": "2026-10-31",
+      "affects": [
+        "horosa-skill/src/horosa_skill/appendlog.py",
+        "horosa-skill/src/horosa_skill/tracing.py",
+        "horosa-skill/src/horosa_skill/decisions/ledger.py"
+      ]
+    },
+    {
+      "id": "windows.reserved-names-and-ntlm",
+      "subject": "windows",
+      "fact": "Reserved device names: CON, PRN, AUX, NUL, COM1-9, COM¹²³, LPT1-9, LPT¹²³, also when followed by an extension (NUL.txt is NUL); CreateFile treats CONIN$ / CONOUT$ as console handles. '\\\\?\\' disables path parsing, '\\\\.\\' reaches the device namespace, '\\\\server\\share' is UNC, and 'C:x' is drive-relative. The 'Restrict NTLM: Outgoing NTLM traffic to remote servers' policy defaults to Not defined = Allow all, so opening a UNC path can send NTLM authentication to that server.",
+      "source_url": "https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file",
+      "verified_on": "2026-11-05",
+      "affects": [
+        "horosa-skill/src/horosa_skill/winpaths.py",
+        "horosa-skill/src/horosa_skill/service/api/reports.py",
+        "horosa-skill/src/horosa_skill/knowledge/user.py"
+      ]
+    },
+    {
+      "id": "mcp-spec.image-content",
+      "subject": "mcp-spec",
+      "fact": "Tool results may carry image content blocks {type: 'image', data: <base64>, mimeType} in every revision since 2024-11-05 (unlike resource_link, which needs 2025-06-18), so the PNG chart export sends them to all clients without protocol gating; the base64 travels inside the one result message and counts toward MCP_RESULT_WIRE_BUDGET.",
+      "source_url": "https://modelcontextprotocol.io/specification/2024-11-05/server/tools",
+      "verified_on": "2026-11-08",
+      "affects": [
+        "horosa-skill/src/horosa_skill/surfaces/mcp_runner.py",
+        "horosa-skill/tests/test_report_chart_png.py"
+      ]
+    },
+    {
+      "id": "claude-code.mcp-images",
+      "subject": "claude-code",
+      "fact": "When an MCP tool returns a PNG/JPEG/GIF/WebP image, Claude sees it inline (the inline copy may be scaled down or compressed) and Claude Code v2.1.283+ also saves the original bytes under the session's tool-results directory; tools that return image data stay subject to MAX_MCP_OUTPUT_TOKENS (default 25,000) even when they declare anthropic/maxResultSizeChars.",
+      "source_url": "https://code.claude.com/docs/en/mcp",
+      "verified_on": "2026-11-08",
+      "affects": [
+        "horosa-skill/src/horosa_skill/surfaces/mcp_runner.py",
+        "horosa-skill/src/horosa_skill/reports/chart_png.py"
+      ]
+    },
+    {
+      "id": "claude-code.mcp-result-size",
+      "subject": "claude-code",
+      "fact": "Claude Code writes an MCP tool result longer than 50,000 characters to a file in the session's tool-results directory and gives the model only a short reference to it (unless the tool declares a larger `_meta[\"anthropic/maxResultSizeChars\"]`, accepted up to 500,000); results above 10k tokens warn and are capped at MAX_MCP_OUTPUT_TOKENS (25,000). Horosa's MCP default (reading view) keeps every result under 48,000 characters and ~20,000 estimated tokens and declares no larger maxResultSizeChars: the raw engine tree (`response_view: \"full\"`) is better spilled to a file than put in context. Verified by the 2026-11-11 deep-review audit from the source page.",
+      "source_url": "https://code.claude.com/docs/en/mcp",
+      "verified_on": "2026-11-11",
+      "affects": [
+        "horosa-skill/src/horosa_skill/result_view.py",
+        "horosa-skill/src/horosa_skill/surfaces/mcp_runner.py",
+        "horosa-skill/src/horosa_skill/config.py"
+      ]
+    },
+    {
+      "id": "claude-api.vision-limits",
+      "subject": "claude-api",
+      "fact": "Images are at most 8000x8000 px; a request with more than 20 images applies a stricter per-image limit (keep each side <= 3000 px); standard-tier models use a native long edge of 1568 px (1568 visual tokens), Claude 4.7+ 2576 px (4784); cost is ceil(w/28) x ceil(h/28) visual tokens; per-image size 10 MB base64 on the Claude API, 5 MB on Bedrock.",
+      "source_url": "https://platform.claude.com/docs/en/build-with-claude/vision",
+      "verified_on": "2026-11-08",
+      "affects": [
+        "horosa-skill/src/horosa_skill/reports/chart_png.py",
+        "horosa-skill/src/horosa_skill/surfaces/mcp_runner.py"
+      ]
+    },
+    {
+      "id": "rfc5545.icalendar",
+      "subject": "rfc5545",
+      "fact": "iCalendar content lines end in CRLF; lines SHOULD NOT exceed 75 octets and are folded by CRLF + one linear white-space (unfolders must restore UTF-8 sequences split mid-character, so writers should not split them); TEXT escapes backslash, semicolon, comma and newline (\\\\ \\; \\, \\n); VEVENT requires exactly one UID and one DTSTAMP (UTC); DATE is YYYYMMDD with a 4-digit year (0001-9999 representable); DTEND;VALUE=DATE is exclusive.",
+      "source_url": "https://www.rfc-editor.org/rfc/rfc5545",
+      "verified_on": "2026-11-08",
+      "affects": [
+        "horosa-skill/src/horosa_skill/reports/calendar_ics.py",
+        "horosa-skill/tests/ics_validator.py"
+      ]
+    },
+    {
+      "id": "tz-lookup.6.1.25",
+      "subject": "tz-lookup",
+      "fact": "npm tz-lookup 6.1.25 (the exact version + integrity upstream 星阙's astrostudyui package-lock pins: sha512-fFewT9o1uDzsW1QnUU1ValqaihFnwiUiiHr1S79/fxOzKXYYvX+EHeRnpvQJ9B3Qg67wPXT6QF2Esc4pFOrvLg==). License read from the package itself: package.json \"license\": \"CC0-1.0\" and LICENSE = CC0 1.0 Universal. Pure JS, no install scripts, single file tz.js (73 KB), CommonJS default export tzlookup(lat, lon) -> IANA name; throws on NaN / out-of-range input. README: boundaries come from Evan Siroky's timezone-boundary-builder (rebuild.sh pins release 2019b; 'last updated on 6 Jan 2019'), lossy-compressed, so results near borders far from populated areas can be off. Upstream utils/timezone.js wraps it (ianaTimezoneAt) and the skill vendors that wrapper; offsets then come from the bundled Node's ICU (Intl longOffset) plus upstream TZ_RULE_OVERRIDES.",
+      "source_url": "https://registry.npmjs.org/tz-lookup/-/tz-lookup-6.1.25.tgz",
+      "verified_on": "2026-11-08",
+      "affects": [
+        "horosa-skill/horosa-core-js/package.json",
+        "horosa-skill/horosa-core-js/package-lock.json",
+        "horosa-skill/horosa-core-js/src/vendor/utils/timezone.js",
+        "horosa-skill/scripts/verify_runtime_release.py",
+        "horosa-skill/src/horosa_skill/service/api/place.py"
+      ]
+    },
+    {
+      "id": "kinastro.cities-library-mit",
+      "subject": "kinastro",
+      "fact": "The offline city library the skill vendors verbatim from upstream (astrostudyui/src/data/citiesFull.json, 49 981 entries {n,e,r,p,y,x}; plus cities.json 96 entries and cityTradSimpMap.json) is generated by upstream scripts/build-cities.js from Horosa-Web/vendor/kinastro/tools/cities/{cities.json, china_cities.json}; kinastro's LICENSE is MIT ('Copyright (c) kentang2017 and contributors'). Coordinates are WGS84 (no GCJ-02 shift; upstream place.js says so). The skill never regenerates it: re-vendor copies the upstream output byte-for-byte (contracts/vendor_manifest.json place/data/*).",
+      "source_url": "https://github.com/Horace-Maxwell/Horosa-Web-App-comprehensively-improved-MacOS/blob/10fb75de/Horosa-Web/vendor/kinastro/LICENSE",
+      "verified_on": "2026-11-08",
+      "affects": [
+        "horosa-skill/contracts/vendor_manifest.json",
+        "horosa-skill/horosa-core-js/src/vendor/place/data/citiesFull.json",
+        "horosa-skill/src/horosa_skill/service/api/place.py"
+      ]
+    },
+    {
+      "id": "svglib.font-mapping",
+      "subject": "svglib",
+      "fact": "svglib 2.4.0: FontMap.register_font(family, rlgFontName=X) only maps onto the 14 standard PDF fonts; a non-standard rlgFontName without font_path is not stored and lookups fall back to Helvetica. Numeric font-weight values become part of the lookup name (family-400), also falling back. fill=\"transparent\" renders as black; CSS var() is not resolved.",
+      "source_url": "https://github.com/deeplook/svglib/blob/main/svglib/fonts.py",
+      "verified_on": "2026-11-09",
+      "affects": [
+        "horosa-skill/src/horosa_skill/reports/app_charts.py"
+      ]
+    },
+    {
+      "id": "tarot-art.provenance",
+      "subject": "tarot card pictures (upstream public/tarot-art)",
+      "fact": "144 JPEG scans (300 px high, ~1.96 MB): RWS 78 (rws/ar00-21, wa/cu/sw/pe 02-10, ac/pa/kn/qu/ki), and the 22 majors each of TdM, Wirth and Egyptian (named by card sid). Copied byte for byte from the public upstream at commit 10fb75de980bb0a6e0d1f50c7ee93cc97a88d7de (first added in b3dffa2e, release v3.0.0, 2026-06-29) into src/horosa_skill/data/tarot-art/ with per-file sha256 in manifest.json. Upstream records NO source and NO licence for the scan files themselves: no README, attribution file or commit message names where they were scanned or downloaded from. The only statement is a code comment in components/tarot/engine/cardArt.js asserting the decks are public domain (RWS / Pamela Colman Smith 1909, Tarot de Marseille / Nicolas Conver 1760, Oswald Wirth 1889, Falconnier 1896); that comment concerns the historic designs, not these particular scans, and is not independently verified here — public-domain status of the files is NOT a verified fact. The maintainer stated on 2026-11-09 that the skill may ship them. The app's on-board attribution line (PUBLIC_DOMAIN_ATTRIBUTION) is about the card meanings text (Waite 1911), not the pictures.",
+      "source_url": "https://github.com/Horace-Maxwell/Horosa-Web-App-comprehensively-improved-MacOS/tree/10fb75de980bb0a6e0d1f50c7ee93cc97a88d7de/Horosa-Web/astrostudyui/public/tarot-art",
+      "verified_on": "2026-11-09",
+      "affects": [
+        "horosa-skill/src/horosa_skill/data/tarot-art/manifest.json",
+        "horosa-skill/scripts/sync_tarot_art.py",
+        "horosa-skill/horosa-core-js/app-charts/adapters/tarot.js",
+        "horosa-skill/src/horosa_skill/reports/app_charts.py"
+      ]
+    },
+    {
+      "id": "cldr.region-names-48",
+      "subject": "cldr",
+      "fact": "Country names used as place qualifiers (horosa-core-js/src/tools/placeData/regions.json) come from CLDR 48.0 through Node 26.7.0's ICU 78.3 (process.versions.cldr / icu): Intl.DisplayNames type 'region', locales en / zh / zh-Hant, styles long + short, for every ISO 3166-1 alpha-2 code that citiesFull.json uses (227). Examples read locally: US → 'United States' / 'US' / '美国' / '美國'; GB short → 'UK'; HK → 'Hong Kong SAR China' / 'Hong Kong' / '中国香港特别行政区'; TW → 'Taiwan' / '台湾' / '台灣'; KR zh-Hant → '南韓'. A different Node/ICU may spell some names differently, so scripts/gen_place_regions.mjs --check is a maintainer tool, not a CI gate; the committed JSON is what ships.",
+      "source_url": "https://cldr.unicode.org/downloads/cldr-48",
+      "verified_on": "2026-11-12",
+      "affects": [
+        "horosa-skill/scripts/gen_place_regions.mjs",
+        "horosa-skill/horosa-core-js/src/tools/placeData/regions.json",
+        "horosa-skill/horosa-core-js/src/tools/placeResolve.js"
+      ]
+    },
+    {
+      "id": "markdown-it-py.commonmark-gfm",
+      "subject": "markdown-it-py",
+      "fact": "markdown-it-py 4.0.0 (MIT; pure Python, depends only on mdurl) was already in the lock via mcp[cli] -> typer -> rich and is declared directly since v0.50.0. MarkdownIt('commonmark', {'html': False, 'breaks': True}).enable(['table', 'strikethrough']) gives GFM pipe tables (th/td carry style='text-align:…') and ~~strike~~ (s_open/s_close); with html False raw HTML stays a text token (so `<br>` must be recognised by hand); breaks True turns single newlines into softbreak tokens; validateLink drops javascript: / vbscript: / file: / data: link targets, leaving the source text as literal text.",
+      "source_url": "https://markdown-it-py.readthedocs.io/en/latest/using.html",
+      "verified_on": "2026-11-12",
+      "affects": [
+        "horosa-skill/src/horosa_skill/reports/markdown.py",
+        "horosa-skill/pyproject.toml"
+      ]
+    },
+    {
+      "id": "github-runner-images.ubuntu-fonts",
+      "subject": "github-runner-images",
+      "fact": "The ubuntu-24.04 (ubuntu-latest) toolset installs no CJK font: the only font package named in apt.common_packages / apt.cmd_packages is fonts-noto-color-emoji, so /usr/share/fonts/opentype/noto/NotoSansCJK-*.ttc is absent and report PDFs fall back to reportlab's non-embedded CID fonts there (the CI `test` job failed 6 font-dependent tests on v0.50.0 that were green on macOS).",
+      "source_url": "https://github.com/actions/runner-images/blob/main/images/ubuntu/toolsets/toolset-2404.json",
+      "verified_on": "2026-11-12",
+      "affects": [
+        "horosa-skill/tests/conftest.py",
+        "horosa-skill/src/horosa_skill/reports/renderers.py"
+      ]
+    },
+    {
+      "id": "adobe.cid-character-collections",
+      "subject": "reportlab",
+      "fact": "reportlab's built-in CID fonts STSong-Light (Adobe-GB1, UniGB-UCS2-H) and MSung-Light (Adobe-CNS1, UniCNS-UCS2-H) are never embedded and carry no cmap (CIDTypeFace has no charToGlyph). Adobe-GB1 Supplement 2 covers GBK (GB 13000.1) and Supplement 4 GB 18030-2000; Adobe-CNS1 covers Big Five and Hong Kong SCS 1999/2001/2004/2008/2016. The renderer therefore treats a code point as drawable in those fonts iff it encodes in Python's `gbk` / `big5hkscs` codec.",
+      "source_url": "https://github.com/adobe-type-tools/Adobe-GB1",
+      "verified_on": "2026-11-12",
+      "affects": [
+        "horosa-skill/src/horosa_skill/reports/renderers.py",
+        "horosa-skill/src/horosa_skill/reports/app_charts.py"
+      ]
+    }
+  ]
+}

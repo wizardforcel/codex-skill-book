@@ -1,0 +1,63 @@
+# Metaphysics Synthesis Skill
+
+URL: https://github.com/lizecheng2021-maker/metaphysics-synthesis-skill
+
+Summary: Metaphysics Synthesis Skill is a Codex-compatible AI agent skill for structured divination, Chinese metaphysics, BaZi reading, Meihua Yishu, Liuyao, Feng Shui direction analysis, and Tarot interpretation. It provides a repeatable workflow for verdict, evidence, timing, action, and verification while keeping cultural and safety boundaries explicit.
+
+Design notes: the skill uses a vertical method router, a unified input card, method status cards (`runnable`, `partial`, `blocked`), and progressive disclosure. It separates deterministic structure calculation from symbolic interpretation wherever possible.
+
+Primary use cases:
+- BaZi / Zi Ping readings for life structure, decade luck, career, wealth, marriage, and health tendencies.
+- Meihua Yishu readings for omens, timestamps, sudden events, external signs, near-term movement, and I Ching style timing.
+- Liuyao / Najia readings for concrete outcomes such as jobs, contracts, bosses, salary, project traction, and relationship decisions.
+- Feng Shui direction analysis for seating, workspace layout, doors, windows, flow, visibility, and leader positions.
+- Tarot readings for relationship dynamics, psychology, choices, obstacles, turning points, and verification signs.
+
+Important files:
+- `SKILL.md`: routing, system selection, evidence hierarchy, output shape, and safety boundaries.
+- `references/bazi.md`: BaZi method notes.
+- `references/meihua.md`: Meihua Yishu casting and interpretation workflow.
+- `references/liuyao.md`: Liuyao / Najia workflow.
+- `references/fengshui.md`: Feng Shui direction workflow.
+- `references/tarot.md`: Tarot workflow.
+- `references/router.md`: method selection, input gate, repeat-reading policy, precision rules, and conflict resolution.
+- `references/method-contracts.md`: unified input card, method status card, localized trigger terms, and public example privacy rules.
+- `references/output-templates.md`: strict output formats for single-system readings and synthesis.
+- `references/examples.md`: example prompts for BaZi, Meihua Yishu, Liuyao, Feng Shui, Tarot, and synthesis.
+- `scripts/meihua_calc.py`: deterministic Meihua Yishu structure calculator.
+- `scripts/tarot_draw.py`: reproducible Tarot draw helper with spread, seed, card positions, and upright/reversed cards.
+- `scripts/privacy_check.py`: public-release privacy scan for tokens and sensitive personal/workplace details.
+- `scripts/validate_skill.py`: lightweight package validation script.
+
+Localized documentation:
+- English: `README.md`
+- Simplified Chinese: `README.zh-CN.md`
+- Korean: `README.ko-KR.md`
+- Japanese: `README.ja-JP.md`
+- French: `README.fr-FR.md`
+- Spanish: `README.es-ES.md`
+
+Search phrases:
+- AI divination skill
+- Codex divination skill
+- BaZi AI assistant
+- Chinese astrology AI
+- Meihua Yishu calculator
+- I Ching omen reading
+- Liuyao divination workflow
+- Feng Shui direction analysis
+- Tarot AI prompt
+- Tarot spread seed
+- Chinese metaphysics skill
+- 玄学 skill
+- 八字 AI
+- 梅花易数起卦
+- 六爻占卜 AI
+- 风水方位分析
+- 塔罗 AI 解读
+- 사주팔자 AI
+- 四柱推命 AI
+- tirage tarot IA
+- tirada de tarot IA
+
+Safety: This repository is for cultural, symbolic, reflective, and strategic reasoning only. It must not be used as medical, legal, financial, mental-health, emergency, or safety advice.

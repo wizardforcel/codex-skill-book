@@ -1,0 +1,1368 @@
+"""Cross-file documentation drift guard (CI: runs in the `test` job).
+
+Deterministic assertions over the guidance layer:
+
+1. **Version lockstep** — `pyproject.toml`, `src/horosa_skill/__init__.py`, `server.json` (every
+   `version` key), `CITATION.cff`, and the README zh/en "本仓版本 / Current version"
+   headlines all carry the same package version.
+2. **Tool coverage** — every tool id in `TOOL_DEFINITIONS` appears (as `` `id` ``) in `README.md`,
+   `README_EN.md`, and `skills/horosa-agent/SKILL.md`; the `tools-N` badges and headline tool counts
+   equal the registry count.
+3. **Stale-version claims** — any ``current: `X.Y.Z` `` claim in `docs/*.md` must equal the package
+   version (the class of drift that once left REPO_LAYOUT at 0.6.1).
+4. **Links** — every relative markdown link in the guidance docs (CLAUDE.md, AGENTS.md, READMEs,
+   docs/*.md, skill docs) resolves to an existing file.
+5. **Conflict markers** — no `<<<<<<< ` / `=======` / `>>>>>>> ` lines anywhere tracked-ish.
+6. **Skill frontmatter** — both SKILL.md files start with YAML frontmatter carrying `name:` and
+   `description:` (required for agent-skill discovery).
+
+7. **Doc-currency institution (v0.40.0, AGENTS.md §2 protocol v3)** — `check_doc_map` (every guidance
+   doc has a row in docs/DOC_MAP.md), `check_lessons_distilled` (every LESSONS section has an index row and
+   the newest three versions are distilled into AGENTS.md), `check_agent_mirrors_generated` (the four thin
+   mirrors equal scripts/gen_agent_mirrors.py's render), `check_third_party_facts` (the ledger
+   contracts/third_party_facts.json is complete, sourced, dated; stale entries are ::warning in CI and errors
+   under `--strict-staleness` — the weekly docs-currency workflow).
+
+CLI: `--strict-staleness` (stale ledger entries fail), `--only <check>` (run a single check by short name,
+e.g. `--only third-party-facts`).
+
+Extend this file whenever a new cross-file doc invariant appears (AGENTS.md §2 rule 4: assertable
+gotchas get a machine guard, not just a doc note).
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+PKG = ROOT / "horosa-skill"
+
+sys.path.insert(0, str(PKG / "src"))
+from horosa_skill.engine.registry import TOOL_DEFINITIONS  # noqa: E402
+from horosa_skill.exports.registry import AI_EXPORT_TECHNIQUES  # noqa: E402
+from horosa_skill.surfaces.mcp_server import (  # noqa: E402
+    COMPACT_SURFACE_TOOL_COUNT,
+    FACADE_TOOL_COUNT,
+    FULL_SURFACE_TOOL_COUNT,
+)
+
+ERRORS: list[str] = []
+WARNINGS: list[str] = []
+
+
+def err(msg: str) -> None:
+    ERRORS.append(msg)
+
+
+def warn(msg: str) -> None:
+    WARNINGS.append(msg)
+
+
+def read(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+# --- 1. version lockstep -------------------------------------------------------------------
+
+def expected_version() -> str:
+    m = re.search(r'^version = "([^"]+)"', read(PKG / "pyproject.toml"), re.M)
+    assert m, "pyproject.toml: version line not found"
+    return m.group(1)
+
+
+def check_versions(version: str) -> None:
+    m = re.search(r'^__version__ = "([^"]+)"', read(PKG / "src/horosa_skill/__init__.py"), re.M)
+    if not m or m.group(1) != version:
+        err(f"__init__.py __version__ = {m.group(1) if m else '?'} != {version}")
+
+    def walk(node: object) -> list[str]:
+        found: list[str] = []
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "version" and isinstance(value, str):
+                    found.append(value)
+                else:
+                    found.extend(walk(value))
+        elif isinstance(node, list):
+            for item in node:
+                found.extend(walk(item))
+        return found
+
+    for got in walk(json.loads(read(ROOT / "server.json"))):
+        if got != version:
+            err(f"server.json carries version {got} != {version}")
+
+    m = re.search(r'^version: "?([0-9][^"\s]*)"?', read(ROOT / "CITATION.cff"), re.M)
+    if not m or m.group(1) != version:
+        err(f"CITATION.cff version = {m.group(1) if m else '?'} != {version}")
+
+    # horosa-core-js ships inside every runtime payload and carries its own version. It was outside
+    # this lockstep check entirely, so v0.26.0 bumped package.json to 0.26.0 and left package-lock
+    # at 0.25.1 — nothing noticed until a build's `npm install` rewrote the lock. Both, every release.
+    core_js = ROOT / "horosa-skill" / "horosa-core-js"
+    for name, keys in (("package.json", ("version",)), ("package-lock.json", ("version",))):
+        path = core_js / name
+        if not path.exists():
+            continue
+        data = json.loads(read(path))
+        candidates = [data.get(key) for key in keys]
+        if name == "package-lock.json":
+            candidates.append((data.get("packages", {}).get("") or {}).get("version"))
+        for got in [c for c in candidates if c is not None]:
+            if got != version:
+                err(f"horosa-core-js/{name} version = {got} != {version}")
+
+    # uv.lock 与 package-lock 同族：编辑安装的本包版本也写在锁文件里，发版忘了 `uv lock` 就会
+    # 掉版（v0.33.0 前实测停在 0.32.0 且缺 tomlkit 锁定）。锁文件掉版不影响本地跑，却让复现
+    # 构建装到旧元数据 —— 与 package-lock 那次一模一样的形状，所以一并纳入锁步。
+    uv_lock = ROOT / "horosa-skill" / "uv.lock"
+    if uv_lock.exists():
+        m = re.search(r'name = "horosa-skill"\nversion = "([^"]+)"', read(uv_lock))
+        if not m:
+            err("uv.lock: 找不到 horosa-skill 自身的 version 条目")
+        elif m.group(1) != version:
+            err(f"uv.lock horosa-skill version = {m.group(1)} != {version}（发版前跑 `uv lock`）")
+
+    plugin = ROOT / ".claude-plugin/plugin.json"
+    if plugin.exists():
+        got = json.loads(read(plugin)).get("version")
+        if got != version:
+            err(f".claude-plugin/plugin.json version = {got} != {version}")
+        json.loads(read(ROOT / ".claude-plugin/marketplace.json"))  # must parse
+
+    # CHANGELOG.md 是 gitignored 本地文件——公开 README 里任何指向它的链接在 GitHub 上都是 404。
+    for path in (ROOT / "README.md", ROOT / "README_EN.md"):
+        if "CHANGELOG.md" in read(path):
+            err(f"{path.name}: references CHANGELOG.md (gitignored local-only file; link would 404 on GitHub)")
+
+    # zh README（v0.21 视觉重构后）版本声明在 Release runtime 行；EN 保留 headline 句。
+    headline = {
+        ROOT / "README.md": re.compile(r"本仓版本 `v([0-9.]+)`"),
+        ROOT / "README_EN.md": re.compile(r"Current version: `Horosa Skill ([0-9.]+)` \((\d+) callable tools"),
+    }
+    for path, pattern in headline.items():
+        m = pattern.search(read(path))
+        if not m:
+            err(f"{path.name}: version headline not found (pattern drifted?)")
+            continue
+        if m.group(1) != version:
+            err(f"{path.name}: headline version {m.group(1)} != {version}")
+        if len(m.groups()) > 1 and int(m.group(2)) != len(TOOL_DEFINITIONS):
+            err(f"{path.name}: headline tool count {m.group(2)} != registry {len(TOOL_DEFINITIONS)}")
+
+
+# --- 2. tool coverage ----------------------------------------------------------------------
+
+# 每一处把「工具数」写死进散文/徽章/表格的地方。散文里的数字没人守，83→89 那次 bump 就在中文首页留下
+# 四处 83（徽章 URL 的 alt 甚至已经写着 89）。凡是 registry 的纯函数就在这里登记，别靠人记得改。
+# 模式找不到时报错而非静默跳过——文案改写了要来这里同步，这正是我们想要的提醒。
+TOOL_COUNT_CLAIMS = {
+    "README.md": (
+        r"星阙 (\d+) 个术数",
+        r"星阙（Horosa）的 (\d+) 个真实术数",
+        r"exposes (\d+) real astrology",
+        r"(\d+) 技法一次装齐",
+        r"本地进程 · (\d+) 工具",
+        r"(\d+) 个真实技法，一次安装",
+        r"(\d+) 技法目录索引",
+    ),
+    "README_EN.md": (
+        r"call <strong>(\d+)</strong> real techniques",
+        r"Capability map \((\d+) tools\)",
+    ),
+}
+
+EXPORT_COUNT_CLAIMS = {
+    "README.md": (r"已建模 (\d+) 个导出 technique",),
+    "README_EN.md": (r"`(\d+)` export techniques modeled",),
+}
+
+
+def check_counted_claims(claims: dict[str, tuple[str, ...]], expected: int, label: str) -> None:
+    for name, patterns in claims.items():
+        text = read(ROOT / name)
+        for pattern in patterns:
+            found = re.findall(pattern, text)
+            if not found:
+                err(f"{name}: {label} pattern not found (copy drifted?): {pattern}")
+                continue
+            for match in found:
+                for got in (match if isinstance(match, tuple) else (match,)):
+                    if int(got) != expected:
+                        err(f"{name}: {label} says {got}, registry has {expected} ({pattern})")
+
+
+def check_tool_coverage() -> None:
+    docs = [ROOT / "README.md", ROOT / "README_EN.md", ROOT / "skills/horosa-agent/SKILL.md"]
+    for path in docs:
+        text = read(path)
+        missing = sorted(t for t in TOOL_DEFINITIONS if f"`{t}`" not in text)
+        if missing:
+            err(f"{path.relative_to(ROOT)}: tool ids not documented: {', '.join(missing)}")
+    # v0.25.1 的「登记式」与 v0.26.0 的「语言无关式」是互补的，两边都留：
+    #   前者：每条声明显式登记，模式找不到就报错——抓「文案改写把声明弄没了」。
+    #   后者：不登记也能抓，且覆盖 AGENTS/CLAUDE/manifest/banner/plugin 与 _SERVER_INSTRUCTIONS，
+    #         并断言同一行 badge 与 alt 不得自相矛盾。
+    check_counted_claims(TOOL_COUNT_CLAIMS, len(TOOL_DEFINITIONS), "tool count")
+    # 「已建模 N 个导出 technique」= len(AI_EXPORT_TECHNIQUES)（曾停在 63 而实际 86）。
+    check_counted_claims(EXPORT_COUNT_CLAIMS, len(AI_EXPORT_TECHNIQUES), "export-technique count")
+
+
+# --- 2c. test-count consistency ------------------------------------------------------------
+
+# 「几处一致」不等于「数字是真的」——v0.26.0 五处齐刷刷写 320/63，而 CI 实测 318/65，守卫全绿。
+# 一致性只能抓「改了一处忘了另一处」。真值这一半靠下面的 check_test_count_is_real()：
+# offline + live-skipped 必须等于 `pytest --collect-only` 的收集总数，那个数是**静态可得**的。
+TEST_COUNT_PATTERNS = (
+    r"badge/测试-(\d+)_passed",
+    r'alt="(\d+) passed"',
+    r"工程测试 \| \*\*(\d+) / (\d+) pass",
+    r"Engineering tests \| `(\d+) / (\d+) pass",
+    r"#\s*(\d+) passed",
+)
+
+
+def check_test_count_is_real() -> None:
+    """声明的 offline + live-skipped 必须等于真实收集总数。
+
+    收集总数用 `--collect-only` 静态取（不跑测试、秒级）。这条能抓到「一致但全错」——
+    即五处写着同一个假数字、consistency 守卫照样绿的那种。
+    """
+    import subprocess
+
+    text = read(ROOT / "README.md")
+    m = re.search(r"\*\*(\d+) / \d+ pass\*\*（离线 CI 形状[^）]*?另 (\d+) 项 live", text)
+    if not m:
+        err("README.md: 测试数声明的形状变了，check_test_count_is_real 需要同步")
+        return
+    claimed = int(m.group(1)) + int(m.group(2))
+    try:
+        out = subprocess.run(
+            [sys.executable, "-m", "pytest", "--collect-only", "-q"],
+            cwd=PKG, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180,
+        ).stdout
+    except Exception as exc:  # noqa: BLE001 — 环境问题不该让文档守卫变红
+        print(f"::notice::test-count truth check skipped ({exc})")
+        return
+    got = re.search(r"(\d+) tests? collected", out)
+    if not got:
+        print("::notice::test-count truth check skipped (could not read collected count)")
+        return
+    if claimed != int(got.group(1)):
+        err(
+            f"README 声明 offline+live = {claimed}，而 pytest 实际收集 {got.group(1)} —— "
+            "数字对不上真值（五处写成同一个假数字时，一致性守卫是绿的）"
+        )
+
+
+def check_test_count_consistency() -> None:
+    seen: dict[int, list[str]] = {}
+    for path in (ROOT / "README.md", ROOT / "README_EN.md"):
+        text = read(path)
+        for pattern in TEST_COUNT_PATTERNS:
+            for match in re.findall(pattern, text):
+                for got in (match if isinstance(match, tuple) else (match,)):
+                    seen.setdefault(int(got), []).append(f"{path.name}:{pattern}")
+    if not seen:
+        err("README.md/README_EN.md: no test-count claim found (patterns drifted?)")
+    elif len(seen) > 1:
+        detail = "; ".join(f"{count} ({len(where)}x)" for count, where in sorted(seen.items()))
+        err(f"README test-count claims disagree: {detail} — all mentions must carry one number")
+
+    check_tool_counts()
+
+
+# --- 2b. tool-count claims outside the guarded headline --------------------------------------
+# Every drift found in the v0.26.0 audit lived here: the zh README's badge said 83 while the very same
+# line's alt said 89, three prose lines said 83, and `_SERVER_INSTRUCTIONS` — which ships to every MCP
+# client — said 83 twice. The old regex only matched `badge/tools-(\d+)-`, so the English phrasing
+# happened to be guarded and the Chinese one was not. Make the checks language-agnostic instead.
+
+COUNT_BADGE = re.compile(r"badge/(tools|技法|工具)-(\d+)-")
+COUNT_ALT = re.compile(r'alt="(\d+)\s*tools?"')
+COUNT_PROSE = re.compile(r"(\d+)\s*(?:个)?\s*(?:真实)?(技法|工具|tools\b|techniques\b)")
+# manifest.json phrases it as "83 real technique tools" / "83 real 术数/占星 techniques" — a bounded
+# lazy filler catches those without the tight form's false-positive risk.
+# marketplace.json phrased it "97 local Horosa (星阙) technique tools" — `local` instead of `real`, and the
+# noun 20 chars later — and sat stale at 97 through 106 while this file listed it in COUNT_DOCS (v0.38.0).
+# The reach of a count guard must not depend on which adjective a sentence happens to use.
+# server.json phrased it "106 technique tools" — the noun doubles as the adjective — and sat at 106 through 110 because
+# server.json was not in COUNT_DOCS and this pattern needed `real|local` (2026-10 surface audit).
+COUNT_PROSE_EN = re.compile(r"(\d+)\s+(?:real|local|technique|callable)\s+[^,.;]{0,40}?\b(tools?|techniques?)\b")
+# 「N 个术数/占星技法」逐字出现在 CLAUDE.md / AGENTS.md / README 横幅（docs/assets/readme/hero-zh-*.svg） —— 用精确短语而不是放宽
+# 通用正则，否则「约 9 个门面工具」这类真·小数字会被误报。
+# 🔴 README 横幅的 alt 里也有这句，而 EMPHASIS 连标签一起剥掉：这条要读原始行，不是剥过的行。
+COUNT_PHRASE_ZH = re.compile(r"(\d+)\s*个(?:真实)?术数\s*/?\s*占星技法")
+# README 自检表的「N / N ok=true」「N / N 写入」行 —— 描述的是本次发布的构建，必须跟注册表同步。
+COUNT_SELFCHECK = re.compile(r"(\d+)\s*/\s*(\d+)\s*`?\s*(?:ok=true|写入|writes)")
+# 行内先剥掉强调/标签，`<strong>83</strong> real techniques`、`**83 个**` 才能被上面的模式看到。
+EMPHASIS = re.compile(r"</?[A-Za-z][^>]*>|\*\*|`")
+# 「N 个技法工具触发 must_ask_user」是**另一个量**（registry 减去 PREFLIGHT_EXEMPT_TOOLS），
+# 不是工具总数——单独算、单独断言，好过打 ignore 标记让它继续陈旧下去。
+# README_EN 的英文写法（"100 technique tools trigger must_ask_user"）此前不在任何守卫的视野里——两种语言同一真值。
+GATED_PROSE = re.compile(r"(\d+)\s*个技法工具触发|(\d+)\s+technique tools trigger")
+IGNORE_COUNT = "<!-- docs-sync:ignore-count -->"
+# 「Cursor 全局约 40 个工具上限」「128 工具上限」说的是**别的客户端**的容量，不是我们的工具数。
+# 这类行没法像 GATED_PROSE 那样「单独算、单独断言」——第三方的上限不是我们能派生的量。
+# 用词判别比打 ignore 标记好：标记会连同行里真正的工具数一起放行，而这条只放行被 cap 词修饰的数。
+CAP_WORDS = ("上限", "cap", "caps at", "limit", "静默丢弃", "drops the rest")
+
+COUNT_DOCS = [
+    "README.md",
+    "README_EN.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "horosa-skill/manifest.json",
+    "skills/horosa-agent/SKILL.md",
+    ".claude-plugin/plugin.json",
+    ".claude-plugin/marketplace.json",
+    # v0.48.x：README 横幅改由 gen_readme_diagrams.py 生成（明暗两版），旧 banner.svg 退役。
+    "docs/assets/readme/hero-zh-light.svg",
+    "docs/assets/readme/hero-zh-dark.svg",
+    # v0.33.0 批 III-5 盲区修补：examples/ 客户端文档与 .agents 镜像也写工具数——此前不在扫描面，
+    # 计数漂移在这两处永不报警（claude-code.md 的门面数就这样陈旧了两个版本）。
+    "horosa-skill/examples/clients/codex.md",
+    "horosa-skill/examples/clients/remote-connectors-oauth-gateway.md",
+    "horosa-skill/examples/clients/README.md",
+    "horosa-skill/examples/clients/codex-config.toml",
+    "horosa-skill/examples/clients/claude-code.md",
+    ".agents/skills/horosa-agent/SKILL.md",
+    # v0.38.0 B5：四份薄镜像也写工具数——它们是各家 agent 打开仓库第一眼看到的文件，数字不许陈旧。
+    "GEMINI.md",
+    ".github/copilot-instructions.md",
+    ".windsurf/rules/horosa-skill.md",
+    ".clinerules/horosa-skill.md",
+    # 2026-10 表面审计：MCP Registry 的卡片描述（server.json）写「106 technique tools」两个版本没人发现。
+    "server.json",
+    # v0.41.0：Agent Plugins v1 的根清单（VS Code / Copilot CLI / Codex / Kiro 读它）也写工具数。
+    "plugin.json",
+]
+
+
+def check_tool_counts() -> None:
+    expected = len(TOOL_DEFINITIONS)
+    for rel in COUNT_DOCS:
+        path = ROOT / rel
+        if not path.exists():
+            continue
+        for lineno, raw_line in enumerate(read(path).splitlines(), 1):
+            if IGNORE_COUNT in raw_line:
+                continue
+            line = EMPHASIS.sub("", raw_line)
+            badge = COUNT_BADGE.search(raw_line)
+            if badge and int(badge.group(2)) != expected:
+                err(f"{rel}:{lineno}: {badge.group(1)} badge says {badge.group(2)}, registry has {expected}")
+            # alt lives *inside* a tag, so it must be read before EMPHASIS strips tags away
+            alt = COUNT_ALT.search(raw_line)
+            # a badge and its own alt disagreeing on one line is always a bug, whatever the registry says
+            if badge and alt and badge.group(2) != alt.group(1):
+                err(f"{rel}:{lineno}: badge {badge.group(2)} contradicts alt {alt.group(1)} on the same line")
+            if alt and int(alt.group(1)) != expected:
+                err(f"{rel}:{lineno}: alt says {alt.group(1)} tools, registry has {expected}")
+            gated = GATED_PROSE.search(line)
+            if gated:
+                gated_count = gated.group(1) or gated.group(2)
+                if int(gated_count) != expected_gated():
+                    err(
+                        f"{rel}:{lineno}: claims {gated_count} gated tools, "
+                        f"registry minus PREFLIGHT_EXEMPT_TOOLS is {expected_gated()}"
+                    )
+                continue  # a gated-count line is not a total-count line
+            for a, b in COUNT_SELFCHECK.findall(line):
+                if int(a) != expected or int(b) != expected:
+                    err(f"{rel}:{lineno}: self-check row says {a} / {b}, registry has {expected}")
+            phrase = [(c, "技法") for c in {*COUNT_PHRASE_ZH.findall(line), *COUNT_PHRASE_ZH.findall(raw_line)}]
+            line_is_about_a_third_party_cap = any(word in line.lower() or word in line for word in CAP_WORDS)
+            for count, _noun in COUNT_PROSE.findall(line) + COUNT_PROSE_EN.findall(line) + phrase:
+                if line_is_about_a_third_party_cap and int(count) != expected:
+                    continue
+                if int(count) != expected:
+                    err(
+                        f"{rel}:{lineno}: prose claims {count} tools, registry has {expected} "
+                        f"(add {IGNORE_COUNT} if this line is a frozen historical record)"
+                    )
+    check_server_instructions()
+
+
+FULL_SURFACE_ROW = re.compile(r"(?:全量面? |full \()(\d+)")
+# 「连接器里看到 125 个 `horosa_*` 工具」：EMPHASIS 剥掉反引号之后的形状。
+FULL_SURFACE_NAMED = re.compile(r"(\d+) 个 horosa_\* 工具")
+FULL_SURFACE_DOCS = (
+    "README.md",
+    "README_EN.md",
+    "horosa-skill/examples/clients/README.md",
+    "horosa-skill/examples/clients/codex.md",
+    "horosa-skill/examples/clients/remote-connectors-oauth-gateway.md",
+    "horosa-skill/examples/clients/codex-config.toml",
+    "skills/horosa-agent/SKILL.md",
+    "CLAUDE.md",
+)
+_PROBE_LITERAL = re.compile(r"\['tools'\] -ne \d+|probe\[\"tools\"\] == \d+")
+
+
+def check_full_surface_counts() -> None:
+    """README×2 客户端表的「全量 N / full (N)」与 ci.yml 的 stdio 探针都必须以 contracts/mcp_list_budget.json 的 full_tools 为准。
+
+    v0.40.0 首推：四个新工具让全量面 116 → 120，README 表与 ci.yml 里写死的 116 谁都没改 —— CI 两个 job 在「wheel 真起 stdio」
+    这一步红。数字只许有一个源；ci.yml 里不许再出现 `-ne <数字>` / `== <数字>` 形式的工具数断言。"""
+    budget_path = PKG / "contracts" / "mcp_list_budget.json"
+    try:
+        full = int(json.loads(read(budget_path))["full_tools"])
+    except Exception as exc:  # noqa: BLE001
+        err(f"contracts/mcp_list_budget.json unreadable: {exc}")
+        return
+    for rel in FULL_SURFACE_DOCS:
+        if not (ROOT / rel).exists():
+            continue
+        for lineno, line in enumerate(read(ROOT / rel).splitlines(), 1):
+            for got in FULL_SURFACE_ROW.findall(line) + FULL_SURFACE_NAMED.findall(EMPHASIS.sub("", line)):
+                if int(got) != full:
+                    err(f"{rel}:{lineno}: full-surface row says {got} tools, contracts/mcp_list_budget.json full_tools is {full}")
+    workflow = ROOT / ".github" / "workflows" / "ci.yml"
+    if workflow.exists():
+        text = read(workflow)
+        for match in _PROBE_LITERAL.finditer(text):
+            lineno = text.count("\n", 0, match.start()) + 1
+            err(f".github/workflows/ci.yml:{lineno}: stdio probe asserts a literal tool count `{match.group(0)}` — read full_tools/compact_tools from contracts/mcp_list_budget.json instead")
+        if "mcp_list_budget.json" not in text:
+            err(".github/workflows/ci.yml: stdio probes no longer read contracts/mcp_list_budget.json")
+
+
+def stated_counts(raw_line: str) -> tuple[set[int], set[int]]:
+    """这一行声明的 (总数, 闸门数)：`check_tool_counts` 与 `check_full_surface_counts` 读的形状，写手改的也只是这些。
+
+    只认形状、不认「行里有个相同的数字」：把写手放回 v0.47.0 那次 110→114 重放时，「106 条基准用例」就因为恰好等于旧闸门数被改了。
+    """
+    line = EMPHASIS.sub("", raw_line)
+    gated = GATED_PROSE.search(line)
+    if gated:
+        return set(), {int(gated.group(1) or gated.group(2))}
+    totals = {int(match.group(2)) for match in COUNT_BADGE.finditer(raw_line)}
+    totals |= {int(count) for count in COUNT_ALT.findall(raw_line)}
+    totals |= {int(count) for pair in COUNT_SELFCHECK.findall(line) for count in pair}
+    totals |= {int(count) for count, _noun in COUNT_PROSE.findall(line) + COUNT_PROSE_EN.findall(line)}
+    totals |= {int(count) for regex in (FULL_SURFACE_ROW, FULL_SURFACE_NAMED) for count in regex.findall(line)}
+    totals |= {int(count) for text in (line, raw_line) for count in COUNT_PHRASE_ZH.findall(text)}
+    return totals, set()
+
+
+def rewrite_tool_counts(text: str, *, totals: dict[int, int], gated: dict[int, int]) -> tuple[str, int]:
+    """把声明里的旧数字换成新数字，一行内同时换：110→114 与 106→110 不能串起来。冻结成历史的行带 IGNORE_COUNT，不动。"""
+    lines = text.split("\n")
+    changed = 0
+    for index, raw in enumerate(lines):
+        if IGNORE_COUNT in raw:
+            continue
+        stated_totals, stated_gated = stated_counts(raw)
+        moved = {old: new for old, new in totals.items() if old in stated_totals and old != new}
+        moved.update({old: new for old, new in gated.items() if old in stated_gated and old != new})
+        if not moved:
+            continue
+        token = re.compile(r"(?<![\d.,])(" + "|".join(str(old) for old in sorted(moved, reverse=True)) + r")(?!\d|[.,]\d)")
+        lines[index] = token.sub(lambda match: str(moved[int(match.group(1))]), raw)
+        changed += 1
+    return "\n".join(lines), changed
+
+
+def sync_tool_counts(root: Path, *, totals: dict[int, int], gated: dict[int, int]) -> list[tuple[str, int]]:
+    """写手：把 COUNT_DOCS 里的工具数改成注册表的真值（`bump_version.py --tool-counts`）。"""
+    touched: list[tuple[str, int]] = []
+    for rel in COUNT_DOCS:
+        path = root / rel
+        if not path.is_file():
+            continue
+        out, changed = rewrite_tool_counts(read(path), totals=totals, gated=gated)
+        if changed:
+            path.write_text(out, encoding="utf-8", newline="\n")
+            touched.append((rel, changed))
+    return touched
+
+
+def expected_gated() -> int:
+    from horosa_skill.agent_guidance import PREFLIGHT_EXEMPT_TOOLS
+
+    return len(TOOL_DEFINITIONS) - len(PREFLIGHT_EXEMPT_TOOLS)
+
+
+def check_server_instructions() -> None:
+    """`_SERVER_INSTRUCTIONS` ships to every MCP client and had no guard at all."""
+    from horosa_skill.surfaces.mcp_server import _SERVER_INSTRUCTIONS
+
+    # 🔴 客户端在 tools/list 里看到的是**门面 + 技法**，不是技法数。这条以前拿 len(TOOL_DEFINITIONS)
+    # 比，于是 instructions 写 106 时是绿的 —— 而模型据此以为只有 106 个工具，实际收到 116 个。
+    expected = FULL_SURFACE_TOOL_COUNT
+    for count in re.findall(r"\((\d+)\s*tools?\)|instead of (\d+)", _SERVER_INSTRUCTIONS):
+        got = count[0] or count[1]
+        if int(got) != expected:
+            err(
+                f"mcp_server._SERVER_INSTRUCTIONS: claims {got} tools, default surface is {expected}"
+                f" ({FACADE_TOOL_COUNT} facades + {FULL_SURFACE_TOOL_COUNT - FACADE_TOOL_COUNT} advertised techniques)"
+            )
+
+
+# --- 3. stale "current: `X`" claims in docs -------------------------------------------------
+
+def check_stale_claims(version: str) -> None:
+    for path in sorted((ROOT / "docs").glob("*.md")):
+        for got in re.findall(r"current: `(\d+\.\d+\.\d+)`", read(path)):
+            if got != version:
+                err(f"docs/{path.name}: stale 'current: `{got}`' claim (package is {version})")
+
+
+# --- 3a. pinned zero-install commands -------------------------------------------------------
+# README / SKILL / server.json / examples carry commands that pin a version inside a URL or a git ref:
+#   uvx --from "git+https://…/horosa-skill@v0.37.0#subdirectory=horosa-skill" …
+#   uvx --from "https://…/releases/download/v0.37.0/horosa_skill-0.37.0-py3-none-any.whl" …
+#   https://…/releases/download/v0.37.0/horosa-skill-0.37.0.mcpb
+# `check_versions` only walks JSON `version` keys, so these strings drifted silently once (v0.38.0 B3
+# audit). A pinned command that names an older version sends the user to a release that lacks this
+# code's contracts. `<!-- docs-sync:ignore-version -->` on the line freezes a deliberately historical one.
+
+PINNED_DOCS = [
+    "README.md", "README_EN.md", "docs/INSTALL_RESTRICTED_NETWORK.md",
+    "skills/horosa-agent/SKILL.md", ".agents/skills/horosa-agent/SKILL.md", "server.json",
+    # v0.41.0：Agent Plugins v1 的根 mcp.json 钉着当前版本的 wheel（VS Code / Copilot CLI / Codex 装插件时直接执行它）。
+    "mcp.json",
+]
+PIN_PATTERNS = (
+    re.compile(r"horosa-skill@v(\d+\.\d+\.\d+)#"),
+    re.compile(r"/v(\d+\.\d+\.\d+)/horosa_skill-(\d+\.\d+\.\d+)-py3-none-any\.whl"),
+    re.compile(r"/v(\d+\.\d+\.\d+)/horosa-skill-(\d+\.\d+\.\d+)\.mcpb"),
+)
+IGNORE_VERSION = "<!-- docs-sync:ignore-version -->"
+
+
+def check_pinned_install_commands(version: str) -> None:
+    docs = [ROOT / rel for rel in PINNED_DOCS] + sorted((ROOT / "horosa-skill" / "examples" / "clients").glob("*.md"))
+    for path in docs:
+        if not path.exists():
+            continue
+        rel = path.relative_to(ROOT).as_posix()
+        for lineno, line in enumerate(read(path).splitlines(), 1):
+            if IGNORE_VERSION in line:
+                continue
+            for pattern in PIN_PATTERNS:
+                for match in pattern.finditer(line):
+                    stale = sorted({g for g in match.groups() if g and g != version})
+                    if stale:
+                        err(f"{rel}:{lineno}: pinned install command names v{stale[0]} but the package is {version} "
+                            f"(add {IGNORE_VERSION} only for a frozen historical record)")
+
+
+# --- 3b2. thin agent mirrors (v0.38.0 B5) --------------------------------------------------------
+# Gemini CLI / GitHub Copilot / Windsurf / Cline each read a file of their own before they ever see SKILL.md.
+# Those files must exist, stay thin (policy lives in SKILL.md), point at the policy source, and name the
+# three contract words plus the one-command onboarding — otherwise an agent on that client starts with no gate.
+
+AGENT_MIRRORS = {
+    "GEMINI.md": "./skills/horosa-agent/SKILL.md",
+    ".github/copilot-instructions.md": "../skills/horosa-agent/SKILL.md",
+    ".windsurf/rules/horosa-skill.md": "../../skills/horosa-agent/SKILL.md",
+    ".clinerules/horosa-skill.md": "../skills/horosa-agent/SKILL.md",
+}
+AGENT_MIRROR_MAX_LINES = 30
+# v0.38.1 C13：精简面下技法不平铺，agent 必须知道 `horosa_tool_run` 才不会把「平铺名不在」读成「技法不存在」。
+AGENT_MIRROR_KEYWORDS = ("agent_confirmed_settings", "agent_guidance.required", "export_snapshot", "setup --client", "horosa_tool_run")
+
+# v0.38.1 C12：另两份入口文档（Cursor 规则 / Codex-agentskills 入口）。没有行数上限（.agents 那份是 agentskills.io
+# 的完整入口，带 frontmatter），但同样必须指向策略源、指针必须**能解析**（它曾指向不存在的
+# `horosa-skill/skills/horosa-agent/SKILL.md`），且带全部契约词。
+AGENT_ENTRY_DOCS = {
+    ".cursor/rules/horosa-skill.mdc": "skills/horosa-agent/SKILL.md",
+    ".agents/skills/horosa-agent/SKILL.md": "../../../skills/horosa-agent/SKILL.md",
+}
+MIRROR_COUNT_CLAIMS = {"README.md": r"(\d+) 份薄镜像", "README_EN.md": r"(\d+) thin mirrors"}
+
+
+def check_agent_entry_docs() -> None:
+    for rel, pointer in AGENT_ENTRY_DOCS.items():
+        path = ROOT / rel
+        if not path.exists():
+            err(f"{rel}: agent entry doc missing")
+            continue
+        text = read(path)
+        if pointer not in text:
+            err(f"{rel}: must name the policy source ({pointer})")
+        elif not ((path.parent / pointer).exists() or (ROOT / pointer).exists()):
+            err(f"{rel}: policy pointer `{pointer}` does not resolve to a file")
+        for keyword in AGENT_MIRROR_KEYWORDS:
+            if keyword not in text:
+                err(f"{rel}: missing `{keyword}` — the gate, the reading contract, the onboarding command and the compact-surface call must be named")
+
+
+def check_mirror_count_claims() -> None:
+    """README 说「N 份薄镜像」，N 必须等于 AGENT_MIRRORS + AGENT_ENTRY_DOCS（曾写「四份」而实际有六份）。"""
+    expected = len(AGENT_MIRRORS) + len(AGENT_ENTRY_DOCS)
+    for rel, pattern in MIRROR_COUNT_CLAIMS.items():
+        path = ROOT / rel
+        if not path.exists():
+            continue
+        found = re.findall(pattern, read(path))
+        if not found:
+            err(f"{rel}: no thin-mirror count claim matching /{pattern}/ (write the digit, not a word)")
+        for got in found:
+            if int(got) != expected:
+                err(f"{rel}: claims {got} thin mirrors, the repo carries {expected} (AGENT_MIRRORS + AGENT_ENTRY_DOCS)")
+
+
+def check_agent_mirrors() -> None:
+    for rel, pointer in AGENT_MIRRORS.items():
+        path = ROOT / rel
+        if not path.exists():
+            err(f"{rel}: thin agent mirror missing (AGENTS.md §3 — every listed client gets one)")
+            continue
+        text = read(path)
+        lines = len(text.rstrip("\n").splitlines())
+        if lines > AGENT_MIRROR_MAX_LINES:
+            err(f"{rel}: {lines} lines > {AGENT_MIRROR_MAX_LINES} — mirrors stay thin; policy lives in skills/horosa-agent/SKILL.md")
+        if pointer not in text:
+            err(f"{rel}: must link to the policy source ({pointer})")
+        for keyword in AGENT_MIRROR_KEYWORDS:
+            if keyword not in text:
+                err(f"{rel}: missing `{keyword}` — the gate, the reading contract and the onboarding command must be named")
+
+
+# --- 3c. README platform table ↔ contracts/release_platforms.json ---------------------------------
+# The platform table is the first thing an Intel-Mac / Windows-on-ARM user reads. Its rows are locked to
+# the contract (v0.38.0 A3): every shipped platform, alias and unsupported host must have a row, so the
+# table cannot promise a payload the contract does not ship, nor stay silent about one it does.
+
+PLATFORM_ROW_LABELS = {
+    "darwin-arm64": "macOS arm64",
+    "win32-x64": "Windows x64",
+    "win32-arm64": "Windows ARM",
+    "darwin-x64": "Intel Mac",
+    "linux-x64": "Linux",
+}
+
+
+def check_platform_table() -> None:
+    contract_path = PKG / "contracts" / "release_platforms.json"
+    if not contract_path.exists():
+        return
+    contract = json.loads(read(contract_path))
+    keys = list(contract.get("platforms", {})) + list(contract.get("aliases", {})) + list(contract.get("unsupported", {}))
+    for rel in ("README.md", "README_EN.md"):
+        path = ROOT / rel
+        if not path.exists():
+            continue
+        rows = [line for line in read(path).splitlines() if line.startswith("| ")]
+        for key in keys:
+            label = PLATFORM_ROW_LABELS.get(key)
+            if label is None:
+                err(f"{rel}: contract platform `{key}` has no README row label in PLATFORM_ROW_LABELS")
+                continue
+            if not any(line.split("|")[1].strip().startswith(label) for line in rows if line.count("|") >= 3):
+                err(f"{rel}: platform table has no row starting with `{label}` (contracts/release_platforms.json lists `{key}`)")
+
+
+# --- 3b. shipped artifacts the prose denies ------------------------------------------------
+# horosa-skill/Dockerfile + docker-compose.yml have been tracked since v0.3x while both READMEs kept
+# saying "仓库暂不提供 Dockerfile / No Dockerfile is shipped yet" (v0.38.0 audit). A doc that denies a
+# tracked file is worse than silence: an agent trusts it and never looks.
+
+# --- 3d. PyPI is not open: no doc may hand the user `pip install horosa-skill` / bare `uvx horosa-skill` (v0.38.1 C2) ---
+# 「PyPI 通道尚未开通」是当前事实：README 曾教 `pip install horosa-skill`（404）。提到未来形态可以，但整行必须带
+# 「尚未开通 / not yet live」一类标记；命令形态一律要 wheel URL / git 直链 / `--from`。
+PYPI_NOT_LIVE_MARKERS = ("未开通", "not yet live", "not open yet", "not yet open", "not open", "尚未上线", "暂缓")
+PYPI_CLAIM_DOCS = (
+    "README.md", "README_EN.md", "horosa-skill/README.md", "skills/horosa-agent/SKILL.md",
+    ".agents/skills/horosa-agent/SKILL.md", "CLAUDE.md", "AGENTS.md",
+)
+_BARE_UVX = re.compile(r"(?:^|[`\s(])uvx horosa-skill(?=[\s`)]|$)")
+
+
+def pypi_claim_errors(rel: str, text: str) -> list[str]:
+    found: list[str] = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if any(marker in line for marker in PYPI_NOT_LIVE_MARKERS):
+            continue
+        if "pip install horosa-skill" in line:
+            found.append(f"{rel}:{lineno}: `pip install horosa-skill` points at PyPI, which is not open — use the release wheel URL")
+        if _BARE_UVX.search(line) and "--from" not in line:
+            found.append(f"{rel}:{lineno}: bare `uvx horosa-skill` needs PyPI — write `uvx --from \"<wheel URL>\" horosa-skill …`")
+    return found
+
+
+def check_no_pypi_install_claims() -> None:
+    docs = [ROOT / rel for rel in PYPI_CLAIM_DOCS]
+    docs += sorted((ROOT / "docs").glob("*.md")) + sorted((ROOT / "horosa-skill" / "examples" / "clients").glob("*.md"))
+    for path in docs:
+        if not path.exists():
+            continue
+        for problem in pypi_claim_errors(path.relative_to(ROOT).as_posix(), read(path)):
+            err(problem)
+
+
+# --- 3e. remote-connector rows must describe the OAuth gateway, not promise a static token (v0.38.1 C11) ---
+CONNECTOR_ROWS = {"README.md": ("远程连接器", ("网关", "OAuth")), "README_EN.md": ("remote connectors", ("gateway", "OAuth"))}
+
+
+def check_client_matrix_connectors() -> None:
+    for rel, (marker, needles) in CONNECTOR_ROWS.items():
+        path = ROOT / rel
+        if not path.exists():
+            continue
+        rows = [line for line in read(path).splitlines() if line.startswith("|") and marker in line]
+        if not rows:
+            err(f"{rel}: client matrix has no `{marker}` row")
+        for row in rows:
+            for needle in needles:
+                if needle not in row:
+                    err(f"{rel}: the `{marker}` row must mention `{needle}` — claude.ai / ChatGPT connectors only speak OAuth; a static Bearer alone cannot connect")
+
+
+# --- 3f. shipped example configs must not carry a bare `uv` command (v0.38.1 C17) ---
+EXAMPLE_JSON_CONFIGS = ("horosa-skill/examples/clients/claude_desktop_config.json",)
+
+
+def check_client_example_configs() -> None:
+    for rel in EXAMPLE_JSON_CONFIGS:
+        path = ROOT / rel
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(read(path))
+        except ValueError as exc:
+            err(f"{rel}: not valid JSON ({exc})")
+            continue
+        for name, entry in (data.get("mcpServers") or {}).items():
+            if str(entry.get("command")) in {"uv", "uvx"}:
+                err(f"{rel}:{name}: bare `{entry.get('command')}` — GUI clients do not inherit the shell PATH; the example must show an absolute-path placeholder")
+        if "setup --client claude-desktop" not in str(data.get("_comment", "")):
+            err(f"{rel}: the example must point readers at `setup --client claude-desktop` (the generator writes real absolute paths)")
+
+
+DOCKER_DENIALS = ("暂不提供 Dockerfile", "No Dockerfile is shipped")
+DOCKER_MENTION = "horosa-skill/Dockerfile"
+
+
+def check_docker_claims() -> None:
+    if not (ROOT / "horosa-skill" / "Dockerfile").exists():
+        return
+    for rel in ("README.md", "README_EN.md"):
+        path = ROOT / rel
+        if not path.exists():
+            continue
+        text = read(path)
+        for denial in DOCKER_DENIALS:
+            if denial in text:
+                err(f"{rel}: says '{denial}' but horosa-skill/Dockerfile is tracked")
+        if DOCKER_MENTION not in text:
+            err(f"{rel}: horosa-skill/Dockerfile is tracked but the README never names it")
+
+
+# --- 4. relative links ---------------------------------------------------------------------
+
+LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
+
+
+def check_links() -> None:
+    targets = [
+        ROOT / "CLAUDE.md",
+        ROOT / "AGENTS.md",
+        ROOT / "README.md",
+        ROOT / "README_EN.md",
+        # local-only (gitignored) — checked when present, skipped on public/CI checkouts
+        ROOT / ".claude/skills/horosa-dev/SKILL.md",
+        *sorted((ROOT / "docs").glob("*.md")),
+        *sorted((ROOT / "skills").rglob("*.md")),
+        *[ROOT / rel for rel in AGENT_MIRRORS],
+        *[ROOT / rel for rel in AGENT_ENTRY_DOCS],
+    ]
+    for path in targets:
+        if not path.exists():
+            continue
+        for raw in LINK.findall(read(path)):
+            if raw.startswith(("http://", "https://", "mailto:", "#")):
+                continue
+            rel = raw.split("#", 1)[0]
+            if not rel:
+                continue
+            if not (path.parent / rel).resolve().exists():
+                err(f"{path.relative_to(ROOT)}: broken relative link -> {raw}")
+
+
+# --- 5. conflict markers -------------------------------------------------------------------
+
+SKIP_DIRS = {".git", ".venv", "node_modules", "vendor", ".horosa-cache", ".pytest_cache",
+             "runs", "dist", "build", "__pycache__", ".umi", ".umi-production"}
+TEXT_SUFFIXES = {".md", ".py", ".yml", ".yaml", ".json", ".js", ".mjs", ".toml", ".cff",
+                 ".mdc", ".txt", ".sh", ".ps1", ".cfg", ".ini"}
+MARKER = re.compile(r"^(<{7}( |$)|={7}$|>{7}( |$))")
+
+
+def check_conflict_markers() -> None:
+    for path in ROOT.rglob("*"):
+        if any(part in SKIP_DIRS for part in path.parts):
+            continue
+        if not path.is_file() or path.suffix not in TEXT_SUFFIXES:
+            continue
+        if path.stat().st_size > 2_000_000:
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except UnicodeDecodeError:
+            continue
+        for lineno, line in enumerate(lines, 1):
+            if MARKER.match(line):
+                err(f"{path.relative_to(ROOT)}:{lineno}: git conflict marker: {line[:40]!r}")
+
+
+# --- 6. skill frontmatter ------------------------------------------------------------------
+
+def check_frontmatter() -> None:
+    # horosa-dev is local-only (gitignored) — checked when present, skipped on public/CI checkouts
+    for path in (ROOT / "skills/horosa-agent/SKILL.md", ROOT / ".claude/skills/horosa-dev/SKILL.md"):
+        if not path.exists():
+            continue
+        text = read(path)
+        if not text.startswith("---\n"):
+            err(f"{path.relative_to(ROOT)}: missing YAML frontmatter (must start with ---)")
+            continue
+        head = text.split("\n---", 2)[0]
+        for field in ("name:", "description:"):
+            if field not in head:
+                err(f"{path.relative_to(ROOT)}: frontmatter missing '{field}'")
+    # metadata.version 锁步（v0.33.0 批 III-5 盲区修补）：SKILL frontmatter 版本曾滞留 0.28.0
+    # 两个发布无人察觉——现在与 pyproject 版本锁死。
+    skill_path = ROOT / "skills/horosa-agent/SKILL.md"
+    if skill_path.exists():
+        m = re.search(r'version:\s*"?([0-9.]+)"?', read(skill_path).split("\n---", 2)[0])
+        pkg_version = expected_version()
+        if not m:
+            err("skills/horosa-agent/SKILL.md: frontmatter missing metadata.version")
+        elif m.group(1) != pkg_version:
+            err(f"skills/horosa-agent/SKILL.md: metadata.version {m.group(1)} != package {pkg_version}")
+
+
+def check_compact_surface_count() -> None:
+    """README×2 写的「11 个门面工具 / 11 facades」必须等于 mcp_server.COMPACT_SURFACE_TOOL_COUNT。
+
+    v0.36.0 之前 mcp_server 里的注释还写着「8 门面 + tool_run = 9 工具」——常量化 + 锁步，数字只准有一个源。
+    """
+    # 🔴 直接 import 常量，别正则源码：常量一改成派生式（`FACADE_TOOL_COUNT + 1`）正则就抓瞎，
+    # 而「抓瞎」在这把守卫里表现为**报缺常量**，很容易被当成误报改掉正则而不是锚到源头。
+    n = COMPACT_SURFACE_TOOL_COUNT
+    for rel, patterns in {
+        "README.md": [rf"{n}\s*个门面工具", rf"MCP 门面（{n}）"],
+        "README_EN.md": [rf"\b{n} facades\b", rf"MCP facades \({n}\)"],
+    }.items():
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        for pat in patterns:
+            if not re.search(pat, text):
+                err(f"{rel} 未按 COMPACT_SURFACE_TOOL_COUNT={n} 写门面数（缺 /{pat}/）")
+        stale = re.findall(r"(\d+)\s*个门面工具|\b(\d+) facades\b", text)
+        for a, b in stale:
+            val = a or b
+            if val and int(val) != n:
+                err(f"{rel} 门面数 {val} ≠ COMPACT_SURFACE_TOOL_COUNT={n}")
+
+
+
+def knowledge_truth() -> dict[str, int]:
+    """知识库计数的唯一真值：store 实际加载的 bundle（域）+ helpdoc 条目（手册 = 除八字断语库外的 helpdoc 域）。"""
+    from horosa_skill.knowledge.store import load_knowledge_bundles
+
+    bundles = load_knowledge_bundles()
+    helpdoc = {k: b for k, b in bundles.items() if b.get("schema") == "horosa.knowledge.helpdoc.v1"}
+    manuals = {k: b for k, b in helpdoc.items() if k != "bazi_pithy"}
+
+    def entries(bundle: dict) -> int:
+        return sum(len(cat.get("entries") or []) for cat in bundle.get("categories") or [])
+
+    return {
+        "domains": len(bundles),
+        "manual_domains": len(manuals),
+        "manual_entries": sum(entries(b) for b in manuals.values()),
+        "total_entries": sum(entries(b) for b in helpdoc.values()),
+    }
+
+
+# (文件, 正则, 真值键…)：正则的每个捕获组按序对应一个真值键；每条正则至少命中一次（防措辞改了守卫就瞎）。
+KNOWLEDGE_CLAIMS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("README.md", r"(\d+) 域知识库", ("domains",)),
+    ("README.md", r"(\d+) 域方法论知识库", ("domains",)),
+    ("README.md", r"\| (\d+) 域（hover 知识", ("domains",)),
+    ("README.md", r"覆盖 (\d+) 域", ("domains",)),
+    ("README.md", r"(\d+) 份技法操作手册", ("manual_domains",)),
+    ("README.md", r"八字断语库[^共]{0,12}共 (\d+) 条", ("total_entries",)),
+    ("README.md", r"\| 知识库 \| (\d+) 域；技法操作手册 (\d+) 条", ("domains", "manual_entries")),
+    ("README_EN.md", r"(\d+) domains", ("domains",)),
+    ("README_EN.md", r"(\d+)-domain knowledge base\*\* \((\d+) cited entries", ("domains", "total_entries")),
+    ("README_EN.md", r"(\d+) manual entries", ("manual_entries",)),
+    ("README_EN.md", r"(\d+) technique operation manuals", ("manual_domains",)),
+    ("README_EN.md", r"bazi pithy corpus \((\d+) entries", ("total_entries",)),
+    ("AGENTS.md", r"`knowledge_read`（(\d+) 域", ("domains",)),
+    ("README_EN.md", r"badge/knowledge-(\d+)%20domains", ("domains",)),
+    ("AGENTS.md", r"（(\d+) 域/(\d+) 条，逐条带出处", ("manual_domains", "manual_entries")),
+    ("skills/horosa-agent/SKILL.md", r"`knowledge_read`（(\d+) 域", ("domains",)),
+    ("skills/horosa-agent/SKILL.md", r"跨 (\d+) 域全文检索", ("domains",)),
+)
+
+
+def check_knowledge_counts() -> None:
+    """知识库的域数 / 手册数 / 条目数必须等于 store 实际加载的数。
+
+    v0.40.0 时同一件事在文档里有四个数：README 31 域与 30 域并存、SKILL.md 与 AGENTS.md 还写 24 域、条目数停在
+    上游补条之前（235/408）——工具数、测试数都有真值守卫，知识库计数没有。
+    """
+    truth = knowledge_truth()
+    for rel, pattern, keys in KNOWLEDGE_CLAIMS:
+        found = re.findall(pattern, read(ROOT / rel))
+        if not found:
+            err(f"{rel}: 知识库计数措辞没找到（改了措辞就同步改 KNOWLEDGE_CLAIMS）: /{pattern}/")
+            continue
+        for match in found:
+            values = match if isinstance(match, tuple) else (match,)
+            for key, got in zip(keys, values):
+                if int(got) != truth[key]:
+                    err(f"{rel}: 知识库 {key} 写 {got}，store 实际 {truth[key]}（/{pattern}/）")
+
+
+# HorosaBench 的用例数（手写 + 注册表生成）。README 曾同时写 105 与 106，而 runner 实际跑 120（C-18 尾巴）：
+# 每个措辞都要找得到（改了措辞同步改这里），且写的数等于 runner 合并后的用例数。
+BENCHMARK_CLAIMS: tuple[tuple[str, str], ...] = (
+    ("README.md", r"(\d+) 条基准用例与工具注册表锁步。"),
+    ("README.md", r"HorosaBench (\d+) 条基准用例"),
+    ("README.md", r"\| HorosaBench \| (\d+) 条基准用例"),
+    ("README_EN.md", r"\| HorosaBench \| (\d+) registry-locked benchmark cases"),
+    ("README_EN.md", r"HorosaBench: (\d+) benchmark cases"),
+)
+# 任何「N 条基准用例 / N … benchmark cases」都必须被上表的某条认领：新写一处数字而不登记，同样红。
+_BENCHMARK_ANY = re.compile(r"(\d+) 条基准用例|(\d+) (?:[a-z-]+ )?benchmark cases")
+
+
+def benchmark_case_count() -> int:
+    from horosa_skill.benchmark.runner import benchmark_dataset
+
+    return len(benchmark_dataset()["cases"])
+
+
+def benchmark_count_problems(texts: dict[str, str], expected: int) -> list[str]:
+    problems: list[str] = []
+    claimed: dict[str, int] = {}
+    for rel, pattern in BENCHMARK_CLAIMS:
+        found = re.findall(pattern, texts.get(rel, ""))
+        if not found:
+            problems.append(f"{rel}: HorosaBench 用例数措辞没找到（改了措辞就同步改 BENCHMARK_CLAIMS）: /{pattern}/")
+        claimed[rel] = claimed.get(rel, 0) + len(found)
+        problems += [f"{rel}: HorosaBench 写 {got} 条用例，runner 实际 {expected}（/{pattern}/）" for got in found if int(got) != expected]
+    for rel, text in texts.items():
+        mentions = len(_BENCHMARK_ANY.findall(text))
+        if mentions > claimed.get(rel, 0):
+            problems.append(f"{rel}: 有 {mentions} 处写了基准用例数，BENCHMARK_CLAIMS 只认领 {claimed.get(rel, 0)} 处——新措辞登记进去")
+    return problems
+
+
+def check_benchmark_counts() -> None:
+    texts = {rel: read(ROOT / rel) for rel in sorted({rel for rel, _ in BENCHMARK_CLAIMS})}
+    for problem in benchmark_count_problems(texts, benchmark_case_count()):
+        err(problem)
+
+
+def check_root_manifest_version() -> None:
+    """MCPB manifest 的 version 必须与包版本锁步（曾停在 0.32.0 两个版本无人察觉）。
+
+    v0.37.0 起它住在 horosa-skill/ —— MCPB 的 bundle 根必须持有 pyproject.toml，
+    `server.type: "uv"` 才解析得到依赖。"""
+    init = (ROOT / "horosa-skill/src/horosa_skill/__init__.py").read_text(encoding="utf-8")
+    m = re.search(r"__version__\s*=\s*[\"']([^\"']+)[\"']", init)
+    manifest = json.loads((ROOT / "horosa-skill/manifest.json").read_text(encoding="utf-8"))
+    if not m:
+        err("__init__.py 读不到 __version__")
+        return
+    if manifest.get("version") != m.group(1):
+        err(f"horosa-skill/manifest.json version={manifest.get('version')!r} ≠ 包版本 {m.group(1)!r}")
+
+
+def check_envelope_schema_version() -> None:
+    """docs/DATA_CONTRACTS.md 的「tool envelope：`X`」必须等于 `schemas/common.py::TOOL_ENVELOPE_SCHEMA_VERSION`。
+    common.py 的注释一直宣称本脚本核对它，实际从未有此检查——文档停在 0.6.3、代码走到 0.7.0 两个版本无人察觉
+    （v0.36.0 升 0.8.0 时才发现）。"""
+    from horosa_skill.schemas.common import TOOL_ENVELOPE_SCHEMA_VERSION
+
+    path = ROOT / "docs" / "DATA_CONTRACTS.md"
+    if not path.exists():
+        err("docs/DATA_CONTRACTS.md missing (tool envelope version has no documented home)")
+        return
+    match = re.search(r"tool envelope[：:]\s*`([0-9.]+)`", read(path))
+    if not match:
+        err("docs/DATA_CONTRACTS.md: 「tool envelope：`X`」版本行未找到（pattern drifted?）")
+    elif match.group(1) != TOOL_ENVELOPE_SCHEMA_VERSION:
+        err(
+            f"docs/DATA_CONTRACTS.md: tool envelope {match.group(1)} != "
+            f"schemas/common.py TOOL_ENVELOPE_SCHEMA_VERSION {TOOL_ENVELOPE_SCHEMA_VERSION}"
+        )
+
+
+# --- 7. doc-currency institution (v0.40.0) ----------------------------------------------------------
+# Four guards that make "keep the docs current" a machine fact instead of a habit (AGENTS.md §2 protocol v3):
+# the doc map must list every guidance doc; every lesson must be indexed and (for the newest versions) distilled;
+# the thin mirrors are build output; third-party facts carry a source and a date and get re-verified on a clock.
+
+import datetime as _dt
+import importlib.util as _ilu
+
+DOC_MAP = ROOT / "docs" / "DOC_MAP.md"
+GUIDANCE_DOC_GLOBS: tuple[str, ...] = (
+    "*.md",  # repo root (CHANGELOG.md is gitignored; *.local.md are gitignored)
+    "docs/*.md",
+    "docs/templates/*.md",
+    "skills/horosa-agent/SKILL.md",
+    "skills/horosa-agent/references/*.md",
+    ".agents/skills/horosa-agent/SKILL.md",
+    ".cursor/rules/*.mdc",
+    ".clinerules/*.md",
+    ".windsurf/rules/*.md",
+    ".github/copilot-instructions.md",
+    "horosa-skill/README.md",
+    "horosa-skill/examples/clients/*.md",
+    "vendor/README.md",
+)
+GUIDANCE_DOC_IGNORE = {"CHANGELOG.md"}
+
+
+def guidance_docs(root: Path = ROOT) -> list[str]:
+    found: set[str] = set()
+    for pattern in GUIDANCE_DOC_GLOBS:
+        for path in root.glob(pattern):
+            rel = path.relative_to(root).as_posix()
+            if path.is_file() and rel not in GUIDANCE_DOC_IGNORE and not rel.endswith(".local.md"):
+                found.add(rel)
+    return sorted(found)
+
+
+def doc_map_rows(text: str) -> set[str]:
+    """Every backticked path at the start of a table row (a row may list several docs: `A` / `B`)."""
+    rows: set[str] = set()
+    for line in text.splitlines():
+        if not line.startswith("| `"):
+            continue
+        first_cell = line.split("|")[1]
+        for m in re.finditer(r"`([^`]+)`", first_cell):
+            rows.add(m.group(1).split("（")[0].strip())
+    return rows
+
+
+def doc_map_problems(docs: list[str], rows: set[str]) -> list[str]:
+    return [f"docs/DOC_MAP.md: `{rel}` is a guidance doc with no row — write its purpose, update trigger and guard" for rel in docs if rel not in rows]
+
+
+def check_doc_map() -> None:
+    if not DOC_MAP.is_file():
+        err("docs/DOC_MAP.md missing — the doc-currency ledger (AGENTS.md §2 v3)")
+        return
+    for problem in doc_map_problems(guidance_docs(), doc_map_rows(read(DOC_MAP))):
+        err(problem)
+
+
+LESSONS_SECTION_RE = re.compile(r"^### (v\d+\.\d+\.\d+(?:-dev)?) / ", re.M)
+LESSONS_INDEX_RE = re.compile(r"^\| (v\d+\.\d+\.\d+(?:-dev)?) ", re.M)
+DISTILL_NEWEST = 3
+
+
+def lessons_distillation_problems(lessons: str, agents: str, *, newest: int = DISTILL_NEWEST) -> list[str]:
+    problems: list[str] = []
+    sections = LESSONS_SECTION_RE.findall(lessons)
+    indexed = set(LESSONS_INDEX_RE.findall(lessons))
+    for version in dict.fromkeys(sections):
+        if version not in indexed:
+            problems.append(f"docs/LESSONS.md: `### {version} / …` has no index row (the table at the top is how the next agent finds it)")
+    recent: list[str] = []
+    for version in sections:  # the ledger is newest-first
+        base = version.replace("-dev", "")
+        if base not in recent:
+            recent.append(base)
+        if len(recent) >= newest:
+            break
+    for version in recent:
+        if version not in agents:
+            problems.append(f"AGENTS.md never mentions {version} — distil the LESSONS entry into the current-truth rules (protocol v3 step 2)")
+    # Per-section anchors for the newest versions: a lesson title that names a code identifier in backticks must leave
+    # that identifier somewhere in AGENTS.md (the audit that motivated this found nine v0.40.0 lessons whose version
+    # string appeared in AGENTS.md while the rule itself never did — version presence alone is too weak a signal).
+    for m in re.finditer(r"^### (v\d+\.\d+\.\d+(?:-dev)?) / [^\n]*?— ([^\n]*)$", lessons, re.M):
+        version, title = m.group(1), m.group(2)
+        if version.replace("-dev", "") not in recent:
+            continue
+        anchors = [a for a in re.findall(r"`([^`]{3,60})`", title) if not a.startswith("v0.")]
+        if anchors and not any(a in agents for a in anchors):
+            problems.append(f"docs/LESSONS.md `### {version} / … — {title[:60]}…`: none of its code anchors {anchors[:3]} appear in AGENTS.md — the rule was not distilled")
+    return problems
+
+
+def check_lessons_distilled() -> None:
+    for problem in lessons_distillation_problems(read(ROOT / "docs" / "LESSONS.md"), read(ROOT / "AGENTS.md")):
+        err(problem)
+
+
+def check_agent_mirrors_generated() -> None:
+    spec = _ilu.spec_from_file_location("gen_agent_mirrors", PKG / "scripts" / "gen_agent_mirrors.py")
+    module = _ilu.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    for rel in module.drift():
+        err(f"{rel}: differs from scripts/gen_agent_mirrors.py's render — the mirrors are build output; edit the template and rerun the generator")
+    # v0.41.0：wheel 里的 skill 副本（`setup` 装进客户端 skills 目录的就是它）也是生成件——改了 skills/horosa-agent 忘了重跑，
+    # 用户装到的就是旧规则。
+    for rel in module.bundle_drift():
+        err(f"{module.SKILL_BUNDLE_REL}/{rel}: packaged skill bundle differs from skills/horosa-agent — rerun scripts/gen_agent_mirrors.py")
+
+
+def check_readme_diagrams_generated() -> None:
+    """README 的五张图（docs/assets/readme/*.svg）是生成件：技法数、MCP 面、客户端数、知识库域数、各门类数都画在图里。
+    加了技法 / 客户端却没重跑生成器，首页图就会和正文对不上——这里按渲染逐字节比对。"""
+    spec = _ilu.spec_from_file_location("gen_readme_diagrams", PKG / "scripts" / "gen_readme_diagrams.py")
+    module = _ilu.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    for rel in module.drift():
+        err(f"{rel}: differs from scripts/gen_readme_diagrams.py's render — the README diagrams are build output; rerun the generator")
+    for readme, lang in (("README.md", "zh"), ("README_EN.md", "en")):
+        text = read(ROOT / readme)
+        for fig in module.FIGURES:
+            for theme in module.THEME_NAMES:
+                ref = f"./{module.OUT_REL}/{fig}-{lang}-{theme}.svg"
+                if ref not in text:
+                    err(f"{readme}: does not show {ref} (each figure goes in a <picture> with its light and dark file)")
+
+
+THIRD_PARTY_LEDGER = PKG / "contracts" / "third_party_facts.json"
+
+
+def stale_facts(ledger: dict, today: _dt.date, max_age_days: int | None = None) -> list[tuple[str, int]]:
+    """[(id, age_days)] for entries older than max_age_days (ledger's own value unless overridden)."""
+    limit = int(ledger.get("max_age_days", 120) if max_age_days is None else max_age_days)
+    out: list[tuple[str, int]] = []
+    for fact in ledger.get("facts", []):
+        try:
+            verified = _dt.date.fromisoformat(str(fact.get("verified_on")))
+        except ValueError:
+            continue
+        age = (today - verified).days
+        if age > limit:
+            out.append((str(fact.get("id")), age))
+    return out
+
+
+def third_party_fact_problems(ledger: dict, today: _dt.date, root: Path = ROOT) -> list[str]:
+    problems: list[str] = []
+    facts = ledger.get("facts")
+    if not isinstance(facts, list) or not facts:
+        return ["contracts/third_party_facts.json: no facts"]
+    seen_subjects: set[str] = set()
+    ids: set[str] = set()
+    for fact in facts:
+        fid = str(fact.get("id") or "?")
+        if fid in ids:
+            problems.append(f"third_party_facts: duplicate id {fid}")
+        ids.add(fid)
+        for key in ("subject", "fact", "source_url", "verified_on", "affects"):
+            if not fact.get(key):
+                problems.append(f"third_party_facts[{fid}]: missing `{key}`")
+        if not str(fact.get("source_url", "")).startswith("https://"):
+            problems.append(f"third_party_facts[{fid}]: source_url must be an https URL you actually read")
+        try:
+            verified = _dt.date.fromisoformat(str(fact.get("verified_on")))
+            if verified > today:
+                problems.append(f"third_party_facts[{fid}]: verified_on {verified} is in the future")
+        except ValueError:
+            problems.append(f"third_party_facts[{fid}]: verified_on must be YYYY-MM-DD")
+        for rel in fact.get("affects", []) or []:
+            if not (root / rel).exists():
+                problems.append(f"third_party_facts[{fid}]: affects `{rel}` does not exist")
+        seen_subjects.add(str(fact.get("subject")))
+    for subject in ledger.get("required_subjects", []):
+        if subject not in seen_subjects:
+            problems.append(f"third_party_facts: required subject `{subject}` has no entry")
+    return problems
+
+
+def check_third_party_facts(*, strict_staleness: bool = False, today: _dt.date | None = None) -> None:
+    if not THIRD_PARTY_LEDGER.is_file():
+        err("contracts/third_party_facts.json missing — third-party facts must carry a source and a verification date")
+        return
+    ledger = json.loads(read(THIRD_PARTY_LEDGER))
+    now = today or _dt.date.today()
+    for problem in third_party_fact_problems(ledger, now):
+        err(problem)
+    for fid, age in stale_facts(ledger, now):
+        msg = f"third_party_facts[{fid}]: verified {age} days ago (> {ledger.get('max_age_days', 120)}) — re-read its source_url, update fact/verified_on"
+        if strict_staleness:
+            err(msg)
+        else:
+            warn(msg)
+
+
+# ---- v0.40.0 文档复审新增的三把 README 锁 ---------------------------------------------------------
+# ① 分组标题里的「（N）」= 该组表格首列的工具 ID 数（三组曾错：28/33、5/13、10/11，两版没人发现）。
+GROUP_HEADER_ZH = re.compile(r"^<summary>.*?（(\d+)）</b></summary>\s*$")
+GROUP_HEADER_EN = re.compile(r"^### .*\((\d+)\)\s*$")
+_GROUP_NUMBERS = re.compile(r"[（(](\d+)[）)]")
+_ROW_IDS = re.compile(r"`([^`]+)`")
+
+
+def group_header_problems(text: str, *, label: str = "README") -> list[str]:
+    """Every single-number group header must equal the count of backticked IDs in its table's first column."""
+    problems: list[str] = []
+    lines = text.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = GROUP_HEADER_ZH.match(line) or GROUP_HEADER_EN.match(line)
+        if not m or len(_GROUP_NUMBERS.findall(line)) != 1:  # 双数字标题（协议 6 + 门面 11）由 check_tool_counts 管
+            i += 1
+            continue
+        ids: set[str] = set()
+        j = i + 1
+        while j < len(lines):
+            nxt = lines[j]
+            if nxt.startswith(("</details>", "### ", "## ", "<summary>")):
+                break
+            if nxt.startswith("| `"):
+                ids.update(_ROW_IDS.findall(nxt.split("|")[1]))
+            j += 1
+        claimed = int(m.group(1))
+        if claimed != len(ids):
+            problems.append(f"{label}:{i + 1}: group header claims {claimed} tools but its table lists {len(ids)} IDs")
+        i = j
+    return problems
+
+
+def check_group_headers() -> None:
+    for name in ("README.md", "README_EN.md"):
+        for problem in group_header_problems(read(ROOT / name), label=name):
+            err(problem)
+
+
+# ② 导出契约号：README 的「契约 vN 镜像 aiExport vM」= exports.registry 的两个常量（v14/v56 陈旧了两版）。
+EXPORT_CONTRACT_CLAIMS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("README.md", re.compile(r"契约 v(\d+) 镜像桌面端 aiExport v(\d+)")),
+    ("README_EN.md", re.compile(r"contract \(?v(\d+)\)? mirrors (?:the desktop app's |desktop )aiExport v(\d+)")),
+)
+
+
+def export_contract_problems(text: str, pattern: re.Pattern[str], *, contract: int, mirrored: int, label: str) -> list[str]:
+    problems: list[str] = []
+    hits = list(pattern.finditer(text))
+    if not hits:
+        problems.append(f"{label}: no export-contract claim matches {pattern.pattern!r} (keep the claim in this lockable form)")
+    for m in hits:
+        if (int(m.group(1)), int(m.group(2))) != (contract, mirrored):
+            problems.append(
+                f"{label}: claims export contract v{m.group(1)} / aiExport v{m.group(2)} but exports.registry says v{contract} / v{mirrored}"
+            )
+    return problems
+
+
+def check_export_contract_versions() -> None:
+    from horosa_skill.exports.registry import AI_EXPORT_SETTINGS_VERSION, MIRRORED_UPSTREAM_AIEXPORT_VERSION
+
+    for name, pattern in EXPORT_CONTRACT_CLAIMS:
+        for problem in export_contract_problems(
+            read(ROOT / name), pattern, contract=AI_EXPORT_SETTINGS_VERSION, mirrored=MIRRORED_UPSTREAM_AIEXPORT_VERSION, label=name
+        ):
+            err(problem)
+    example = ROOT / "docs" / "runtime-payload-manifest.example.json"
+    if example.exists():
+        stamped = json.loads(read(example)).get("export_registry_version")
+        if stamped != AI_EXPORT_SETTINGS_VERSION:
+            err(f"docs/runtime-payload-manifest.example.json: export_registry_version {stamped} != tree {AI_EXPORT_SETTINGS_VERSION}")
+
+
+# ③ 闸门两侧的数字：EN 的 gated 行 + 两份 README 的免闸行（zh 此前没有免闸行，EN 停在 84 / 8）。
+GATE_COUNT_CLAIMS: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    ("README_EN.md", re.compile(r"`(\d+)` technique tools trigger `must_ask_user=true`"), "gated"),
+    ("README.md", re.compile(r"(\d+) 个注册表 / 知识 / 解析类工具"), "exempt"),
+    ("README_EN.md", re.compile(r"`(\d+)` registry / knowledge / parser tools"), "exempt"),
+)
+
+
+def gate_count_problems(text: str, pattern: re.Pattern[str], *, expected: int, label: str) -> list[str]:
+    hits = pattern.findall(text)
+    if not hits:
+        return [f"{label}: no claim matches {pattern.pattern!r} (keep the gate / exempt claim in this lockable form)"]
+    return [f"{label}: claims {hit} but the registry-derived value is {expected}" for hit in hits if int(hit) != expected]
+
+
+def check_gate_counts() -> None:
+    from horosa_skill.agent_guidance import PREFLIGHT_EXEMPT_TOOLS
+
+    expected = {"gated": expected_gated(), "exempt": len(PREFLIGHT_EXEMPT_TOOLS)}
+    for name, pattern, kind in GATE_COUNT_CLAIMS:
+        for problem in gate_count_problems(read(ROOT / name), pattern, expected=expected[kind], label=name):
+            err(problem)
+
+
+ONLY_CHECKS = {
+    "third-party-facts": lambda strict: check_third_party_facts(strict_staleness=strict),
+    "doc-map": lambda strict: check_doc_map(),
+    "lessons": lambda strict: check_lessons_distilled(),
+    "mirrors": lambda strict: check_agent_mirrors_generated(),
+    "readme-diagrams": lambda strict: check_readme_diagrams_generated(),
+    "group-headers": lambda strict: check_group_headers(),
+    "export-contract": lambda strict: check_export_contract_versions(),
+    "gate-counts": lambda strict: check_gate_counts(),
+}
+
+
+def main() -> None:
+    argv = sys.argv[1:]
+    strict = "--strict-staleness" in argv
+    only = argv[argv.index("--only") + 1] if "--only" in argv and argv.index("--only") + 1 < len(argv) else None
+    if only:
+        if only not in ONLY_CHECKS:
+            raise SystemExit(f"docs-sync: unknown --only {only!r}; choose from {sorted(ONLY_CHECKS)}")
+        ONLY_CHECKS[only](strict)
+        for warning in WARNINGS:
+            print(f"::warning::{warning}")
+        if ERRORS:
+            raise SystemExit(f"docs-sync[{only}]: FAIL\n- " + "\n- ".join(ERRORS))
+        print(f"docs-sync[{only}]: ok")
+        return
+    version = expected_version()
+    check_versions(version)
+    check_tool_coverage()
+    check_test_count_consistency()
+    check_test_count_is_real()
+    check_stale_claims(version)
+    check_pinned_install_commands(version)
+    check_platform_table()
+    check_docker_claims()
+    check_agent_mirrors()
+    check_agent_entry_docs()
+    check_mirror_count_claims()
+    check_no_pypi_install_claims()
+    check_client_matrix_connectors()
+    check_client_example_configs()
+    check_links()
+    check_conflict_markers()
+    check_frontmatter()
+    check_envelope_schema_version()
+    check_compact_surface_count()
+    check_full_surface_counts()
+    check_group_headers()
+    check_export_contract_versions()
+    check_gate_counts()
+    check_knowledge_counts()
+    check_benchmark_counts()
+    check_root_manifest_version()
+    check_doc_map()
+    check_lessons_distilled()
+    check_agent_mirrors_generated()
+    check_readme_diagrams_generated()
+    check_third_party_facts(strict_staleness=strict)
+    for warning in WARNINGS:
+        print(f"::warning::{warning}")
+    if ERRORS:
+        raise SystemExit("docs-sync: FAIL\n- " + "\n- ".join(ERRORS))
+    print(f"docs-sync: ok (version {version}, {len(TOOL_DEFINITIONS)} tools, "
+          "links/markers/frontmatter clean, doc map / lessons / mirrors / third-party ledger current)")
+
+
+if __name__ == "__main__":
+    main()

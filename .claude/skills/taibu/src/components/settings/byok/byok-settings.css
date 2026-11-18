@@ -1,0 +1,62 @@
+/* Own model connections: the card list reuses the MCP list rules (mcp/mcp-settings.css); a card opens into the editor. */
+.settings-list-item.byok-connection { flex-direction: column; align-items: stretch; gap: .75rem; }
+.settings-list-item.byok-connection[data-editing] { background: var(--background-secondary); }
+.byok-chips { display: flex; flex-wrap: wrap; gap: .375rem; margin-top: .25rem; }
+.byok-chip { display: inline-flex; align-items: center; gap: .3125rem; height: 1.5rem; padding: 0 .5rem; border-radius: .5rem; background: var(--fill-field); font-size: .75rem; color: var(--foreground-secondary); }
+.byok-muted { font-size: .75rem; color: var(--foreground-tertiary); }
+.byok-server-meta { font-family: var(--font-mono); font-size: .75rem; font-weight: 400; color: var(--foreground-tertiary); }
+.byok-url { font-family: var(--font-mono); font-size: .75rem; overflow-wrap: anywhere; color: var(--foreground); }
+
+.byok-editor { display: flex; flex-direction: column; gap: 1.25rem; }
+.byok-store { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding: .75rem 1rem; border: 1px solid var(--border); border-radius: .75rem; background: var(--surface); }
+.byok-store-text { display: flex; min-width: 0; flex-direction: column; gap: .25rem; }
+.byok-store-text span { font-size: .875rem; font-weight: 500; color: var(--foreground); }
+.byok-store-text p { font-size: .8125rem; line-height: 1.6; color: var(--foreground-secondary); }
+
+.byok-address { display: flex; flex-direction: column; gap: .5rem; }
+.byok-address-row { display: flex; align-items: center; gap: .5rem; }
+.byok-address-row > button { flex: 0 0 auto; }
+.byok-result { display: flex; flex-direction: column; gap: .25rem; padding: .5rem .75rem; border-radius: .5rem; background: var(--fill-field); font-size: .8125rem; line-height: 1.6; white-space: pre-line; overflow-wrap: anywhere; color: var(--foreground-secondary); }
+p.byok-result { display: block; }
+.byok-result[data-tone=ok] { background: color-mix(in srgb, var(--success) 12%, transparent); color: var(--success); }
+.byok-result[data-tone=error] { background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); }
+.byok-result :where(button) { margin-left: .375rem; vertical-align: baseline; }
+
+.byok-models { display: flex; flex-direction: column; gap: .625rem; }
+.byok-models-head { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+.byok-models-head h4 { font-size: .875rem; font-weight: 500; color: var(--foreground); }
+.byok-models-actions { display: flex; gap: .25rem; }
+.byok-model { display: flex; flex-direction: column; gap: .5rem; padding: .75rem; border: 1px solid var(--border); border-radius: .75rem; background: var(--surface); }
+.byok-model-main { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .5rem .625rem; }
+.byok-model-icon { display: inline-flex; flex: 0 0 1.5rem; justify-content: center; padding-bottom: .4375rem; }
+.byok-model-field { display: flex; min-width: 0; flex-direction: column; gap: .25rem; }
+.byok-model-field > span:first-child { font-size: .6875rem; line-height: 1.2; color: var(--foreground-tertiary); white-space: nowrap; }
+.byok-model-id-field { flex: 1 1 12rem; }
+.byok-model-id { position: relative; min-width: 0; }
+.byok-model-usage { flex: 0 0 6.5rem; }
+.byok-model-vision { flex: 0 0 auto; }
+.byok-model-check { display: inline-flex; height: 2rem; align-items: center; gap: .375rem; font-size: .8125rem; color: var(--foreground-secondary); white-space: nowrap; }
+.byok-model-effort { flex: 0 1 9.5rem; }
+.byok-model-effort > [role=combobox] { width: 100%; }
+.byok-model-id-toggle { position: absolute; inset: 0; width: 100%; border-radius: .5rem; color: var(--foreground-tertiary); pointer-events: none; }
+.byok-model-id-chevron { position: absolute; top: 50%; right: .25rem; translate: 0 -50%; display: inline-flex; width: 1.5rem; height: 1.5rem; align-items: center; justify-content: center; border-radius: .375rem; pointer-events: auto; }
+.byok-model-id-chevron:hover { background: var(--fill-ghost-hover); color: var(--foreground); }
+.byok-model-options { display: flex; width: var(--anchor-width, 18rem); max-width: calc(100vw - 1rem); flex-direction: column; gap: 1px; padding: .25rem; }
+.byok-model-option { display: flex; width: 100%; min-height: 2rem; align-items: center; gap: .375rem; padding: 0 .5rem; border-radius: .375rem; font-size: .8125rem; text-align: left; overflow-wrap: anywhere; }
+.byok-model-option:hover, .byok-model-option[aria-pressed=true] { background: var(--fill-ghost-hover); }
+.byok-option-context { margin-left: auto; font-size: .75rem; color: var(--foreground-tertiary); }
+.byok-model-empty { display: flex; flex-direction: column; align-items: flex-start; gap: .5rem; padding: .25rem; font-size: .8125rem; color: var(--foreground-secondary); }
+.byok-model-options > li { display: flex; min-height: 2rem; flex-shrink: 0; align-items: center; gap: .375rem; padding: 0 .5rem; border-radius: .375rem; cursor: pointer; font-size: .8125rem; overflow-wrap: anywhere; }
+.byok-model-options > li:hover, .byok-model-options > li[aria-selected=true] { background: var(--fill-ghost-hover); }
+.byok-model-options > .byok-option-hint { cursor: default; font-size: .75rem; color: var(--foreground-tertiary); }
+.byok-model > .mcp-hint { padding-left: 2rem; }
+
+.byok-editor-foot { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+.byok-editor-foot [role=alert] { flex: 1 0 100%; font-size: .8125rem; line-height: 1.5; color: var(--danger); }
+.byok-spacer { flex: 1; }
+
+@media (max-width: 767px) {
+  .byok-model-id-field { flex-basis: calc(100% - 2rem); }
+  .byok-model-effort { flex: 1 1 8rem; }
+  .byok-model > .mcp-hint { padding-left: 0; }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "obsidian-knowledge",
+  "owner": {
+    "name": "Ricardo Decal"
+  },
+  "metadata": {
+    "description": "Skills, hooks, and conventions for maintaining Obsidian knowledge base vaults"
+  },
+  "plugins": [
+    {
+      "name": "obsidian-knowledge",
+      "source": "./",
+      "description": "Skills, hooks, and conventions for maintaining Obsidian knowledge base vaults",
+      "version": "3.30.35"
+    }
+  ]
+}

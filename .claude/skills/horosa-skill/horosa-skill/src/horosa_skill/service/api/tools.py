@@ -1,0 +1,1093 @@
+"""工具 API（ToolsAPI）：list_tools、本地工具分派表、run_tool（闸门、富化、存档、信封）。"""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from collections.abc import Callable
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from functools import partial
+from typing import Any
+
+from pydantic import ValidationError
+
+from horosa_skill import __version__
+from horosa_skill.agent_guidance import build_tool_input_contract
+from horosa_skill.decisions.layer import decision_records
+from horosa_skill.engine.registry import (
+    LOOKUP_TOOLS,
+    TOOL_DEFINITIONS,
+    ToolDefinition,
+)
+from horosa_skill.errors import HorosaSkillError, ToolValidationError, bilingual
+from horosa_skill.exports import build_export_registry, parse_export_content
+from horosa_skill import input_fields as F
+from horosa_skill.input_fields import input_notes_scope, is_blank
+from horosa_skill.input_normalization import (
+    _normalize_iana_zone_value,
+    apply_field_aliases,
+    field_issues_error,
+    missing_fields_error,
+    normalize_request_payload,
+    tool_error_from_validation,
+)
+from horosa_skill.knowledge import (
+    build_knowledge_registry,
+    read_knowledge_entry,
+)
+from horosa_skill.schemas.common import ErrorInfo, ToolEnvelope
+from horosa_skill.service._context import (
+    _degrade,
+    _degrade_collector,
+    _memory_save_failed,
+    _run_query_scope,
+    _run_tool_scope,
+    without_presentation_keys,
+)
+from horosa_skill.reports.technique_card import annotate_setting_sources
+from horosa_skill.zeri_conditions import NEGATE_RULE, echo_summary_line, zeri_tools
+from horosa_skill.service.api.place import place_caveat_notes, place_resolution_note
+from horosa_skill.service.text.predictive import _PERIOD_PREDICTIVE_TOOLS
+from horosa_skill.service.endpoints import _SHENSHU_ENDPOINTS
+from horosa_skill.service.envelope import (
+    _apply_response_view,
+    _cn_unified_zone_note,
+    _extract_entities,
+    _generic_summary,
+    _missing_sections_warning,
+    _with_operational_recovery,
+)
+from horosa_skill.service.export import TOOL_EXPORT_TECHNIQUE_MAP, _attach_export_contract
+from horosa_skill.knowledge import search as knowledge_search
+from horosa_skill.knowledge import user as user_knowledge
+from horosa_skill.knowledge.user import build_context as build_user_knowledge_context
+from horosa_skill import profiles as birth_profiles
+from horosa_skill.service.text.chart_family import (
+    _apply_chart_request_defaults,
+    _india_apply_school_presets,
+    _india_chart_remote_payload,
+)
+
+
+def _redact_knowledge_text(envelope: dict[str, Any]) -> dict[str, Any]:
+    """存档只记自备资料的引用，不存正文（隐私：删了笔记，旧存档里不该还有全文；报告分享出去也不该带上）。"""
+    data = envelope.get("data")
+    if isinstance(data, dict) and isinstance(data.get("knowledge_context"), dict):
+        envelope = {**envelope, "data": {**data, "knowledge_context": user_knowledge.redact_for_storage(data["knowledge_context"])}}
+    return envelope
+
+
+# 结果随性别而变的技法：没有性别不起盘（v0.50.0，tool.missing_gender），旧行为是悄悄按男命排。名单只有一份，与澄清闸的
+# 「事实」同源（agent_guidance.questions.GENDER_FACT_TOOLS，1 / 0 两种性别逐行实测）——合并深审两批时曾是两份：入口 12 个、
+# 闸门 17 个，正传 / 北极 / 南极 / 紫微择日缺性别时 CLI 与直调照样按男排（实测这四个的大运 / 条文 / 命局随性别变）。
+from horosa_skill.agent_guidance.questions import GENDER_FACT_TOOLS as GENDER_DEPENDENT_TOOLS  # noqa: E402
+from horosa_skill.agent_guidance.questions import gender_required, place_fields_required  # noqa: E402
+
+
+# 技法内部再调技法（择日铸展示盘、三式合一、七政分盘…）时为 True：那些载荷是代码拼的事件时刻，不是用户的命主——性别闸只拦入口调用。
+_INSIDE_TECHNIQUE: ContextVar[bool] = ContextVar("horosa_inside_technique", default=False)
+# 这次 run_tool 是否要在 service 层判设置确认闸（审计 A-4）：档案并进来之后、地名解析之前判（与入口层同一份裁决）。
+_GATE_ENFORCE: ContextVar[bool] = ContextVar("horosa_gate_enforce", default=False)
+
+
+def _key_paths(payload: Any) -> frozenset[str]:
+    """载荷里写了的键路径（顶层 + 嵌套一层：`liuyaoSettings.askType`）。值为空的不算写了。"""
+    if not isinstance(payload, dict):
+        return frozenset()
+    paths: set[str] = set()
+    for key, value in payload.items():
+        if value is None or value == "" or value == []:
+            continue
+        paths.add(str(key))
+        if isinstance(value, dict):
+            paths.update(f"{key}.{inner}" for inner, item in value.items() if item is not None and item != "")
+    return frozenset(paths)
+
+
+def _disclose_clock_target(tool_name: str, payload: dict[str, Any]) -> None:
+    """推运直调没给目标：照上游缺省按时钟取（此刻 / 今天 / 今年生日…），但**写明**（审计 F16）。以前 warnings 为空，
+    服务端托管在别处时「服务端的今天」未必是用户的今天，模型也不知道这张盘的目标是怎么来的。dispatch 路径另有要求（没给 context.date 就拦）。"""
+    from horosa_skill.engine import time_roles
+    from horosa_skill.service import _clock
+
+    if _INSIDE_TECHNIQUE.get() or time_roles.time_role(tool_name) != time_roles.NATAL_TARGET:
+        return
+    fields = time_roles.target_fields(tool_name)
+    if not fields or not is_blank(payload.get(fields[0])):
+        return
+    today = _clock.now().strftime("%Y-%m-%d")
+    F.add_input_note(
+        f"没给推运目标（`{fields[0]}`）：按本服务的时钟取上游缺省（今天是 {today}；返照取当年生日、推运取今天 / 此刻）。"
+        f"用户问的是别的年份或日期，或服务不在用户这台机器上，请显式传 `{fields[0]}`。",
+        f"No target given (`{fields[0]}`): the upstream default was taken from this service's clock (today is {today}; returns use this "
+        f"year's birthday, progressions today / now). If the user meant another year or date, or the service runs elsewhere, pass `{fields[0]}`.",
+    )
+
+
+def _require_result_facts(tool_name: str, payload: dict[str, Any], raw_payload: dict[str, Any] | None = None) -> None:
+    # 时地：入参模型里不必填、这次起盘却要的字段（占时起课的 date/time/zone/lat/lon、读时区的神数与本地八字链的 zone）。
+    # 以前缺 zone 时 /nongli/time 收到 null → HTTP 500 / KeyError，或后端悄悄按 +08:00 算（v0.50.0 深审余项）。
+    legacy = payload.get("options") if isinstance(payload.get("options"), dict) else {}  # 神数旧写法：核心键写在 options 里（runner 提升）
+    missing = [key for key in place_fields_required(tool_name, payload) if is_blank(payload.get(key)) and is_blank(legacy.get(key))]
+    if missing:
+        raise missing_fields_error(missing, tool_name=tool_name, payload={**(raw_payload or {}), **payload})
+    _disclose_clock_target(tool_name, payload)
+    target = payload.get("datetime")
+    if isinstance(target, str) and len(target) == 4 and target.isdigit() and tool_name not in _PERIOD_PREDICTIVE_TOOLS:
+        # 只给年份的目标时刻只对「有那一年含义」的技法成立（返照 / 流年 / 小限 / 太阳弧，见 enrich._apply_yearly_target）。
+        raise field_issues_error(tool_name=tool_name, issues=[{
+            "field": "datetime", "code": "tool.invalid_datetime", "got": target,
+            "expected": bilingual("YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS", "YYYY-MM-DD or YYYY-MM-DD HH:MM:SS"), "example": f"{target}-01-01 12:00:00",
+            "ask_user": False, "message": bilingual(f"`{tool_name}` 的目标时刻要具体到日期：只给年份「{target}」不知道是哪一天。",
+                                                   f"`{tool_name}` needs a target date, not just the year '{target}'."),
+        }])
+    options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
+    if payload.get("gender") is None and options.get("gender") is not None:
+        # 神数旧写法：性别写在 options 里（runner 会提升到顶层）——同一个解析器判它，认得就算给了。
+        from horosa_skill.input_fields import FieldIssue, parse_gender
+
+        try:
+            parse_gender(options["gender"])
+        except FieldIssue as issue:
+            raise field_issues_error(tool_name=tool_name, issues=[{
+                "field": "options.gender", "code": issue.code, "got": options["gender"],
+                "expected": bilingual(issue.expected_zh, issue.expected_en), "example": issue.example,
+                "options": issue.options, "ask_user": True, "message": bilingual(issue.zh, issue.en)}]) from None
+        return
+    if gender_required(tool_name, payload) and payload.get("gender") is None and not _INSIDE_TECHNIQUE.get():
+        raise field_issues_error(tool_name=tool_name, issues=[{
+            "field": "gender", "code": "tool.missing_gender", "got": None,
+            "expected": bilingual("1 / 男 / 乾造 = 男；0 / 女 / 坤造 = 女", "1 / 男 / male = male; 0 / 女 / female = female"),
+            "example": 1, "ask_user": True, "options": [{"value": 1, "label": "男 / male"}, {"value": 0, "label": "女 / female"}],
+            "message": bilingual(
+                f"`{tool_name}` 的结果随性别而变（大运 / 大限顺逆、条文分男女），没有性别不起盘：请向用户问性别，不要默认成男。",
+                f"`{tool_name}` depends on gender (direction of the luck cycles, gendered verses); ask the user instead of assuming male.",
+            ),
+        }])
+def _profile_runs_notice(store: Any, deleted: dict[str, Any]) -> dict[str, Any]:
+    """删档案不连带删存档（那是另一件事，要用户自己决定）：告诉用户存档里还有几条提到这个人、用哪条命令删。"""
+    from horosa_skill.memory.manage import count_runs_mentioning
+
+    names = [name for name in [deleted.get("name"), *(deleted.get("aliases") or [])] if isinstance(name, str) and name.strip()]
+    if not names:
+        return {}
+    count = count_runs_mentioning(store, names)
+    if not count:
+        return {"stored_runs_mentioning": 0}
+    command = f'horosa-skill memory delete --entity "{names[0]}"'
+    return {
+        "stored_runs_mentioning": count,
+        "warnings": [
+            bilingual(
+                f"档案已删，但本机存档里还有 {count} 条记录提到「{names[0]}」，没有一起删。要删它们：`{command}`（先列出，加 --yes 才删）。",
+                f"The profile is deleted, but {count} stored runs still mention '{names[0]}' and were kept. To remove them: `{command}`"
+                " (lists first; add --yes to delete).",
+            )
+        ],
+    }
+
+
+def _zone_longitude_note(payload: Any, place_records: list[dict[str, Any]]) -> None:
+    """显式时区与经度差三小时以上（审计 F30：zone 0 / -5 配上海的坐标以前照算无提示）：多半是填错了，照算但说一声。"""
+    if not isinstance(payload, dict) or any(str(r.get("zone_source") or "").startswith("place") for r in place_records or []):
+        return
+    from horosa_skill.input_fields import add_input_note
+    from horosa_skill.input_normalization import _coerce_coordinate_decimal
+
+    zone = str(payload.get("zone") or "")
+    match = re.fullmatch(r"([+-])(\d{2}):(\d{2})", zone)
+    lon = next((v for v in (_coerce_coordinate_decimal(payload.get(k)) for k in ("gpsLon", "lon")) if v is not None), None)
+    if not match or lon is None:
+        return
+    offset = (1 if match.group(1) == "+" else -1) * (int(match.group(2)) + int(match.group(3)) / 60)
+    if abs(lon / 15 - offset) > 3:
+        add_input_note(f"时区 {zone} 与经度 {round(lon, 2)}° 差 {round(abs(lon / 15 - offset), 1)} 小时，不像同一个地方：照算，请核对时区或坐标（或改传 place）。",
+                       f"Zone {zone} and longitude {round(lon, 2)}° differ by {round(abs(lon / 15 - offset), 1)} hours, which looks wrong; computed as given — check them (or pass place).")
+
+
+_PERSON_KEYS = ("date", "time", "zone", "lat", "lon", "gpsLat", "gpsLon", "place", "profile", "name", "gender", "ad")
+
+
+def _promote_flat_first_person(tool_name: str, payload: Any) -> Any:
+    """合盘：第一人平铺在顶层（{date, time, place, outer: {…}}，弱模型很自然的写法）→ 提成 inner（审计 F31）。
+    以前回「缺 inner…收到的 ['placeResolution'] 不是这两个键」——泄漏内部键，也没把顶层的人提起来（dispatch 会提）。"""
+    if tool_name != "relative" or not isinstance(payload, dict) or isinstance(payload.get("inner"), dict):
+        return payload
+    # 只有档案名、没给 outer 时不提：那是放错了槽，profile.not_applicable 会点名 inner / outer 两个槽。
+    if not (payload.get("date") or (payload.get("profile") and isinstance(payload.get("outer"), dict))):
+        return payload
+    person = {key: payload[key] for key in _PERSON_KEYS if key in payload}
+    rest = {key: value for key, value in payload.items() if key not in person}
+    from horosa_skill.input_fields import add_input_note
+
+    add_input_note("顶层的出生字段读作第一人（inner）；第二人放在 outer。", "The top-level birth fields were read as the first person (inner); the second person goes in outer.")
+    return {**rest, "inner": person}
+
+
+# 待决项 1（第一档）：中式命理只到时辰粒度——时柱由时辰唯一确定，紫微 / 河洛 / 神数也只读时辰。用户只知道「辰时」时照算：
+# 取时辰中点、按直接时间（时辰本身是太阳时概念，不再做真太阳时换算），披露。西洋 / 七政 / 印度盘（上升两小时差 30°）仍问钟点。
+# 子时不分早晚的照旧问（早子 00–01 与晚子 23–24 差一天）。起课类神数（太玄 / 五兆 / 荆诀 / 皇极经世）用的是此刻，不在表里。
+SHICHEN_PRECISION_TOOLS: frozenset[str] = frozenset({
+    "bazi_birth", "bazi_direct", "ziwei_birth", "heluo", "canping", "yizhangjing", "zhengchuan",
+    "shaozi", "tieban", "beiji", "nanji", "chunzi", "xianqin", "cetian", "qizhengkin", "fendjing", "shenyishu",
+})
+_SHICHEN_ONLY_RE = re.compile(r"^(?P<early>早|晚|夜)?(?P<zhi>[子丑寅卯辰巳午未申酉戌亥])(?:时|時)?(?:辰)?$")
+
+
+def _accept_shichen(definition: Any, payload: Any) -> Any:
+    if definition.name not in SHICHEN_PRECISION_TOOLS or not isinstance(payload, dict) or not isinstance(payload.get("time"), str):
+        return payload
+    match = _SHICHEN_ONLY_RE.match(payload["time"].strip().replace(" ", ""))
+    if not match or (match.group("zhi") == "子" and not match.group("early")):
+        return payload
+    from horosa_skill.input_fields import SHICHEN_SPANS, add_input_note
+
+    zhi = match.group("zhi")
+    if zhi == "子":
+        clock = "23:30:00" if match.group("early") in ("晚", "夜") else "00:30:00"
+    else:
+        clock = f"{(int(SHICHEN_SPANS[zhi][0][:2]) + 1) % 24:02d}:00:00"
+    out = {**payload, "time": clock}
+    fields = getattr(definition.input_model, "model_fields", {}) or {}
+    direct = "timeAlg" in fields and out.get("timeAlg") in (None, "")
+    if direct:
+        out["timeAlg"] = 1
+    raw = payload["time"].strip()
+    add_input_note(
+        f"出生时刻只知时辰「{raw}」：按时辰中点 {clock[:5]}" + ("、直接时间（不做真太阳时换算）" if direct else "") + "起盘。"
+        "时柱由时辰唯一确定；分钟级的细节（真太阳时、刻分）不适用，若用户记得钟点请改传钟点。",
+        f"Only the double-hour '{raw}' is known: the chart uses its midpoint {clock[:5]}" + (" on direct (clock) time, no true-solar correction" if direct else "")
+        + ". The hour pillar is fixed by the double-hour; minute-level details do not apply — pass the clock time if the user remembers it.",
+    )
+    return out
+
+
+@dataclass
+class _ToolCall:
+    """一次 run_tool 的现场。`input_normalized` 放这里而不是局部变量：计算途中它会被重新绑定（上游推运缺省、印度流派预设），
+    而后端失败时的信封与存档读的都是最新值。写成计算函数的返回值，失败路径就把它丢了（tests/test_run_tool_phases.py）。"""
+
+    definition: ToolDefinition
+    input_normalized: dict[str, Any]
+    knowledge_selection: Any
+    trace: dict[str, Any]
+    degrade_notes: list[str]
+    # 这次并进载荷的命主档案（profiles.ProfileUse）：技法卡 `profiles` 与 summary 一行读它；不带 notes。
+    profile_uses: list[Any] = field(default_factory=list)
+    # 载荷里 `place` 的解析记录（service/api/place.py）：技法卡 place_resolution（结构化）+ summary 一行（中性说明），
+    # 只有要提醒的事（旧称 / 核对不了的限定词 / 没补上的时区）进 warnings——warnings 在 dispatch 里算「降级」。不进引擎请求。
+    place_records: list[dict[str, Any]] = field(default_factory=list)
+    # 入参解读说明（input_fields.add_input_note：别名改名、东八区 → +08:00、未知参数…）：成功 / 失败信封的 warnings 都回显。
+    input_notes: list[str] = field(default_factory=list)
+    # 调用方（或档案 / 地名）写进载荷的键路径（`a`、`a.b`）：技法卡逐项设置的来源（用户 / 档案 / 地点 / 缺省）按它判。
+    explicit_paths: frozenset[str] = frozenset()
+
+    @property
+    def place_notes(self) -> list[str]:
+        """地名解析的中性说明：进 summary（紧跟标题行），不算降级。入参解读说明（input_notes）另进 warnings。"""
+        return [place_resolution_note(record) for record in self.place_records]
+
+    @property
+    def place_caveats(self) -> list[str]:
+        return [note for record in self.place_records for note in place_caveat_notes(record)]
+
+    @property
+    def tool_name(self) -> str:
+        return self.definition.name
+
+
+def _failure_envelope(call: _ToolCall, *, summary: str, code: str, message: str, details: dict[str, Any]) -> ToolEnvelope:
+    profile_line = birth_profiles.profile_summary_line(call.profile_uses)
+    return ToolEnvelope(
+        ok=False,
+        tool=call.tool_name,
+        version=__version__,
+        input_normalized=call.input_normalized,
+        data={},
+        summary=[summary, *([profile_line] if profile_line else []), *call.place_notes],
+        warnings=[*call.input_notes, *call.place_caveats, *call.degrade_notes],
+        memory_ref=None,
+        error=ErrorInfo(code=code, message=message, details=details),
+        code=code,
+        message=message,
+        details=details,
+        trace_id=call.trace["trace_id"],
+        group_id=call.trace["group_id"],
+    )
+
+
+def _shenshu_runner(api: Any, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return api._run_shenshu_tool(payload, name)
+
+
+def _by_name(method: str) -> Callable[[Any, str, dict[str, Any]], dict[str, Any]]:
+    """一个 runner 服务一族技法，第一个参数是技法名。"""
+    return lambda api, name, payload: getattr(api, method)(name, payload)
+
+
+def _payload_only(method: str) -> Callable[[Any, str, dict[str, Any]], dict[str, Any]]:
+    return lambda api, _name, payload: getattr(api, method)(payload)
+
+
+def _progextra(api: Any, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return api._run_progextra_js_tool(payload, name)
+
+
+# 不走命名约定的本地工具（技法名 → (api, 技法名, 载荷) → 结果）。一批共用 runner 的技法表（神数、择日）在 `_local_runner` 里按表判。
+_LOCAL_RUNNER_OVERRIDES: dict[str, Callable[[Any, str, dict[str, Any]], dict[str, Any]]] = {
+    "export_registry": _payload_only("_local_export_registry"),
+    "export_parse": _payload_only("_local_export_parse"),
+    "knowledge_registry": _payload_only("_local_knowledge_registry"),
+    "knowledge_read": _payload_only("_local_knowledge_read"),
+    "qizhengelection": _payload_only("_run_qizheng_election_tool"),
+    "ziwei_birth": _payload_only("_run_ziwei_tool"),
+    "liureng_gods": _by_name("_run_liureng_tool"),
+    "liureng_runyear": _by_name("_run_liureng_tool"),
+    "bazi_birth": _by_name("_run_bazi_tool"),
+    "bazi_direct": _by_name("_run_bazi_tool"),
+    "triplicityrulers": _progextra,
+    "keypoints": _progextra,
+    "lunationphase": _progextra,
+}
+
+
+def _window_search_models() -> tuple[type, ...]:
+    from horosa_skill.schemas.tools.election import QimenZeriInput, TianxingInput, ZeriScanInput
+
+    return (ZeriScanInput, QimenZeriInput, TianxingInput)
+
+
+def _anchor_window_search(definition: ToolDefinition, payload: Any) -> Any:
+    """择日窗口搜索：缺展示锚点 date / time 时取窗口起点 startDate / startTime（审计 S-17）。
+
+    这些技法的 date / time 只是 [起盘信息] 的锚点（展示盘按首个命中铸），真正的搜索范围是 startDate…endDate；以前缺了它们
+    就 tool.invalid_payload + must_ask_user——让模型去问用户一个没有意义的「基准时刻」，连带地名也换不出时区。
+    只在 date 与 time 都没给、startDate 给了时补（给了一半照旧按字段报），并在 warnings 说明。星历 / 回归时间线也有 startDate，
+    但那里的 date 是本命盘，不在此列——只认择日三类模型。"""
+    if not isinstance(payload, dict) or not issubclass(definition.input_model, _window_search_models()):
+        return payload
+    start = payload.get("startDate")
+    if F.is_blank(start) or not F.is_blank(payload.get("date")) or not F.is_blank(payload.get("time")):
+        return payload
+    start_time = payload.get("startTime")
+    start_time = "00:00" if F.is_blank(start_time) else start_time
+    F.add_input_note(
+        f"没给 date / time：展示锚点取搜索窗起点 {start} {start_time}（只用于起盘信息与按地名取当日时区，不影响搜索范围）。",
+        f"No date / time given: the display anchor is the search window start, {start} {start_time} "
+        "(it only labels the chart and dates the place's zone; the search range is unchanged).",
+    )
+    return {**payload, "date": start, "time": start_time}
+
+
+
+def _export_technique_key(value: Any) -> Any:
+    """export_parse 的 technique：导出键之外也收中文标签（八字）与技法名 / MCP 名（审计 O-21：以前 technique:"八字" →
+    「Unknown AI export technique: 八字」，无中文、无可选值）。认不出的原样交下去，由 parse_export_content 拒、这里给候选。"""
+    from horosa_skill.agent_guidance import resolve_technique
+    from horosa_skill.exports.contract import TOOL_EXPORT_TECHNIQUE_MAP
+    from horosa_skill.exports.registry import AI_EXPORT_TECHNIQUES
+
+    text = str(value or "").strip()
+    keys = {item["key"] for item in AI_EXPORT_TECHNIQUES}
+    if text in keys:
+        return text
+    by_label = [item["key"] for item in AI_EXPORT_TECHNIQUES if item["label"] == text]
+    if len(by_label) == 1:
+        return by_label[0]
+    tool = resolve_technique(text)[0]
+    if tool and TOOL_EXPORT_TECHNIQUE_MAP.get(tool) in keys:
+        return TOOL_EXPORT_TECHNIQUE_MAP[tool]
+    return value
+
+class ToolsAPI:
+    def list_tools(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": tool.name,
+                "mcp_name": tool.mcp_name,
+                "execution": tool.execution,
+                "endpoint": tool.endpoint,
+                "description": tool.description,
+                "input_contract": build_tool_input_contract(tool.name),
+            }
+            for tool in TOOL_DEFINITIONS.values()
+        ]
+
+    def _user_knowledge_summary(self) -> dict[str, Any]:
+        return {
+            **user_knowledge.overview(self.settings, limit=200),
+            "how_to_use": "计算时传 knowledge=[条目 id / 标题 / #标签 / auto / ?检索词]，选中的正文挂在 data.knowledge_context"
+                          "（长条目只带与本盘相关的段落，每段标标题与行号）；检索：horosa_knowledge_search；精读一条："
+                          "knowledge_read(domain=\"user\", key=…, from_line=…)。往文件夹里放 .md / .markdown / .txt 即可新增；"
+                          "problems 列出读不了的文件和原因，not_indexed 列出格式不读的文件（PDF、Word 等，另存成 .md 或 .txt）。",
+        }
+
+    def knowledge_search(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """门面 horosa_knowledge_search：检索内置知识与自备知识库，返回排好序的片段 + 出处 + 精读参数。"""
+        from horosa_skill.schemas.tools.facades import KnowledgeSearchInput
+
+        try:
+            request = KnowledgeSearchInput.model_validate(payload)
+        except ValidationError as exc:
+            raise ToolValidationError(bilingual("知识检索的参数不对。", "Invalid payload for knowledge search."),
+                                      code="knowledge.search.invalid_payload", details={"errors": exc.errors()}) from exc
+        result = self._search_knowledge(request.model_dump())
+        # 审计 O-22：固定文字只在有用时带——全量面的工具说明已写怎么精读，只有精简面（没有 horosa_knowledge_read）与零命中才给提示；
+        # 「有 N 个文件没读入」一个进程只说一次全文，之后一句计数。
+        if self.settings.mcp_compact or not result.get("matches"):
+            result["how_to_read"] = self._how_to_read(bool(result.get("matches")))
+        if result.get("warnings"):
+            result["warnings"] = [self._not_indexed_once(line) for line in result["warnings"]]
+        return result
+
+    def _not_indexed_once(self, line: Any) -> Any:
+        match = re.match(r"知识库文件夹里有 (\d+) 个文件没有读入", str(line))
+        if not match:
+            return line
+        if not getattr(self, "_not_indexed_told", False):
+            self._not_indexed_told = True
+            return line
+        count = match.group(1)
+        return bilingual(f"知识库里仍有 {count} 个文件没读入（原因与办法见 horosa_knowledge_registry）。",
+                         f"{count} file(s) in the knowledge folder are still not read (see horosa_knowledge_registry).")
+
+    def _how_to_read(self, found: bool) -> str:
+        """怎么精读一条命中：点名的工具必须是这个进程真的暴露出去的那个。
+
+        精简面（HOROSA_MCP_COMPACT=1）没有 horosa_knowledge_read：照旧写它，客户端照着调就是 Unknown tool。"""
+        if not found:
+            return bilingual(
+                "没有命中：换个说法、拆成更短的词（两个字也能查），或去掉 domain 过滤。",
+                "No match: rephrase, use shorter terms (two Chinese characters are enough), or drop the domain filter.",
+            )
+        via_run = ("horosa_tool_run（tool_name 填 knowledge_read，request 填命中项的 read 字段）",
+                   "horosa_tool_run with tool_name=\"knowledge_read\" and request = the match's `read` object")
+        tail = ("自备笔记的 read 带 from_line，从命中段开始读。", "For user notes `read` carries from_line, so reading starts at the matching passage.")
+        if self.settings.mcp_compact:
+            return bilingual(f"精读一条：{via_run[0]}。{tail[0]}", f"To read a match in full: call {via_run[1]}. {tail[1]}")
+        return bilingual(
+            f"精读一条：horosa_knowledge_read，参数取命中项的 read 字段；工具列表里没有它时改用 {via_run[0]}。{tail[0]}",
+            "To read a match in full: call horosa_knowledge_read with the match's `read` object as arguments; "
+            f"if that tool is not in your tool list, call {via_run[1]}. {tail[1]}",
+        )
+
+    def _search_knowledge(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return knowledge_search.search_all(self.settings, payload)
+
+    def _local_export_registry(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return build_export_registry(technique=payload.get("technique"))
+
+    def _local_export_parse(self, payload: dict[str, Any]) -> dict[str, Any]:
+        technique = _export_technique_key(payload.get("technique"))
+        try:
+            parsed = parse_export_content(
+                technique=technique,
+                content=payload["content"],
+                selected_sections=payload.get("selected_sections"),
+                planet_info=payload.get("planet_info"),
+                astro_meaning=payload.get("astro_meaning"),
+            )
+        except ValueError as exc:
+            from horosa_skill.exports.registry import AI_EXPORT_TECHNIQUES
+
+            wanted = str(payload.get("technique") or "")
+            close = [item for item in AI_EXPORT_TECHNIQUES if wanted and (wanted in item["label"] or wanted in item["key"])][:5]
+            hint = "、".join(f"{item['key']}（{item['label']}）" for item in close)
+            raise ToolValidationError(
+                bilingual(f"认不出导出技法「{wanted}」：传导出键（如 bazi）、中文名（八字）或技法名都行"
+                          + (f"；是不是：{hint}" if hint else "") + "；全表见 horosa_export_registry。",
+                          f"Unknown export technique {wanted!r}: pass an export key (bazi), its Chinese label (八字) or a tool name; "
+                          "the full list is in horosa_export_registry."),
+                code="tool.invalid_export_technique",
+                details={"tool_name": "export_parse", "technique": payload.get("technique"),
+                         "candidates": [{"key": i["key"], "label": i["label"]} for i in close]},
+            ) from exc
+        # 每段正文以前给两遍：body + content（= "[段名]\nbody"），外加整篇 export_text（审计 O-28）。对外只留 body。
+        if isinstance(parsed, dict) and isinstance(parsed.get("sections"), list):
+            parsed = {**parsed, "sections": [{k: v for k, v in row.items() if k != "content"} if isinstance(row, dict) else row
+                                             for row in parsed["sections"]]}
+        return parsed
+
+    def _local_knowledge_registry(self, payload: dict[str, Any]) -> dict[str, Any]:
+        domain, _notes = knowledge_search.resolve_domain(payload.get("domain"))
+        if domain == user_knowledge.USER_DOMAIN:
+            return {"domain": user_knowledge.USER_DOMAIN, "user_knowledge": self._user_knowledge_summary()}
+        registry = build_knowledge_registry(domain=domain or None)
+        if not domain:
+            registry = {**registry, "user_knowledge": self._user_knowledge_summary()}
+        return registry
+
+    def _local_knowledge_read(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if f"{payload.get('query') or ''}".strip():
+            # 检索已有专门的门面 horosa_knowledge_search（v0.45.0）；knowledge_read 带 query 的老用法照旧可用。
+            return self._search_knowledge(payload)
+        domain, _notes = knowledge_search.resolve_domain(payload.get("domain"))
+        if domain == user_knowledge.USER_DOMAIN:
+            return user_knowledge.read_entry(self.settings, payload.get("key") or payload.get("category") or "",
+                                             from_line=payload.get("from_line"), max_lines=payload.get("max_lines"))
+        return read_knowledge_entry(payload)
+
+    def _local_runner(self, name: str) -> Callable[[dict[str, Any]], dict[str, Any]] | None:
+        """本地工具 → runner。缺省 `_run_<技法名>_tool(payload)`：加技法写好 runner 就够。认不出返回 None。"""
+        override = _LOCAL_RUNNER_OVERRIDES.get(name)
+        if override is not None:
+            return partial(override, self, name)
+        if name in self._ZERI_SCAN_TOOLS:
+            return partial(self._run_zeri_scan_tool, name)
+        if name in self._ZERI_BACKEND_TOOLS:
+            return partial(self._run_zeri_backend_tool, name)
+        if name in _SHENSHU_ENDPOINTS:
+            return partial(_shenshu_runner, self, name)
+        return getattr(self, f"_run_{name}_tool", None)
+
+    def _run_local_tool(self, definition: ToolDefinition, payload: dict[str, Any]) -> dict[str, Any]:
+        runner = self._local_runner(definition.name)
+        if runner is None:
+            raise ToolValidationError(
+                f"Unsupported local tool: {definition.name}",
+                code="tool.unsupported_local_tool",
+                details={"tool_name": definition.name},
+            )
+        return runner(payload)
+
+    @property
+    def profiles(self) -> birth_profiles.ProfileStore:
+        """命主档案库（构造不碰磁盘；只有载荷带档案名或调 horosa_profile 时才读写）。"""
+        store = self.__dict__.get("_profile_store")
+        if store is None:
+            store = self.__dict__["_profile_store"] = birth_profiles.ProfileStore(self.settings)
+        return store
+
+    def profile(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """门面 horosa_profile：命主档案 save / get / list / delete / rename / export / import（CLI `profile` 走同一个函数）。"""
+        if isinstance(payload, dict) and payload.get("action") in {"export", "import"}:
+            return self._profile_transfer(payload)
+        payload, resolution = self._profile_place_coordinates(payload)
+        result = birth_profiles.run_action(self.profiles, payload)
+        if result.get("action") == "delete":
+            result = {**result, **_profile_runs_notice(self.store, result.get("deleted") or {})}
+        if resolution is not None:
+            # 存下的坐标 / 时区来自地名：结果里回显，让 AI 念给用户确认（与技法载荷的 place 同一条解析、同一套回显）。
+            result = {**result, "place_resolution": {k: v for k, v in resolution.items() if k != "caveat_notes"},
+                      "place_note": place_resolution_note(resolution),
+                      "warnings": [*result.get("warnings", []), *place_caveat_notes(resolution)]}
+        return result
+
+    def _profile_transfer(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """档案导出 / 导入的 MCP 入口（审计待决项 8：MCPB 用户没有 CLI，换电脑搬档案是真实需求）。
+
+        export：写成报告输出目录里的一个 0600 文件，只回路径与名字清单（不把全部出生数据内联进对话）。
+        import：path 只认报告输出目录与 HOROSA_REPORT_OUTPUT_ROOTS；第一次是预演（将新增 / 将冲突逐条列名）+ confirm_token，
+        带 token 才写；整份先校验，坏一条一条都不写；文件内容只当数据（名字 / 备注原样存，读出时不当指令）。"""
+        import hashlib
+        import hmac
+        import json as _json
+        import os
+        import time
+        from datetime import UTC
+
+        from horosa_skill.fileperm import make_private_dir, make_private_file
+        from horosa_skill.service import _clock
+
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        if payload["action"] == "export":
+            document = birth_profiles.export_profiles(self.profiles)
+            folder = Path(self.store.output_dir) / "exports"
+            make_private_dir(folder)
+            path = folder / f"profiles-{_clock.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json"
+            path.write_text(_json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
+            make_private_file(path)
+            return {"ok": True, "action": "export", "path": str(path), "count": document["count"],
+                    "names": [item["name"] for item in document["profiles"]],
+                    "note": "文件含出生信息，是用户的私人数据：只把路径告诉用户，不要把内容贴进对话。"}
+        raw = str(data.get("path") or "").strip()
+        if not raw:
+            raise ToolValidationError(bilingual("import 要在 data.path 给导出文件的路径。", "import needs the export file path in data.path."),
+                                      code="profile.invalid_payload", details={"field": "data.path"})
+        path = self._report_output_path(raw, default=Path(self.store.output_dir) / "exports")
+        try:
+            blob = path.read_bytes()
+            document = _json.loads(blob.decode("utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ToolValidationError(bilingual(f"读不了 {path}：{type(exc).__name__}。", f"Cannot read {path}: {type(exc).__name__}."),
+                                      code="profile.invalid_payload", details={"field": "data.path", "path": str(path)}) from exc
+        overwrite = bool(data.get("overwrite"))
+        secret = self.__dict__.setdefault("_profile_import_secret", os.urandom(32))
+
+        def token(expires: int) -> str:
+            body = f"{hashlib.sha256(blob).hexdigest()}|{overwrite}|{expires}".encode()
+            return f"{expires}.{hmac.new(secret, body, hashlib.sha256).hexdigest()[:32]}"
+
+        given = str(data.get("confirm_token") or "")
+        if not given:
+            expires = int(time.time()) + 600
+            preview = birth_profiles.import_profiles(self.profiles, document, overwrite=overwrite, dry_run=True)
+            return {**preview, "path": str(path), "must_ask_user": True, "confirm_token": token(expires), "expires_in_seconds": 600,
+                    "next_step": "把将新增 / 将冲突的名字告诉用户，用户同意后用同样的 path / overwrite 加 data.confirm_token 再调一次。"}
+        try:
+            expires = int(given.split(".", 1)[0])
+        except ValueError:
+            expires = 0
+        if expires < time.time() or not hmac.compare_digest(given, token(expires)):
+            raise ToolValidationError(
+                bilingual("confirm_token 过期或与这次的文件 / 选项对不上：重新预演，再请用户确认。",
+                          "confirm_token expired or does not match this file / option: preview again and ask the user."),
+                code="profile.import_token_invalid", details={"must_ask_user": True})
+        return {**birth_profiles.import_profiles(self.profiles, document, overwrite=overwrite), "path": str(path)}
+
+    def _profile_place_coordinates(self, payload: Any) -> tuple[Any, dict[str, Any] | None]:
+        """save 时只给了地名、没给经纬度：用技法载荷同一条 `resolve_place_fields` 补 lat / lon（+ 按出生日期补 zone）。
+        唯一命中才补；歧义 / 找不到 / 夏令时切换日照常拒绝（place.*，带候选）。显式经纬度永远优先；这次没给坐标、
+        库里已有坐标且地名没变（例如只改备注）就不重查——同名多地的标签不该让一次改备注被拒。"""
+        if not isinstance(payload, dict) or payload.get("action") != "save" or not isinstance(payload.get("data"), dict):
+            return payload, None
+        data = payload["data"]
+        label = data.get("place")
+        if not isinstance(label, str) or not label.strip():
+            return payload, None
+        if any(data.get(key) not in (None, "") for key in ("lat", "lon", "gpsLat", "gpsLon")):
+            return payload, None
+        rows = self.profiles.all()
+        wanted = payload.get("name") or ""
+        # 与 save 同一套「同一个人」：精确名优先，再繁简折叠（媽媽 = 妈妈）。
+        previous = next((p for p in rows if birth_profiles.name_key(p.name) == birth_profiles.name_key(wanted)), None) or next(
+            (p for p in rows if birth_profiles.store_key(p.name) == birth_profiles.store_key(wanted)), None)
+        if previous is not None and previous.place == label and any(k in previous.fields for k in ("lat", "gpsLat")):
+            return payload, None
+        dated = {**(previous.fields if previous is not None else {}), **{k: v for k, v in data.items() if v is not None}}
+        # 日期 / 时间可借库里已存的（只改地名时按原出生日期取偏移）；zone 只认这次给的——换了地名还沿用旧 zone 就错了。
+        spot = {key: dated[key] for key in ("date", "time") if key in dated}
+        spot.update({key: data[key] for key in ("zone", "cnUnifiedZone") if data.get(key) is not None})
+        resolved = self.resolve_place_fields({**spot, "place": label}, tool_name="horosa_profile")
+        resolution = resolved.get("placeResolution")
+        filled = {key: resolved[key] for key in ("lat", "lon", "gpsLat", "gpsLon") if key in resolved}
+        if "zone" not in data and "zone" in resolved and (resolution or {}).get("zone_source") == "place_and_date":
+            filled["zone"] = resolved["zone"]
+        return {**payload, "data": {**data, **filled}}, resolution
+
+    def _validated_tool_input(
+        self, definition: ToolDefinition, payload: dict[str, Any], trace: dict[str, Any]
+    ) -> tuple[dict[str, Any], Any, list[Any], list[dict[str, Any]], frozenset[str]]:
+        """(规范化入参, 自备知识库点名, 并进来的命主档案, 地名解析记录, 调用方写了的键路径)。这一段的 ValidationError 有意抛出去：坏入参不是一次失败的计算。
+        先并档案、再解析地名：档案只存 place 文字标签、不进载荷，所以两者不会互相覆盖；载荷自己的 place 照常解析。"""
+        tool_name = definition.name
+        payload = _promote_flat_first_person(tool_name, payload)
+        # 命主档案在归一化与校验**之前**并进来：显式字段逐键优先，模型缺省值不会冒充「显式」压掉档案里的值。
+        # 认不出 / 有歧义的档案名与坏入参同级：拒绝，不起盘（profile.not_found / profile.ambiguous）。
+        try:
+            payload, profile_uses = birth_profiles.expand_tool_payload(
+                self.profiles, payload, model=definition.input_model, domain=definition.domain, tool_name=definition.name
+            )
+        except ToolValidationError as exc:
+            trace["error_code"] = exc.code
+            raise
+        if _GATE_ENFORCE.get():
+            from horosa_skill.service.api import gate as _gate
+
+            try:
+                _gate.enforce(tool_name, payload, "enforce")
+            except ToolValidationError as exc:
+                trace["error_code"] = exc.code
+                raise
+        payload = _anchor_window_search(definition, payload)
+        payload = _accept_shichen(definition, payload)
+        try:
+            payload = self._resolve_dir_place(definition, payload)
+            # 地名 → 坐标 + 时区（v0.48.0，service/api/place.py）：lat / lon / zone 是必填，place 得在归一化与校验之前补上；
+            # 有歧义 / 找不到 / 旧 runtime 都是结构化拒绝（place.*，带 agent_recovery），同样有意抛出去。
+            payload = self.resolve_place_fields(apply_field_aliases(payload, model=definition.input_model), tool_name=tool_name)
+        except ToolValidationError as exc:
+            trace["error_code"] = exc.code
+            raise
+        raw_payload = payload if isinstance(payload, dict) else {}  # 含 placeResolution：缺 zone 的提示要知道 place 给过
+        payload, place_records = self.pop_place_records(payload)
+        try:
+            # 归一 + 逐字段校验（v0.50.0，input_normalization）：读不懂的字段一次全列出（每个字段一条恢复条目），
+            # 做了解读的（东八区 → +08:00、1990年5月3日…）记进 input_notes，成功信封的 warnings 回显。
+            payload = normalize_request_payload(payload, model=definition.input_model, tool_name=tool_name, place_records=place_records)
+            _zone_longitude_note(payload, place_records)
+            # 自备知识库点名只决定附加上下文：校验前取走，绝不进 input_normalized / 引擎请求 / 存档 subject。
+            knowledge_selection = None
+            if isinstance(payload, dict) and "knowledge" in payload:
+                payload = dict(payload)
+                knowledge_selection = payload.pop("knowledge")
+            validated = definition.input_model.model_validate(payload)
+        except ToolValidationError as exc:
+            trace["error_code"] = exc.code
+            raise
+        except ValidationError as exc:
+            error = tool_error_from_validation(exc, tool_name=tool_name, payload=raw_payload)
+            trace["error_code"] = error.code
+            raise error from exc
+        input_normalized = validated.model_dump(exclude_none=True)
+        _require_result_facts(tool_name, input_normalized, raw_payload)
+        self._default_target_zone(definition, input_normalized)
+        return (
+            _apply_chart_request_defaults(tool_name, input_normalized),
+            knowledge_selection,
+            profile_uses,
+            place_records,
+            _key_paths(payload),
+        )
+
+    def _compute_tool_result(self, call: _ToolCall) -> dict[str, Any]:
+        """起盘 + 富化 + 导出契约 + 技法卡。"""
+        tool_name, definition = call.tool_name, call.definition
+        if definition.execution == "local":
+            response_data = self._run_local_tool(definition, call.input_normalized)
+        else:
+            assert definition.endpoint is not None
+            call.input_normalized = self._apply_upstream_predictive_defaults(tool_name, call.input_normalized)
+            if tool_name == "india_chart":
+                # 流派预设（岁差/宫制）先落进规范化输入：请求体与快照口径行同源（否则盘按 KP 岁差算、
+                # [起盘信息] 却按缺省写 Lahiri）。
+                call.input_normalized = _india_apply_school_presets(call.input_normalized)
+            remote_input = (
+                _india_chart_remote_payload(call.input_normalized) if tool_name == "india_chart" else call.input_normalized
+            )
+            if tool_name == "jieqi_year":
+                # 宿盘段的两个前端设置不进后端请求（enrich._JIEQI_SNAPSHOT_ONLY_KEYS；快照 builder 从 input_normalized 读）。
+                remote_input = {k: v for k, v in remote_input.items() if k not in self._JIEQI_SNAPSHOT_ONLY_KEYS}
+            response_data = self._call_remote(definition.endpoint, remote_input)
+            response_data = self._attach_predictive_chart_context(tool_name, call.input_normalized, response_data)
+        input_normalized = call.input_normalized
+        response_data = self._attach_natal_extras(tool_name, response_data, input_normalized)
+        response_data = self._attach_classical_derived(tool_name, response_data, input_normalized)
+        response_data = self._attach_classical_analysis(tool_name, input_normalized, response_data)
+        response_data = self._attach_chart_details(tool_name, input_normalized, response_data)
+        response_data = self._attach_jyotish_sections(tool_name, response_data, input_normalized)
+        response_data = self._attach_india_extra_vargas(tool_name, input_normalized, response_data)
+        response_data = self._attach_calendar_extras(tool_name, input_normalized, response_data)
+        response_data = self._attach_relative_score(tool_name, input_normalized, response_data)
+        response_data = self._attach_relative_ashtakoota(tool_name, input_normalized, response_data)
+        response_data = self._attach_relative_comp_charts(tool_name, input_normalized, response_data)
+        response_data = self._attach_jieqi_year_extras(tool_name, input_normalized, response_data)
+        response_data = _attach_export_contract(tool_name, input_normalized, response_data)
+        response_data = self._attach_condition_echo(tool_name, input_normalized, response_data)
+        # 技法依据卡：必须在 save_result **之前**挂，memory 才存到全量卡；
+        # `_apply_response_view` 在存档之后裁剪，且显式豁免这个键（见那里的说明）。
+        return self._attach_technique_card(tool_name, input_normalized, response_data)
+
+    def _resolve_dir_place(self, definition: Any, payload: Any) -> Any:
+        """推运地点按地名给（审计 F19）：「我现在住纽约，看今年的太阳返照」以前 dirPlace 只换来「不是本技法的参数」，盘按出生地算。
+        dirPlace 走同一条地名解析填 dirLat / dirLon；dirZone 由 _default_target_zone 按目标时刻在该地的偏移补（显式 dirZone 照用）。"""
+        fields = getattr(definition.input_model, "model_fields", {}) or {}
+        if not isinstance(payload, dict) or "dirLat" not in fields:
+            return payload
+        label = payload.get("dirPlace") or payload.get("current_place")
+        if not isinstance(label, str) or not label.strip():
+            return payload
+        out = {key: value for key, value in payload.items() if key not in ("dirPlace", "current_place")}
+        if out.get("dirLat") not in (None, "") and out.get("dirLon") not in (None, ""):
+            return out   # 显式坐标优先
+        target = re.match(r"^\s*(-?\d{1,5}-\d{2}-\d{2})", str(out.get("datetime") or ""))
+        probe = {"place": label.strip(), **({"date": target.group(1)} if target else ({"date": out["date"]} if out.get("date") else {}))}
+        resolved = self.resolve_place_fields(probe, tool_name=definition.name)
+        out["dirLat"], out["dirLon"] = resolved.get("lat"), resolved.get("lon")
+        from horosa_skill.input_fields import add_input_note
+
+        add_input_note(f"dirPlace「{label}」读作推运地点 {resolved.get('lat')} {resolved.get('lon')}；推运时区按目标时刻在该地的偏移取。",
+                       f"dirPlace '{label}' was read as the target location {resolved.get('lat')} {resolved.get('lon')}; the target zone follows that place at the target moment.")
+        return out
+
+    def _default_target_zone(self, definition: Any, payload: dict[str, Any]) -> None:
+        """推运目标时刻的时区缺省（审计 F03 / 待决项 6）：给了带钟点的目标时刻、没给 `dirZone` 时，按**目标地点在目标日期**的偏移取——
+        目标地点 = `dirLat` / `dirLon`（给了的话），否则出生地。以前缺省用出生时的偏移：1986–1991 中国夏季出生（+09:00）、欧美夏令时出生的人，
+        在标准时间的目标时刻上差一小时，按目标时刻起的盘（流年 / 返照 / 推运…）是另一张。显式 `dirZone` 照用；换算不了（无坐标、旧 runtime）
+        就不动（下游照旧按本命时区）。偏离上游缺省（AGENTS §10 登记），偏移与出生时不同才写一条说明。"""
+        fields = getattr(definition.input_model, "model_fields", {}) or {}
+        if "dirZone" not in fields or payload.get("dirZone") or not isinstance(payload.get("datetime"), str):
+            return
+        match = re.match(r"^\s*(-?\d{1,5}-\d{2}-\d{2})[ T](\d{1,2}:\d{2}(?::\d{2})?)", payload["datetime"])
+        if not match:
+            return  # 只有年份 / 日期的目标（生日时刻锚点等）不在这里补
+        target_date, target_time = match.group(1), match.group(2)
+        lat, lon, where = payload.get("gpsLat"), payload.get("gpsLon"), "出生地"
+        if payload.get("dirLat") and payload.get("dirLon"):
+            try:
+                lat = F.parse_coordinate(payload["dirLat"], axis="lat").value
+                lon = F.parse_coordinate(payload["dirLon"], axis="lon").value
+                where = "目标地点"
+            except F.FieldIssue:
+                return
+        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            return
+        cn_unified = payload.get("cnUnifiedZone") is not False
+        try:
+            point = self._zone_for_point(float(lat), float(lon), date=target_date, cn_unified=cn_unified)
+        except Exception as exc:  # noqa: BLE001 — 换算不了（旧 runtime / 没有 JS 引擎）就不补，下游照旧按本命时区；不让一条说明拖垮起盘
+            _degrade("推运目标时刻的时区换算不可得，目标时刻按出生时区读（要按别的时区读，传 dirZone）：%s", exc)
+            return
+        if not point:
+            return
+        zone = str(point.get("zone"))
+        if point.get("iana"):
+            probe = {"date": target_date, "time": target_time, "cnUnifiedZone": cn_unified}
+            zone = _normalize_iana_zone_value(str(point["iana"]), payload=probe, key="zone") or zone
+        payload["dirZone"] = zone
+        if zone != payload.get("zone"):
+            F.add_input_note(
+                f"推运目标时刻 {target_date} {target_time} 按{where}当日时区 {zone} 读（{point.get('iana') or '按坐标'}；出生时是 {payload.get('zone')}）；"
+                "要按别的时区读，传 dirZone。",
+                f"Target time {target_date} {target_time} read in the {('target place' if where == '目标地点' else 'birthplace')}'s zone on that date, {zone} "
+                f"({point.get('iana') or 'by coordinates'}; the birth was {payload.get('zone')}). Pass dirZone to read it differently.",
+            )
+
+    def _attach_condition_echo(self, tool_name: str, input_normalized: dict[str, Any], response_data: dict[str, Any]) -> dict[str, Any]:
+        """择日十技法：把这次的条件树按引擎的读法写成人话（每叶 summary + 取反 + 连接词），挂 `data.condition_echo`（深审 F5）。
+        读不出不影响结果，降级可见。"""
+        conditions = input_normalized.get("conditions")
+        if tool_name not in zeri_tools() or not conditions or not isinstance(response_data, dict):
+            return response_data
+        try:
+            echoed = self.js_client.run("zeri_conditions", {"action": "echo", "technique": tool_name, "tree": conditions})
+            data = echoed.get("data") if isinstance(echoed, dict) else None
+            if not isinstance(data, dict) or not data.get("ok"):
+                raise ValueError((data or {}).get("error") or "no data")
+        except Exception as exc:  # noqa: BLE001 - 回显是说明，不能拖垮一次算好的择日
+            _degrade("择日条件回显不可得：%s", exc)
+            return response_data
+        echo = {"lines": data.get("lines") or [], "negate_rule": bilingual(*NEGATE_RULE)}
+        if data.get("unknown"):
+            echo["unknown_types"] = data["unknown"]
+        return {**response_data, "condition_echo": echo}
+
+    def _with_user_knowledge(self, call: _ToolCall, response_data: dict[str, Any]) -> tuple[dict[str, Any], Any, str | None]:
+        """把自备知识库的选中条目挂上去：(结果, 知识上下文, 失败说明)。附加资料出错绝不该让一张算好的盘作废。"""
+        if call.knowledge_selection in (None, "", []) or not isinstance(response_data, dict):
+            return response_data, None, None
+        card = response_data.get("technique_card") if isinstance(response_data.get("technique_card"), dict) else {}
+        snapshot = response_data.get("export_snapshot") if isinstance(response_data.get("export_snapshot"), dict) else {}
+        try:
+            knowledge_context = build_user_knowledge_context(
+                self.settings, call.knowledge_selection, tool_name=call.tool_name,
+                technique=TOOL_EXPORT_TECHNIQUE_MAP.get(call.tool_name), domain=call.definition.domain,
+                technique_label=str((card.get("technique") or {}).get("label") or "") or None,
+                # 长条目按「与这张盘相关」挑段落：拿本次导出正文当检索依据。
+                focus=str(snapshot.get("export_text") or ""),
+            )
+        except Exception as exc:  # noqa: BLE001 - 附加资料出错绝不该让一张算好的盘作废
+            return response_data, None, bilingual(
+                f"自备知识库这次没能带入（{type(exc).__name__}: {exc}）；盘面结果不受影响。",
+                f"Your knowledge entries could not be attached ({type(exc).__name__}: {exc}); the chart is unaffected.",
+            )
+        return {**response_data, "knowledge_context": knowledge_context}, knowledge_context, None
+
+    def _success_envelope(self, call: _ToolCall, response_data: dict[str, Any]) -> ToolEnvelope:
+        response_data, knowledge_context, knowledge_failure = self._with_user_knowledge(call, response_data)
+        summary = _generic_summary(call.tool_name, response_data)
+        if call.profile_uses and isinstance(response_data, dict):
+            # 出处：哪个档案、填了哪些键、哪些被本次显式值压过。不带 notes / 别名 / 地点标签。
+            card = response_data.get("technique_card")
+            if isinstance(card, dict):
+                card["profiles"] = [use.card() for use in call.profile_uses]
+            summary = [*summary, birth_profiles.profile_summary_line(call.profile_uses)]
+        # 工具内部经 `_warnings` 上抛的降级说明（如子引擎不可用）落入 envelope.warnings，
+        # 不静默：调用方能看到「结果不完整」而 ok 仍为 True（优雅降级 ≠ 无声降级）。
+        # 地名解析一行紧跟标题行（标题仍是 summary[0]：dispatch 只取每个子结果的 summary[:1]）。
+        summary = [*summary[:1], *call.place_notes, *summary[1:]]
+        echo = response_data.get("condition_echo") if isinstance(response_data, dict) else None
+        if isinstance(echo, dict) and echo.get("lines"):
+            # 择日：条件按引擎的读法回显一行（取反 / 判法一眼可见；全文与逐行在 data.condition_echo）。
+            summary = [*summary[:1], echo_summary_line(echo["lines"]), *summary[1:]]
+        warnings: list[str] = [*call.input_notes, *call.place_caveats]
+        if isinstance(response_data, dict) and isinstance(response_data.get("technique_card"), dict):
+            # 每项设置的来源（深审 F10）：用户给的 / 命主档案 / 地点推得 / 缺省。
+            annotate_setting_sources(
+                response_data["technique_card"], explicit_paths=call.explicit_paths,
+                profile_keys={key for use in call.profile_uses if not use.slot for key in use.filled},
+                place_keys={key for record in call.place_records if not record.get("spot")
+                            for key in ("lat", "lon", "gpsLat", "gpsLon", "zone", "pos", "geoZone", "zoneAdvisory")
+                            if key != "zone" or record.get("zone_source") in ("place_and_date", "place_and_query_date", "coordinates_and_date")},
+            )
+        if call.place_records and isinstance(response_data, dict) and isinstance(response_data.get("technique_card"), dict):
+            # 技法卡在存档之前就挂好了（_compute_tool_result）；这里补上「地点是怎么来的」，同一份存进 memory。
+            response_data["technique_card"]["place_resolution"] = [
+                {key: value for key, value in record.items() if key != "caveat_notes"} for record in call.place_records
+            ]
+        if isinstance(response_data, dict):
+            raised = response_data.pop("_warnings", None)
+            if isinstance(raised, list):
+                warnings.extend(str(item) for item in raised if f"{item}".strip())
+        warnings.extend(note for note in call.degrade_notes if note not in warnings)
+        zone_note = _cn_unified_zone_note(call.input_normalized)
+        if zone_note and zone_note not in warnings:
+            warnings.append(zone_note)
+        # 预设段缺席 → warnings + summary 各一条：agent 不翻 export_snapshot 也知道结果不完整。
+        if knowledge_context is not None:
+            warnings.extend(user_knowledge.context_warnings(knowledge_context))
+        if knowledge_failure:
+            warnings.append(knowledge_failure)
+        missing_note = _missing_sections_warning(response_data)
+        if missing_note:
+            warnings.append(missing_note)
+            summary = [*summary, missing_note]
+        return ToolEnvelope(
+            ok=True,
+            tool=call.tool_name,
+            version=__version__,
+            input_normalized=call.input_normalized,
+            data=response_data,
+            summary=summary,
+            warnings=warnings,
+            memory_ref=None,
+            error=None,
+            trace_id=call.trace["trace_id"],
+            group_id=call.trace["group_id"],
+        )
+
+    def _persist_tool_result(
+        self, call: _ToolCall, envelope: ToolEnvelope, *, run_id: str | None, query_text: str | None, evaluation_case_id: str | None
+    ) -> None:
+        """写进本地记忆，补 `memory_ref` 与技法卡的 refs。存档是旁路：写不进去不许丢掉已经算好的结果。"""
+        trace = call.trace
+        try:
+            effective_run_id = run_id or self.store.create_run(
+                entrypoint="tool",
+                query_text=query_text,
+                subject=call.input_normalized,
+                group_id=trace["group_id"],
+            )
+            self.store.record_entities(
+                effective_run_id,
+                _extract_entities(call.input_normalized, query_text) + [
+                    # 按档案名能查回这个人的历次起盘（horosa_memory_query entity="妈妈"）。
+                    {"entity_type": "profile", "entity_key": birth_profiles.name_key(use.name), "display_name": use.name, "metadata": {"slot": use.slot}}
+                    for use in call.profile_uses
+                ],
+            )
+            memory_ref = self.store.record_tool_result(
+                run_id=effective_run_id,
+                tool_name=call.tool_name,
+                ok=envelope.ok,
+                input_normalized=call.input_normalized,
+                envelope_dict=_redact_knowledge_text(envelope.model_dump(mode="json")),
+                summary=envelope.summary,
+                warnings=envelope.warnings,
+                error=envelope.error.model_dump(mode="json") if envelope.error else None,
+                trace_id=trace["trace_id"],
+                group_id=trace["group_id"],
+                evaluation_case_id=evaluation_case_id,
+            )
+            envelope.memory_ref = memory_ref
+            trace["run_id"] = effective_run_id
+            trace["artifact_path"] = memory_ref.artifact_path
+            # run_id 要到存档时才存在，所以技法卡的 refs 只能在这里补。存档里的那份没有自己的
+            # run_id（自指），这是正常的——取回时 run_id 本来就是你用来取它的那把钥匙。
+            card = envelope.data.get("technique_card")
+            if isinstance(card, dict):
+                card["refs"] = {
+                    "run_id": effective_run_id,
+                    "trace_id": trace["trace_id"],
+                    "group_id": trace["group_id"],
+                }
+        except Exception as exc:  # noqa: BLE001 - 存档是旁路：写不进去不许丢掉已经算好的结果
+            envelope.memory_ref = None
+            envelope.warnings.append(_memory_save_failed(exc))
+
+    def run_tool(
+        self,
+        tool_name: str,
+        payload: dict[str, Any],
+        *,
+        save_result: bool | None = None,
+        run_id: str | None = None,
+        query_text: str | None = None,
+        group_id: str | None = None,
+        evaluation_case_id: str | None = None,
+        gate: str | None = None,
+    ) -> ToolEnvelope:
+        """`gate`：缺省 "enforce"（service 层判设置确认闸，审计 A-4）；调用方已过闸或内部嵌套调用传 "checked"。"""
+        from horosa_skill.agent_guidance import resolve_technique, unknown_tool_details
+        from horosa_skill.service.api import gate as _gate
+
+        gate_mode = _gate.effective(gate)
+
+        # 注册键 / MCP 名，或唯一的中文名（「八字」→ bazi_birth，审计 S-10）；后者在 warnings 里说明按哪个技法跑。
+        resolved, name_note = resolve_technique(tool_name)
+        if resolved is None:
+            raise ToolValidationError(
+                bilingual(f"未知技法：{tool_name}", f"Unknown tool: {tool_name}"),
+                code="tool.unknown",
+                details=unknown_tool_details(tool_name),
+            )
+        tool_name = resolved
+        if save_result is None:
+            save_result = tool_name not in LOOKUP_TOOLS  # 查资料不存档（审计 S-14）；显式 True / False 照办
+
+        definition = TOOL_DEFINITIONS[tool_name]
+        workflow_group_id = group_id or self.tracer.new_group_id()
+        with self.tracer.span(
+            workflow_name="tool.run",
+            group_id=workflow_group_id,
+            metadata={
+                "entrypoint": "tool",
+                "tool_name": tool_name,
+                "runtime_target": definition.execution,
+                "query_text": query_text,
+                "payload": payload,
+                "evaluation_case_id": evaluation_case_id,
+            },
+        ) as trace, _degrade_collector() as degrade_notes, decision_records(), _run_query_scope(query_text), _run_tool_scope() as depth, input_notes_scope(fresh=_INSIDE_TECHNIQUE.get()) as input_notes:
+            nested = depth > 1
+            if name_note:
+                F.add_input_note(*name_note)
+            if nested:
+                # runner 拼子盘的调用：展示键不是算法输入，摘掉再算（见 _context.PRESENTATION_KEYS）。
+                payload = without_presentation_keys(payload)
+            token = _GATE_ENFORCE.set(gate_mode == "enforce" and not nested and not _INSIDE_TECHNIQUE.get())
+            try:
+                input_normalized, knowledge_selection, profile_uses, place_records, explicit_paths = self._validated_tool_input(
+                    definition, payload, trace)
+            finally:
+                _GATE_ENFORCE.reset(token)
+            call = _ToolCall(
+                definition, input_normalized, knowledge_selection, trace, degrade_notes,
+                profile_uses=profile_uses, place_records=place_records, input_notes=input_notes, explicit_paths=explicit_paths,
+            )
+            try:
+                inside = _INSIDE_TECHNIQUE.set(True)
+                try:
+                    computed = self._compute_tool_result(call)
+                finally:
+                    _INSIDE_TECHNIQUE.reset(inside)
+                envelope = self._success_envelope(call, computed)
+            except HorosaSkillError as exc:
+                trace["error_code"] = exc.code
+                envelope = _failure_envelope(
+                    call,
+                    # 顶层镜像三键（见 schemas/common.py）：MCP 面的闸门/校验错误一直镜像，工具自身的
+                    # 错误（runtime.not_installed / tool.ken_compute_failed / transport.*）却没有，
+                    # 按顶层 `code` 读的调用方在最常见的失败上读到 None。两条路径口径必须一致。
+                    summary=f"工具 `{tool_name}` 调用失败（{exc.code}）。",
+                    code=exc.code,
+                    message=str(exc),
+                    details=_with_operational_recovery(exc.code, exc.details),
+                )
+            except Exception as exc:  # noqa: BLE001 - last-resort guard: a surface/dispatch must never crash
+                # Tool execution and the snapshot/summary/export post-processing touch backend-shaped
+                # data and can raise unexpected ValueError/KeyError/IndexError/TypeError. Convert those
+                # into a structured ok=False envelope instead of letting a traceback escape the CLI or
+                # break the MCP session / abort a whole dispatch. (Bad-payload ValidationError is handled
+                # separately above and intentionally still raises.)
+                trace["error_code"] = "tool.internal_error"
+                envelope = _failure_envelope(
+                    call,
+                    summary=f"工具 `{tool_name}` 调用时发生内部错误。",
+                    code="tool.internal_error",
+                    message=str(exc),
+                    details={"exception_type": type(exc).__name__},
+                )
+
+            if save_result:
+                self._persist_tool_result(call, envelope, run_id=run_id, query_text=query_text, evaluation_case_id=evaluation_case_id)
+
+            # response_view 视图裁剪在存档之后：memory 保全量，返回体按需精简。只裁最外层：子调用的信封是
+            # runner 的原料（择日读展示盘的 snapshot_text），裁了就是把算出来的东西丢掉。
+            if not nested:
+                envelope = _apply_response_view(envelope, call.input_normalized)
+            trace["success"] = envelope.ok
+            trace["input_normalized"] = call.input_normalized
+            trace["summary"] = envelope.summary
+            trace["warnings"] = envelope.warnings
+            return envelope

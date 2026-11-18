@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""Ratchet the byte size of the MCP `tools/list` response (full and compact surfaces).
+
+v0.35.0 shipped a 1186 KB `tools/list` (≈318k tokens) for the default surface: 57 tools inherited all
+95 BirthInput fields, dispatch/hecan inlined a 5-way union twice (24 KB each), and every tool repeated
+a 322-byte clarification-gate paragraph. An agent paid that on every session before saying a word.
+
+v0.36.0 B1 split the schema into an advertised layer (domain core + tool-own fields + `request` escape
+hatch; `surfaces/mcp_schema.py`) and a validation layer (the full model — undeclared top-level keys
+still reach `run_tool`). This guard measures both surfaces **in-process** (no runtime needed) and
+enforces hard caps plus a ratchet: the recorded baseline may only go down, and any regression above
+2% of the baseline fails CI.
+
+Baseline lives in `contracts/mcp_list_budget.json`. Refresh with `--update-baseline` after paying
+size down. Stdlib + the package itself. Wired into CI.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import sys
+
+# Windows 控制台默认 cp1252/cp936：脚本自己 print 的中文会抛 UnicodeEncodeError 并让脚本 exit 1
+# （v0.38.0 的 repack 脚本在「打印成功信息」那一步失败过）。统一在入口把两条流改成 UTF-8。
+for _stream in (sys.stdout, sys.stderr):
+    _reconfigure = getattr(_stream, "reconfigure", None)
+    if _reconfigure is not None:
+        _reconfigure(encoding="utf-8", errors="replace")
+import tempfile
+from pathlib import Path
+from typing import Any
+
+SCRIPTS = Path(__file__).resolve().parent
+PKG_ROOT = SCRIPTS.parent
+BASELINE = PKG_ROOT / "contracts" / "mcp_list_budget.json"
+sys.path.insert(0, str(PKG_ROOT / "src"))
+
+# instructions_bytes（v0.38.1 C20）：_SERVER_INSTRUCTIONS 发给每个客户端，2048 是自设预算（已 2035/2048）——
+# 棘轮 + 硬顶，防一字破限而无人知。
+HARD_CAPS = {"full_bytes": 256 * 1024, "compact_bytes": 30 * 1024, "instructions_bytes": 2048}
+# Per-tool input schema (v0.40.0): Codex 0.158.0 (2026-09-28) added `mcp_servers.<name>.tool_input_schema_max_bytes`,
+# default 5000 B; a larger schema is "compacted" — parameter descriptions are stripped, silently. Every tool on BOTH
+# surfaces must stay under it (largest today: horosa_astro_indiazeri 3274 B, after the v0.48.0 slimming). This is a hard cap, not a ratchet.
+TOOL_INPUT_SCHEMA_CAP_BYTES = 5000
+TOLERANCE = 0.02
+
+
+def wire_shape(tool: Any) -> dict:
+    """一个工具在线上真发的样子（`mcp.types.Tool` → dict）。
+
+    SDK 把 handler 的返回值交给 `mcp/server/runner.py::_dump_result`：`model_dump(by_alias=True, mode="json",
+    exclude_none=True)`，再装进 JSON-RPC 帧——帧那一层的 `exclude_unset` 管不到已经是 dict 的 result。所以值为 None 的键
+    一个也不上线。🔴 这里曾按 `exclude_unset` 量：`MCPServer.list_tools` 构造 Tool 时把 `output_schema` / `icons` / `_meta`
+    **显式**传成 None，`exclude_unset` 不会剔它们，127 个工具每个多算 `"outputSchema": null, "icons": null, "_meta": null`
+    （共 6 559 B，线上一个字节都没有），硬顶与棘轮都按虚高的数判。守卫 `tests/test_sync314_budget_wire.py` 拿真 stdio
+    帧里的 tools 数组与这里逐项比。
+    """
+    return tool.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+
+def input_schema_bytes(tool: dict) -> int:
+    return len(json.dumps(tool.get("inputSchema") or {}, ensure_ascii=False).encode("utf-8"))
+
+
+def oversized_tool_schemas(tools: list[dict], cap: int = TOOL_INPUT_SCHEMA_CAP_BYTES) -> list[tuple[str, int]]:
+    """[(name, bytes)] for every tool whose inputSchema serialises above `cap` — pure, so the test can feed a fat tool."""
+    return sorted(((str(t.get("name")), input_schema_bytes(t)) for t in tools if input_schema_bytes(t) > cap), key=lambda x: -x[1])
+
+def undescribed_properties(tools: list[dict]) -> list[str]:
+    """广告层里没有描述的属性（含嵌套对象的字段）：`工具.字段` 列表。MCP-11 起必须为空。"""
+    found: list[str] = []
+
+    def walk(props: dict, where: str) -> None:
+        for name, prop in (props or {}).items():
+            if not isinstance(prop, dict) or not str(prop.get("description") or "").strip():
+                found.append(f"{where}.{name}")
+            if isinstance(prop, dict) and isinstance(prop.get("properties"), dict):
+                walk(prop["properties"], f"{where}.{name}")
+
+    for tool in tools:
+        walk((tool.get("inputSchema") or {}).get("properties") or {}, str(tool.get("name")))
+    return found
+
+
+def measure() -> dict[str, int]:
+    from horosa_skill.config import Settings
+    from horosa_skill.memory.store import MemoryStore
+    from horosa_skill.service import HorosaSkillService
+    from horosa_skill.surfaces.mcp_server import create_mcp_server
+
+    from horosa_skill.surfaces.mcp_server import _SERVER_INSTRUCTIONS
+
+    sizes: dict[str, int] = {"instructions_bytes": len(_SERVER_INSTRUCTIONS.encode("utf-8"))}
+    with tempfile.TemporaryDirectory() as tmp:
+        for key, compact in (("full_bytes", False), ("compact_bytes", True)):
+            settings = Settings(db_path=Path(tmp) / f"{key}.db", output_dir=Path(tmp) / "runs", mcp_compact=compact)
+            mcp = create_mcp_server(HorosaSkillService(settings, store=MemoryStore(settings)), settings)
+            # 量线上真发的键与值（`wire_shape`）；字节按 json.dumps 缺省分隔符数（`, ` / `: `），与历史基线同一把尺。
+            tools = [wire_shape(tool) for tool in asyncio.run(mcp.list_tools())]
+            sizes[key] = len(json.dumps(tools, ensure_ascii=False).encode("utf-8"))
+            sizes[key.replace("_bytes", "_tools")] = len(tools)
+            biggest = max(tools, key=input_schema_bytes)
+            sizes[key.replace("_bytes", "_max_tool_input_schema_bytes")] = input_schema_bytes(biggest)
+            sizes.setdefault("_oversized", {})[key] = oversized_tool_schemas(tools)  # type: ignore[assignment]
+            sizes.setdefault("_undescribed", {})[key] = undescribed_properties(tools)  # type: ignore[assignment]
+    return sizes
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--update-baseline", action="store_true", help="rewrite the baseline after paying size down")
+    args = ap.parse_args()
+    sizes = measure()
+    oversized = sizes.pop("_oversized", {})
+    undescribed = sizes.pop("_undescribed", {})
+
+    if args.update_baseline:
+        BASELINE.parent.mkdir(parents=True, exist_ok=True)
+        BASELINE.write_text(
+            json.dumps(
+                {
+                    "_comment": (
+                        "Ratchet baseline for the MCP tools/list byte size (full + compact surfaces, measured "
+                        "in-process). Hard caps: full ≤ 256 KB, compact ≤ 30 KB; regressions above 2% of the "
+                        "baseline fail CI. Refresh with `uv run python scripts/verify_mcp_list_budget.py --update-baseline`."
+                    ),
+                    "hard_caps": {**HARD_CAPS, "tool_input_schema_bytes": TOOL_INPUT_SCHEMA_CAP_BYTES},
+                    **sizes,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8", newline="\n",
+        )
+        print(f"baseline updated: full {sizes['full_bytes']} B ({sizes['full_tools']} tools), compact {sizes['compact_bytes']} B ({sizes['compact_tools']} tools), instructions {sizes['instructions_bytes']} B")
+        return 0
+
+    if not BASELINE.is_file():
+        print(f"missing {BASELINE.relative_to(PKG_ROOT)} — run with --update-baseline once to seed it", file=sys.stderr)
+        return 1
+    base = json.loads(BASELINE.read_text(encoding="utf-8"))
+    errors: list[str] = []
+    for key, names in undescribed.items():
+        if names:
+            errors.append(
+                f"{key}: {len(names)} advertised propert{'y' if len(names) == 1 else 'ies'} without a description "
+                f"({', '.join(names[:8])}{' …' if len(names) > 8 else ''}) — add it to surfaces/mcp_field_docs.py or stop advertising it"
+            )
+    for key, fat in oversized.items():
+        for name, size in fat:
+            errors.append(f"{key}: {name} inputSchema {size} B > {TOOL_INPUT_SCHEMA_CAP_BYTES} B (Codex tool_input_schema_max_bytes default — descriptions would be stripped)")
+    for key, cap in HARD_CAPS.items():
+        if sizes[key] > cap:
+            errors.append(f"{key}: {sizes[key]} B exceeds the hard cap {cap} B")
+        allowed = int(base.get(key, cap) * (1 + TOLERANCE))
+        if sizes[key] > allowed:
+            errors.append(f"{key}: {sizes[key]} B > baseline {base.get(key)} B (+{TOLERANCE:.0%}) — a schema/description grew; slim it or justify a new baseline")
+    if errors:
+        print("mcp tools/list budget FAILED:", file=sys.stderr)
+        for err in errors:
+            print(f"  - {err}", file=sys.stderr)
+        return 1
+    shrunk = [key for key in HARD_CAPS if sizes[key] < int(base.get(key, 0) * (1 - TOLERANCE))]
+    if shrunk:
+        print(
+            f"mcp tools/list shrank ({', '.join(f'{k} {base.get(k)}→{sizes[k]}' for k in shrunk)}); run "
+            "`uv run python scripts/verify_mcp_list_budget.py --update-baseline` to lock the gain in.",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"mcp tools/list budget OK: full {sizes['full_bytes']} B / {HARD_CAPS['full_bytes']} B "
+        f"({sizes['full_tools']} tools), compact {sizes['compact_bytes']} B / {HARD_CAPS['compact_bytes']} B "
+        f"({sizes['compact_tools']} tools), instructions {sizes['instructions_bytes']} B / {HARD_CAPS['instructions_bytes']} B, "
+        f"largest tool inputSchema {sizes['full_max_tool_input_schema_bytes']} B / {TOOL_INPUT_SCHEMA_CAP_BYTES} B"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

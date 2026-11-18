@@ -1,0 +1,174 @@
+"""Session-wide pins for the test run.
+
+Why this exists (v0.40.0 upstream-sync lesson): `HorosaJsEngineClient` resolves the core-js engine as
+`HOROSA_CORE_JS_ROOT` → the **installed runtime's bundled copy** → this repo's source tree. On a maintainer
+machine that has a runtime installed, every JS-backed tool in a test run therefore exercised the *installed*
+(possibly months-old) engine instead of the code under test. A live run against a freshly vendored backend
+reported jinkou / qimen / tongshefa section gaps that were pure artifacts of the old installed engine, while
+the repo's own engine was clean. CI never sees it (no runtime installed there), so it only bites locally —
+exactly where live verification happens. Pin the engine root to this repo for the whole session unless the
+caller explicitly overrides it (tests that exercise resolution order monkeypatch the resolver directly).
+
+Same shape, Python side: tests that spawn `python -m horosa_skill…` (stdio/http conformance, server exit,
+setup probe) get `horosa_skill` from the venv's editable install, which points at whichever checkout ran
+`uv sync` — in a git worktree that is the *main* checkout, so those tests exercised main's code (four
+parallel implementers saw "116 tools" where their worktree had 120). Prepend this checkout's `src` to
+PYTHONPATH so every child imports the code under test.
+"""
+
+from __future__ import annotations
+
+import errno
+import os
+import socket
+from pathlib import Path
+
+import pytest
+
+# 🔴 Tests never talk to 127.0.0.1:8899 / :9999 — the maintainer's desktop app lives there (AGENTS iron rule 8).
+# `run_ci_gates.py` pins both backends to the unreachable :9, but a plain `uv run pytest` did not: 34 tests build
+# `Settings(...)` with the default ports, and code without an explicit *_SERVER_ROOT falls back to them, so on a machine
+# with the desktop app open those tests sent real requests to it (2026-10-20 audit). Now (1) both roots default to :9
+# exactly as in CI — children spawned by tests inherit that — and (2) any in-process connect to the desktop ports is
+# refused as if nothing listened, which is what CI sees. Live runs name their instance explicitly (8877/9977) and are
+# untouched: setdefault never overrides an explicit value.
+for _var in ("HOROSA_SERVER_ROOT", "HOROSA_CHART_SERVER_ROOT"):
+    if not os.environ.get(_var):
+        os.environ[_var] = "http://127.0.0.1:9"
+
+DESKTOP_PORTS = frozenset({8899, 9999})
+_LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0", "::"})
+_real_connect = socket.socket.connect
+_real_connect_ex = socket.socket.connect_ex
+DESKTOP_REFUSAL = "tests never connect to the maintainer's desktop app on 127.0.0.1:8899/9999"
+
+
+def _is_desktop(address: object) -> bool:
+    return isinstance(address, tuple) and len(address) >= 2 and address[1] in DESKTOP_PORTS and str(address[0]) in _LOOPBACK
+
+
+def _guarded_connect(self: socket.socket, address: object) -> None:
+    if _is_desktop(address):
+        raise ConnectionRefusedError(errno.ECONNREFUSED, DESKTOP_REFUSAL)
+    _real_connect(self, address)
+
+
+def _guarded_connect_ex(self: socket.socket, address: object) -> int:
+    if _is_desktop(address):
+        return errno.ECONNREFUSED
+    return _real_connect_ex(self, address)
+
+
+socket.socket.connect = _guarded_connect  # type: ignore[method-assign]
+socket.socket.connect_ex = _guarded_connect_ex  # type: ignore[method-assign]
+
+REPO_CORE_JS_ROOT = Path(__file__).resolve().parents[1] / "horosa-core-js"
+REPO_SRC = Path(__file__).resolve().parents[1] / "src"
+
+if REPO_CORE_JS_ROOT.is_dir():
+    os.environ.setdefault("HOROSA_CORE_JS_ROOT", str(REPO_CORE_JS_ROOT))
+
+_pythonpath = [part for part in os.environ.get("PYTHONPATH", "").split(os.pathsep) if part]
+if str(REPO_SRC) not in _pythonpath:
+    os.environ["PYTHONPATH"] = os.pathsep.join([str(REPO_SRC), *_pythonpath])
+
+
+@pytest.fixture(autouse=True)
+def _service_gate_is_checked_unless_asked(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """service 层闸门缺省 enforce（审计 A-4）。测试套件里近千处直接调 service 测的是计算，不是闸门：缺省换成 checked；
+    专测闸门的用例标 @pytest.mark.service_gate 用真缺省（tests/test_fix314_service_gate.py）。"""
+    if request.node.get_closest_marker("service_gate") is None:
+        from horosa_skill.service.api import gate
+
+        monkeypatch.setattr(gate, "DEFAULT_GATE", gate.CHECKED)
+
+
+@pytest.fixture(autouse=True)
+def _mcp_token_never_leaks_between_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """serve 在回环 HTTP 上会生成令牌并写进 os.environ（审计 PF-05）——经 monkeypatch 登记这个键，用例结束时还原，
+    后面断言「HTTP 且没令牌」的用例才不会被前面起过 serve 的用例带偏。"""
+    monkeypatch.setenv("HOROSA_MCP_TOKEN", "")
+    monkeypatch.delenv("HOROSA_MCP_TOKEN")
+
+
+@pytest.fixture(autouse=True)
+def _host_smart_app_control_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """生成的客户端配置不许随维护机的 Smart App Control 状态变（v0.43.1-dev）。
+
+    `--entry auto` 在 SAC 为「开」的 Windows 上写 `python -m horosa_skill`；不钉住，断言 `horosa-skill serve` 的用例在这类维护机上红、
+    CI（没有 SAC）上绿。要测 SAC 分支的用例自己 monkeypatch `manager.smart_app_control_state`；真读注册表走 `read_smart_app_control_state`。
+    """
+    from horosa_skill.runtime import manager
+
+    monkeypatch.setattr(manager, "smart_app_control_state", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_the_users_real_dirs(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
+    """测试永不读写用户真实的数据目录与 runtime。
+
+    `Settings()` / `Settings.from_env()` 没给 data_dir / runtime_root 时落到 `%APPDATA%/HorosaSkill` 与
+    `%LOCALAPPDATA%/Horosa/runtime`（mac/Linux：`~/.horosa-skill` 与 `~/.horosa/runtime`）。维护机上那里装着真 runtime、
+    真记忆库：测试会往真 traces 里写记录；server_root 指向无人监听的端口、又没给 runtime_root 的用例更会去「启动」
+    真 runtime、改写它的 boot jar（2026-10-20 Windows 实测：jar 被运行中的 Java 锁着 → WinError 5，残留 324 MB 临时文件；
+    mac 上 jar 不被锁，改写会直接成功）。拒连 8899/9999 只挡住了网络，挡不住这条文件系统路径。
+    CI 上两个目录是空的，所以只在维护机咬人。要测默认路径解析本身的用例自己再 monkeypatch。
+    """
+    from horosa_skill import config
+
+    base = tmp_path_factory.mktemp("user-dirs")
+    monkeypatch.setattr(config, "_default_home_dir", lambda: base / "data")
+    monkeypatch.setattr(config, "_default_runtime_root", lambda: base / "runtime")
+
+
+# ---- 字体环境（v0.50.0-dev，docs/LESSONS.md「macOS 绿 ≠ CI 绿」）----------------------------------------------------
+# 报告渲染按本机字体走不同分支：维护机 macOS 有中文 TrueType 与 Apple Symbols，CI 的 ubuntu 一款中文 TrueType 都没有
+# （PDF 退到 reportlab 自带、不嵌入的 CID 字体，DOCX 没有可探测的中文字体，PNG 拒绝出图）。只在本机字体上写过断言的用例
+# 因此本机绿、CI 红——而且 CI 红的往往是真问题（v0.50.0 一次红了 6 条，其中 3 条是产品缺陷）。凡是断言跟字体有关的用例
+# 都用 `font_host`：每台机器把三种现场都跑一遍。
+#   host         本机实际字体
+#   no_cjk_font  没有中文 TrueType（补字链照本机）：CI ubuntu 的形状
+#   no_fonts     连补字字体（Apple Symbols / Segoe UI Symbol / DejaVu…）也没有：精简容器的形状
+FONT_HOSTS = ("host", "no_cjk_font", "no_fonts")
+
+
+def simulate_fonts(monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
+    if kind == "host":
+        return
+    from horosa_skill.reports import app_charts, renderers
+
+    monkeypatch.setattr(renderers, "_PDF_FONT_CANDIDATES", {"sc": [], "tc": []})
+    monkeypatch.setattr(renderers, "_DOCX_FONT_CANDIDATES", ())
+    if kind == "no_fonts":
+        monkeypatch.setattr(renderers, "_PDF_GLYPH_FALLBACK_CANDIDATES", {"sc": (), "tc": ()})
+        monkeypatch.setattr(app_charts, "_SYMBOL_CHAIN", None)  # 进程级缓存：按模拟的字体重算，用例结束还原
+
+
+@pytest.fixture(params=FONT_HOSTS)
+def font_host(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    simulate_fonts(monkeypatch, request.param)
+    return request.param
+
+
+@pytest.fixture(autouse=True)
+def _windows_file_sharing(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """本机按 Windows 的规则改名 / 删文件：开着的文件动不了（tests/winsim.py；v0.50.0-dev）。
+
+    v0.50.0 的 windows-smoke 红了 4 条 WinError 32（连接没关就删库 / 隔离坏库），本机全绿；知识索引的 `--rebuild` 在 Windows 上
+    隔离不了坏库也是同一类。每条用例都在模拟下跑，这一类在 macOS / Linux 上当场红。专测 POSIX 语义、Windows 上本就跳过的用例
+    标 `@pytest.mark.posix_file_semantics`。"""
+    if request.node.get_closest_marker("posix_file_semantics") is None:
+        from winsim import windows_sharing
+
+        windows_sharing(monkeypatch)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line("markers", "posix_file_semantics: 专测 POSIX 文件语义（开着也能替换 / 删），不装 Windows 共享规则的模拟")
+    config.addinivalue_line("markers", "service_gate: 用 service 层闸门的真缺省（enforce）跑，不套测试套件的 checked")
+
+
+# ---- skip reasons carry a tag (tests/skips.py; v0.50.0-dev, C-18 #2 / #10) ----------------------------------------
+# An untagged skip is turned into a failure, and the run ends with the skips counted per tag. The hooks live in
+# tests/skips.py so tests/test_skip_tags.py can load them as a plugin into a throwaway pytest run.
+from skips import pytest_runtest_makereport, pytest_terminal_summary  # noqa: E402,F401

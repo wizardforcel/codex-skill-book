@@ -1,0 +1,168 @@
+# 受限网络下安装 / Installing on a restricted network
+
+> 适用：github.com:443 直连不通、只有代理、企业证书拦截、或完全离线的机器（issue #14 那类场景）。
+> 三样东西要落到本机：① `horosa-skill` 这个 Python 包（纯 Python wheel）、② 离线 runtime 归档（macOS arm64
+> `.tar.gz` / Windows x64 `.zip`，约 0.7–0.95 GB）、③ 一次 `install` 用来解压归档并写清单。下面三条路径任选其一。
+
+## 0. 先自检（v0.38.1 起）
+
+```bash
+uv run horosa-skill doctor --probe-network   # 或 uvx --from "<wheel URL>" horosa-skill doctor --probe-network
+```
+
+`network_hints.reachability` 逐个列出清单 URL 经**每个镜像前缀**与直连的可达性（状态码 / 耗时 / 错误），`next_action`
+指向下面对应的路径。默认 `doctor` 不发任何网络请求；只有 `--probe-network`（`setup` 默认开）才探。
+
+## 1. 镜像前缀：`HOROSA_RUNTIME_MIRROR`
+
+```bash
+export HOROSA_RUNTIME_MIRROR="https://<你的镜像>/github,https://<备用镜像>"
+uv run horosa-skill install
+```
+
+- 逗号分隔、只对 `https://github.com/...` 的 URL 做**前缀替换**（`https://github.com/O/R/releases/download/...`
+  → `https://<镜像>/O/R/releases/download/...`），镜像按顺序试，原始 URL 永远排最后兜底。
+- 同一个开关同时作用于 **runtime 清单、runtime 归档、wheel 资产 URL**：`client config --launcher uvx-wheel` 生成的配置
+  会直接把镜像后的 wheel URL 写进去（`launcher.alternatives` 列出全部候选）。
+- 下载支持断点续传（`.part` 落在 `<runtime_root>/downloads/`，按归档的 sha256 定名并带一份记来历的 `.part.json`，重跑 `install` 接着传；续传带 `If-Range`，资源变了就从头下；续出来对不上 sha256 会自动从头再下一次）。断线时**有进展的那几次不算重试次数**；同一个归档同一时间只有一个 `install` 在下。一律校验 sha256：清单里本平台没有 sha256 时**拒装**（`runtime.install_sha256_missing`），除非你用 `--sha256` 自己给出摘要（v0.50.0 起；此前是不声不响地不校验）。
+
+## 2. API 直链 + 本地归档：`install --archive`
+
+`api.github.com` 通、`github.com` 不通的机器（常见于只放行 API 域名的代理）：
+
+```bash
+curl -s https://api.github.com/repos/Horace-Maxwell/horosa-skill/releases/latest \
+  | python3 -c "import json,sys; [print(a['id'], a['name']) for a in json.load(sys.stdin)['assets']]"
+# 记下两个 id：本平台归档（darwin-arm64 是 .tar.gz，win32-x64 是 .zip）与 runtime-manifest.json
+curl -L -H "Accept: application/octet-stream" -o runtime-archive \
+  https://api.github.com/repos/Horace-Maxwell/horosa-skill/releases/assets/<归档 id>
+curl -L -H "Accept: application/octet-stream" -o runtime-manifest.json \
+  https://api.github.com/repos/Horace-Maxwell/horosa-skill/releases/assets/<清单 id>
+# 清单里有本平台归档的 sha256（Windows 把 darwin-arm64 换成 win32-x64）：
+python3 -c "import json; print(json.load(open('runtime-manifest.json'))['platforms']['darwin-arm64']['sha256'])"
+uv run horosa-skill install --archive runtime-archive --sha256 <上一步印出的 sha256>
+```
+
+- 存成什么名字都行（`runtime-archive`、`runtime.zip`、原始资产名）：安装器按**文件内容**认格式，不看后缀（v0.50.0 起；
+  更早的版本按后缀认，macOS 的 tar.gz 存成 `runtime.zip` 会直接报错）。
+- `--sha256` 可省，但手工下载没有别的核对手段：代理的登录页、断在一半的下载都会被存成一个「归档」。不给 `--sha256` 时
+  结果里的 `sha256_verified` 是 `false`，`archive_sha256` 是这份文件的实际摘要。
+- 读不了的归档一律报 `runtime.install_archive_invalid`，`details.detected_format` 说它实际是什么；已装的 runtime 不会被动。
+- `--archive` 也接受 `file://` URL；安装器仍会校验归档内嵌的清单版本与布局。
+
+### 2b. 只装 JS 引擎（Linux / Intel Mac / 网关机器，v0.50.0 起）
+
+没有 runtime 归档的平台只需要平台无关的 JS 引擎资产（约 7 MB）。同一个发布页下载 `horosa-core-js-v<版本>.tar.gz`，
+摘要在清单的 `core_js.sha256`：
+
+```bash
+python3 -c "import json; print(json.load(open('runtime-manifest.json'))['core_js']['sha256'])"
+uv run horosa-skill install --engine-only --archive horosa-core-js-v<版本>.tar.gz --sha256 <上一步印出的 sha256>
+```
+
+镜像前缀（路径 1）对它同样生效；联网时直接 `install --engine-only`（或在这些平台上直接 `install`）即可。引擎落在
+`<runtime 根>/core-js/`，`uninstall --engine-only` 只删它。另需 Node.js ≥ 20.10（`node` 在 PATH 上，或 `HOROSA_NODE_BIN`）。
+
+## 3. 完全离线：U 盘搬运
+
+在一台能上网的机器上下载两件东西，拷到目标机：
+
+1. wheel：`https://github.com/Horace-Maxwell/horosa-skill/releases/download/v0.51.0/horosa_skill-0.51.0-py3-none-any.whl`
+2. 本平台的 runtime 归档（同一 release 页）。
+
+目标机（只需 uv；Python ≥ 3.12 由 uv 自动准备——uv 本身也可从镜像或离线安装包装）：
+
+```bash
+uvx --from ./horosa_skill-0.51.0-py3-none-any.whl horosa-skill install --archive ./horosa-runtime-win32-x64-v0.51.0.zip --sha256 <清单里的 sha256>
+uvx --from ./horosa_skill-0.51.0-py3-none-any.whl horosa-skill doctor
+uvx --from ./horosa_skill-0.51.0-py3-none-any.whl horosa-skill client config --format <client> --launcher uvx-wheel --write <配置文件>
+```
+
+生成的配置里 `--from` 会指向线上 wheel URL；离线机器把它改成本地 wheel 路径即可（`uvx --from <本地 .whl>` 同样成立）。
+
+## 代理与企业证书
+
+- 下载走 `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`（`NO_PROXY` 照常）；**回环探测（127.0.0.1 的本地服务）永远不走代理**，
+  否则 Clash/VPN 会把健康的后端报成不可达。
+- 企业根证书：`SSL_CERT_FILE=<你的 CA bundle>`；uv 侧用 `UV_NATIVE_TLS=1` 让它信任系统证书库。
+- Windows PowerShell 5.1 的管道会按控制台代码页重编码——给 agent 传 JSON 用 `--input <file>` / `--output <file>`，
+  别用 `|`（见 SKILL.md「Shell-only agents」）。
+
+## 错误码速查
+
+| 码 | 意思 | 处置 |
+| --- | --- | --- |
+| `runtime.install_manifest_fetch_failed` | 清单 URL 经所有镜像都取不到 | 路径 1 换镜像 / 路径 2 直链 |
+| `runtime.install_download_failed` | 归档下载失败（`resume_note` 说明 `.part` 是否保留） | 重跑 `install` 续传；或路径 2/3 |
+| `runtime.install_sha256_mismatch` | 所有地址给的归档都与清单 sha256 不符（单个镜像给错文件时会自动换下一个） | 换镜像或走直链；别 `--force` 跳过校验 |
+| `runtime.install_archive_invalid` | `--archive` 给的文件读不了：`details.detected_format` 为 `html` / `json`（下到了网页或接口报错）、`empty` / `unknown`（不是归档）、`zip` / `tar.gz`（下载没下完） | 重新下载本平台归档，带 `--sha256` 再装 |
+| `runtime.install_sha256_invalid` | `--sha256` 的值不是 64 位十六进制 | 从 `runtime-manifest.json` 的 `platforms.<平台>.sha256` 抄 |
+| `runtime.install_sha256_missing` | 清单里本平台的条目没有 sha256，下载来的归档无从校验（清单与归档都在本机时放行，结果里有 `runtime.install_unverified` 告警） | 从发布页拿到 sha256 后 `install --sha256 <摘要>`；或去掉自定义清单用官方的 |
+| `runtime.install_manifest_invalid` | `--manifest-url` 给的本地文件不是清单（`details.reason`：HTML 页面 / 空文件 / 不是 JSON / 没有 `platforms`） | 重新下载 `runtime-manifest.json` |
+| `runtime.install_download_in_progress` | 另一个 `install` 正在下载同一个归档（`details.holder`） | 等它结束；它失败了再重跑，会续传 |
+| `runtime.install_start_in_progress` | runtime 正在启动，这时换目录会把启动器脚下的文件搬走；已装的 runtime 没动 | 等启动结束（`horosa-skill runtime status`）后重跑 `install` |
+| `runtime.install_long_path` | Windows 路径超 260 且未开长路径 | 设 `HOROSA_RUNTIME_ROOT=C:\horosa` 或开注册表 `LongPathsEnabled` |
+| `runtime.path_not_ascii` | Windows 上 runtime 根含非 ASCII 字符（随包 java.exe / Swiss Ephemeris 按 ANSI 读路径，装了也起不来） | `HOROSA_RUNTIME_ROOT=C:\horosa`（纯 ASCII）后重跑 `install` |
+| `runtime.install_missing_platform` | 清单里没有本机平台，也没有 JS 引擎资产（0.51.0 之前的发布） | 换 0.51.0 及以后的清单：Intel Mac / Linux 会只装 JS 引擎（结果 `mode: engine_only`、`warnings[].code == runtime.engine_only_installed`），其余技法走网关模式（`HOROSA_SERVER_ROOT` 指向装了 runtime 的机器）；Windows ARM 不会走到这里——它自动装 win32-x64 载荷走仿真（结果里 `warnings[].code == runtime.platform_emulated`），走到这里说明清单连 win32-x64 都缺 |
+| `runtime.engine_asset_missing` | `install --engine-only` 用的清单没有 `core_js` 条目（0.51.0 之前的发布） | `--manifest-url` 指向更新的发布清单，或设 `HOROSA_CORE_JS_ROOT` |
+| `runtime.engine_asset_invalid` | 给的文件不是 JS 引擎资产（`details.problems` 说缺什么） | 重新下载 `horosa-core-js-v<版本>.tar.gz`，带 `--sha256` 再装 |
+| `runtime.install_download_failed` 反复出现在慢网 / 企业代理下 | 每块 1 MiB 之间等待超过 120 s，或 3 次重试用尽 | `HOROSA_RUNTIME_DOWNLOAD_TIMEOUT_SECONDS=600` / `HOROSA_RUNTIME_DOWNLOAD_ATTEMPTS=10`（每个镜像各算一轮）；`doctor --probe-network` 先看哪个镜像通 |
+| `runtime.install_os_too_old` | 本机系统版本低于载荷声明的 `min_os`（派生的 Windows 载荷要 Windows 10 1809+） | 升级系统，或走网关模式 |
+
+---
+
+## English
+
+Applies to machines where `github.com:443` is unreachable, only a proxy is allowed, a corporate CA intercepts
+TLS, or there is no network at all. Three things must land on the machine: the pure-Python **wheel** of
+`horosa-skill`, the platform **runtime archive** (~0.7–0.95 GB), and one `install` run to unpack it.
+
+**0. Probe first** — `horosa-skill doctor --probe-network` lists, per mirror prefix and for the direct URL,
+whether the release manifest is reachable (status / latency / error). Plain `doctor` never touches the network.
+
+**1. Mirror prefix** — `HOROSA_RUNTIME_MIRROR="https://<mirror>/github,https://<backup>"`: comma-separated
+prefixes that replace `https://github.com` for the manifest, the runtime archives *and* the wheel URL
+(`client config --launcher uvx-wheel` writes the mirrored URL into the client config; `launcher.alternatives`
+lists every candidate). The original URL is always the last fallback; downloads resume (`.part` under
+`<runtime_root>/downloads/`, named by the archive's sha256 with a `.part.json` recording where it came from; resuming sends
+`If-Range`, and a resumed file that fails the sha256 is downloaded once more from scratch). Interrupted attempts that made
+progress do not count against the retries, and only one `install` downloads a given archive at a time. Everything is
+sha256-checked: a manifest entry without a sha256 is refused (`runtime.install_sha256_missing`) unless you pass the digest
+yourself with `--sha256` (since v0.51.0; before that the check was silently skipped).
+
+**2. Assets API + local archive** — when `api.github.com` works but `github.com` does not: list
+`releases/latest` assets, download your platform archive **and** `runtime-manifest.json` with
+`Accept: application/octet-stream`, then `horosa-skill install --archive runtime-archive --sha256 <platforms.<key>.sha256 from the manifest>`
+(`file://` URLs work too). The file name does not matter: the installer recognises zip / tar.gz from the content
+(since v0.51.0), and anything unreadable — a proxy login page, a truncated download — is refused as
+`runtime.install_archive_invalid` with `details.detected_format`, leaving the installed runtime untouched.
+
+**2b. JS engine only (Linux / Intel Mac / gateway machines, since v0.51.0)** — download `horosa-core-js-v<version>.tar.gz`
+(about 7 MB) from the same release and run `horosa-skill install --engine-only --archive <file> --sha256 <core_js.sha256 from the
+manifest>`; online, `install --engine-only` (or plain `install` on those platforms) does the same through the mirror prefixes. It lands
+in `<runtime root>/core-js/`, `uninstall --engine-only` removes only it, and it needs Node.js >= 20.10 (`node` on PATH or `HOROSA_NODE_BIN`).
+
+**3. Fully offline (USB)** — copy the wheel and the runtime archive from a connected machine, then
+`uvx --from ./horosa_skill-0.51.0-py3-none-any.whl horosa-skill install --archive ./<archive> --sha256 <digest>`; a local
+`.whl` path works everywhere the release URL does.
+
+**Proxies & corporate CAs** — downloads honour `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`; loopback probes to the
+local services never go through a proxy. Set `SSL_CERT_FILE` for a private CA and `UV_NATIVE_TLS=1` so uv
+trusts the system store. On Windows PowerShell 5.1 pass JSON via `--input`/`--output` files, not pipes.
+
+Error codes: `runtime.install_manifest_fetch_failed` (try a mirror / the API path), `runtime.install_manifest_invalid` (the
+local manifest file is not a manifest: `details.reason` says HTML page / empty / not JSON / no `platforms`),
+`runtime.install_sha256_missing` (no digest for this platform — pass `--sha256` from a source you trust),
+`runtime.install_download_in_progress` (another install is downloading the same archive — wait for it), `runtime.install_download_failed`
+(re-run to resume), `runtime.install_sha256_mismatch` (every address served a different file; one bad mirror just moves on to the next
+candidate — switch mirrors, never skip verification), `runtime.install_start_in_progress` (the runtime is starting and
+swapping now would pull files out from under the launcher; the installed runtime is untouched — wait for
+`horosa-skill runtime status`, then re-run), `runtime.install_long_path` (`HOROSA_RUNTIME_ROOT=C:\horosa` or enable `LongPathsEnabled`),
+`runtime.install_missing_platform` (a pre-0.51.0 manifest without this platform and without the JS engine asset — from 0.51.0 on
+Intel Mac / Linux install only the JS engine, `mode: engine_only` with a `runtime.engine_only_installed` warning; gateway mode via
+`HOROSA_SERVER_ROOT` for the rest; Windows on ARM never lands here — it installs the win32-x64 payload under emulation and reports
+`runtime.platform_emulated` in `warnings`), `runtime.engine_asset_missing` / `runtime.engine_asset_invalid` (`install --engine-only`
+with a manifest that predates the asset / a file that is not the asset), `runtime.install_os_too_old` (the
+host is older than the payload's `min_os` — upgrade the OS or use gateway mode). Slow or proxied networks: raise
+`HOROSA_RUNTIME_DOWNLOAD_TIMEOUT_SECONDS` (default 120, per 1 MiB chunk) / `HOROSA_RUNTIME_DOWNLOAD_ATTEMPTS` (default 3, per
+mirror) and run `horosa-skill doctor --probe-network` to see which mirror answers.

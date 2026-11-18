@@ -1,0 +1,114 @@
+"""Offline golden + invariant tests for the pure-Python v2.5.0 推运 snapshot builders.
+
+These builders were ported by hand from 星阙's frontend (persiandirected = pure 1°/年 arithmetic;
+planetaryages = Ptolemy seven ages). Before this
+file they were only exercised by `@requires_chart` live tests, so an arithmetic/formatting regression
+would slip through CI when no chart service is up. Here we feed a FIXED `/chart` response fixture
+(`fixtures/chart_1998_predictive.json`, captured once from the live service) and assert both the exact
+golden snapshot text AND structural invariants that survive a deliberate golden regeneration.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from horosa_skill import service as S
+
+_FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _chart() -> dict:
+    return json.loads((_FIXTURES / "chart_1998_predictive.json").read_text(encoding="utf-8"))
+
+
+def _golden(name: str) -> str:
+    return (_FIXTURES / f"golden_{name}.txt").read_text(encoding="utf-8")
+
+
+# --- golden equality (regression guard) -------------------------------------------------
+
+# 上游 v3.11 [Q-168/T-102]：段尾 ◆ 近期命中按「当前向运年龄」取最近 12 条 → golden 必须固定「此刻」。
+_FIXED_NOW = datetime(2026, 9, 24, 12, 0, 0)
+
+
+def test_persiandirected_matches_golden() -> None:
+    assert S._build_persiandirected_snapshot_text(_chart(), now=_FIXED_NOW) == _golden("persiandirected")
+
+
+def test_persianchart_section_renders_directed_positions_and_hits() -> None:
+    """[指定日期向运盘]（v0.33.0）：目标行 + directed 点位 + 向运→本命命中 + lots 计数。"""
+    directed = {
+        "date": "2026/09/01 12:00:00", "rateKey": "persian", "direction": "direct", "ageYears": 31.2485,
+        "chart": {
+            "objects": [{"id": "Sun", "sign": "Virgo", "signlon": 8.855}],
+            "aspects": [{"directId": "Sun", "objects": [{"natalId": "Pluto", "aspect": 135, "delta": 0.7396}]}],
+        },
+        "lots": [{"id": "Pars Spirit"}] * 33,
+    }
+    text = S._build_persianchart_section_text(directed)
+    assert text.startswith("[指定日期向运盘]")
+    assert "目标日期：2026/09/01 12:00:00" in text and "行进 31.248 年" in text
+    assert "太阳：室女 8°51′" in text
+    assert "向运太阳 补八分相(135°) 本命冥王（差 0.74°）" in text or "向运太阳" in text
+    assert "directed 阿拉伯点 33 枚" in text
+    assert S._build_persianchart_section_text({}) == "", "缺 chart 必须空段（条件段零回归）"
+
+
+# yearsystem129：上游 v3.13.0 删了后端 yearsystem129.py，快照改由 vendored utils/yearSystem129.js 出——金标与不变量
+# 移到 tests/test_sync313_predictive.py（真 node 引擎跑同一份 chart_1998_predictive.json）。
+
+
+def test_planetaryages_matches_golden() -> None:
+    assert S._build_planetaryages_snapshot_text(_chart(), "2028-04-06") == _golden("planetaryages")
+
+
+# --- structural invariants (catch logic errors even if golden is regenerated) -----------
+
+def test_persiandirected_invariants() -> None:
+    text = S._build_persiandirected_snapshot_text(_chart(), now=_FIXED_NOW)
+    assert text.startswith("[波斯向运（Persian Directed）]")
+    # 主表（◆ 近期命中之前）；上游 v3.11：相位名取 AstroTxtMsg（0º/60º…），行数上限 max(200, maxYears×4)=360。
+    main_table = text.split("◆")[0]
+    rows = [ln for ln in main_table.splitlines() if ln.startswith("| ") and "º" in ln]
+    assert 0 < len(rows) <= 360, "max(200, 90×4) row cap (or empty) expected"
+    # Exact per-row dates are owned by the golden test; here we check structural invariants that a
+    # deliberate golden regeneration would NOT mask: ascending ages, valid aspects, dates tracking ages.
+    ages: list[float] = []
+    dates: list[datetime] = []
+    birth = datetime(1998, 2, 20, 20, 48, 0)
+    for row in rows:
+        cells = [c.strip() for c in row.strip("|").split("|")]
+        age, date_str, aspect = float(cells[0]), cells[1], cells[3]
+        ages.append(age)
+        dates.append(datetime.strptime(date_str, "%Y-%m-%d"))
+        assert 0 < age <= 90, f"age {age} out of (0,90]"
+        assert aspect in {"0º", "60º", "90º", "120º", "180º"}
+        # rate sanity (1°/年): the row's date must be ~age years after birth (±1 week tolerates the
+        # 2-dp age rounding); this still catches a wrong rate, wrong epoch, or wrong day-per-year constant.
+        approx = birth + timedelta(days=age * 365.2421904)
+        assert abs((dates[-1] - approx).days) <= 7, f"date {date_str} not ~{age}yr after birth ({approx:%Y-%m-%d})"
+    # Sorted by the 2-dp-ROUNDED age (faithful to 星阙's `hits.sort((x,y)=>x.age-y.age)`); dates are NOT
+    # strictly monotonic within a rounded-age group (same-rounded-age hits keep insertion order).
+    assert ages == sorted(ages), "hits must be sorted ascending by (rounded) age"
+
+
+def test_planetaryages_invariants() -> None:
+    text = S._build_planetaryages_snapshot_text(_chart(), "2028-04-06")
+    assert text.startswith("[行星年龄（Ages of Man）]")
+    # exactly the 7 Ptolemy bands, exactly one marked current (●) for a valid as_of
+    band_rows = [ln for ln in text.splitlines() if re.match(r"\| .+岁 \|", ln)]
+    assert len(band_rows) == 7, f"expected 7 age bands, got {len(band_rows)}"
+    assert text.count("●") == 1, "exactly one current band should be marked"
+
+
+def test_planetaryages_no_current_band_without_birth() -> None:
+    # 上游 v3.11（planetaryAges.js buildPlanetaryAges）：无 asOf 时按「此刻」算当前带；只有出生时刻缺失/不可解析
+    # 时当前年龄才未知 → 不标带、不崩（原测试「无 as_of 不标带」的前提随上游缺省改为此刻而不再成立）。
+    chart = _chart()
+    chart["params"] = {**chart.get("params", {}), "birth": ""}
+    text = S._build_planetaryages_snapshot_text(chart, None)
+    assert "●" not in text
+    assert text.startswith("[行星年龄（Ages of Man）]")

@@ -1,0 +1,22 @@
+services:
+  mcp:
+    build:
+      context: .
+      dockerfile: packages/mcp-server/Dockerfile
+    image: taibu-mcp:latest
+    container_name: taibu-mcp
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: "3001"
+      MCP_HOST: "0.0.0.0"
+      MCP_ALLOWED_ORIGINS: "${MCP_ALLOWED_ORIGINS:-}"
+      MCP_ALLOWED_HOSTS: "${MCP_ALLOWED_HOSTS:-}"
+      MCP_MAX_SUBSCRIPTIONS: "${MCP_MAX_SUBSCRIPTIONS:-1000}"
+      MCP_MAX_SUBSCRIPTIONS_PER_IP: "${MCP_MAX_SUBSCRIPTIONS_PER_IP:-3}"
+      MCP_RATE_LIMIT_PER_MINUTE: "${MCP_RATE_LIMIT_PER_MINUTE:-120}"
+      MCP_TRUST_PROXY: "${MCP_TRUST_PROXY:-false}"
+      MCP_REQUEST_LOG: "${MCP_REQUEST_LOG:-false}"
+    ports:
+      - "${MCP_PORT:-3001}:3001"

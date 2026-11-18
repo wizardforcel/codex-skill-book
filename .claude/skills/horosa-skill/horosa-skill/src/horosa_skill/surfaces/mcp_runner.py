@@ -1,0 +1,552 @@
+"""MCP 调用的执行：并发上限（HOROSA_MCP_MAX_CONCURRENT_TOOLS）、把阻塞的 service 调用放进线程、进度上报、门面工具的统一兜底。"""
+from __future__ import annotations
+
+import functools
+import os
+import json
+from contextvars import ContextVar
+from typing import Any
+
+import anyio
+import pydantic_core
+from mcp import types as mcp_types
+from mcp.server.mcpserver import Context, MCPServer
+from pydantic import ValidationError
+
+from horosa_skill.config import _env_int
+from horosa_skill.errors import ToolValidationError, bilingual, recovery_for
+from horosa_skill.result_view import READING, Budget, cap_free_text, shape_result, take_view_request
+from horosa_skill.service import progress_sink
+from horosa_skill.textscript import SIMPLIFIED
+from horosa_skill.textscript.localize import PROTOCOL_OPERATIONS, localize
+from horosa_skill.surfaces.mcp_errors import (
+    _mcp_error_payload,
+    _mcp_internal_error_payload,
+    _mcp_validation_error_payload,
+)
+from horosa_skill.surfaces.mcp_requests import request_conflict_scope
+
+# 工作线程并发上限：每个在跑的工具会持有一个 JS 子进程或一条后端 HTTP 连接，无限并发会
+# 把本机 CPU 与后端连接池打满。4 是「几个客户端同时问一句」的常见峰值。
+# 模块级读环境变量要走 config 的容错解析：写错的值曾在 import 时 ValueError，当时连 --version 都起不来。
+_MAX_CONCURRENT_TOOLS = max(1, _env_int("HOROSA_MCP_MAX_CONCURRENT_TOOLS", 4))
+_TOOL_LIMITER: Any = None
+
+
+def _tool_limiter() -> Any:
+    """并发上限。必须在事件循环里惰性构造（CapacityLimiter 绑定当前 async 后端）。"""
+    global _TOOL_LIMITER
+    if _TOOL_LIMITER is None:
+        _TOOL_LIMITER = anyio.CapacityLimiter(_MAX_CONCURRENT_TOOLS)
+    return _TOOL_LIMITER
+
+
+async def _run_blocking(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """把同步的 service 调用挪到工作线程。
+
+    🔴 每个工具都是 `async def` 却直接调同步的 `service.run_tool`（内含阻塞 httpx 与
+    subprocess.run），而 SDK 只替**同步**工具函数卸载（2.x 起；1.x 的 FastMCP 连这个也不做），我们的工具都是 async。后果是**整个事件循环被占住**：一次 tianxing 731 天扫描（约 24 段串行后端调用）
+    期间服务器答不了 ping、处理不了 notifications/cancelled，streamable-HTTP 下所有客户端串行。
+    Claude Desktop / VS Code 会把它标成无响应。
+
+    anyio 4.13 的 to_thread 会 `copy_context()`，所以 `_DEGRADE_NOTES` 这类 ContextVar
+    与 `_CURRENT_CONTEXT` 在工作线程里都可见 —— 这是这个改法成立的前提，已核实。
+    """
+    return await anyio.to_thread.run_sync(
+        functools.partial(fn, *args, **kwargs), limiter=_tool_limiter(), abandon_on_cancel=True
+    )
+
+
+# SDK 2.x 去掉了 `mcp.get_context()`：请求上下文只作为参数传进 `call_tool`。我们的工具签名是合成的 `**kwargs`
+# （120 个，不便逐个加 ctx 参数），所以由 `HorosaMCPServer.call_tool` 把它放进 ContextVar，进度 / 撤单 / elicitation /
+# 协议版本都从这里取。不在请求里（直调、测试）就是 None。
+_CURRENT_CONTEXT: ContextVar[Context | None] = ContextVar("horosa_mcp_context", default=None)
+
+
+def current_context() -> Context | None:
+    return _CURRENT_CONTEXT.get()
+
+
+def _progress_tick_for(mcp: MCPServer) -> Any:
+    """构造交给服务层的 tick 回调（工作线程里被调用）。取不到请求上下文时返回 None。
+
+    两件事，顺序不可换：
+      1. `check_cancelled()` —— 客户端发了 notifications/cancelled 后，工作线程在**下一个段边界**
+         抛 CancelledError（BaseException，穿过服务层的 `except Exception` 旁路兜底）。没有它，
+         撤单只是让宿主任务提前返回，工作线程照样把剩下的几十次后端扫描跑完，白烧后端与本机。
+      2. `ctx.report_progress` —— 客户端没给 progressToken 时 SDK 自身 no-op，无需在这里判断。
+    """
+    ctx = current_context()
+    if ctx is None or ctx._request_context is None:  # 不在请求里（直调 / 测试）：安静降级为无进度
+        return None
+
+    def _tick(done: int, total: int, label: str) -> None:
+        anyio.from_thread.check_cancelled()
+        anyio.from_thread.run(ctx.report_progress, float(done), float(total), label)
+
+    return _tick
+
+
+async def _run_tool_blocking(mcp: MCPServer, fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """`_run_blocking` + 把 MCP 进度/取消接到服务层的分段循环上。"""
+    tick = _progress_tick_for(mcp)
+    if tick is None:
+        return await _run_blocking(fn, *args, **kwargs)
+    # ContextVar 在**事件循环侧**设好，to_thread 的 copy_context 才会把它带进工作线程。
+    with progress_sink(tick):
+        return await _run_blocking(fn, *args, **kwargs)
+
+
+async def _guarded_facade(
+    mcp: MCPServer, operation_name: str, fn: Any, *args: Any, **kwargs: Any
+) -> dict[str, Any]:
+    """门面工具的统一异常护栏 **兼**线程卸载入口。
+
+    🔴 门面此前各写各的（`horosa_agent_guidance` 干脆没有 try，memory 族只 catch
+    ToolValidationError）。漏网的异常会被 lowlevel server 转成 `isError: true` + 裸字符串，
+    绕过整个 agent_recovery 契约 —— 而在精简面（HOROSA_MCP_COMPACT=1）下门面**就是**全部工具，
+    所以这条漏洞在最省 token 的那个配置里覆盖面最大。三分支与技法工具逐字同款。
+
+    fn 在工作线程里跑（`_run_blocking`）：门面同样会做磁盘 I/O（报告渲染、SQLite 查询）与后端
+    HTTP 调用，留在事件循环上会让 ping/cancel/其他工具全部排队。归一化也放进线程，这样
+    `_normalize_mcp_request` 抛的 ToolValidationError 一样落进本护栏，而不是从工具体外逃逸。
+    """
+    try:
+        return await _run_tool_blocking(mcp, fn, *args, **kwargs)
+    except ToolValidationError as exc:
+        return _mcp_error_payload(exc)
+    except ValidationError as exc:
+        return _mcp_validation_error_payload(operation_name, None, exc)
+    except Exception as exc:  # noqa: BLE001 - 兜底也必须是 envelope，不能变 isError 裸文本
+        return _mcp_internal_error_payload(exc)
+
+
+# 不转文字的工具：名单只有一张，见 textscript.localize.PROTOCOL_OPERATIONS。
+UNLOCALIZED_TOOLS = frozenset(f"horosa_{name}" for name in PROTOCOL_OPERATIONS)
+
+
+class HorosaMCPServer(MCPServer):
+    """MCPServer + 输出文字转换 + 报告文件链接。所有工具（含错误信封）都经 `call_tool` 出门，所以只在这一处处理。
+
+    取工具的**原始返回值**（`convert_result=False`），按 textscript.localize 的白名单转完，再交回 SDK 自己的
+    `convert_result` 序列化——内容块与 structuredContent 的形状与简体时完全一致。`InputRequiredResult`（2026-07-28
+    的 MRTR 多轮：缺设置时让客户端问用户）原样放行，不转换、不加链接。
+    依赖 mcp 2.x 的 `_tool_manager.call_tool(name, arguments, context, convert_result=)` 与
+    `Tool.fn_metadata.convert_result`；SDK 改了这两处，tests/test_textscript.py 的内存客户端用例会红。
+    """
+
+    output_script: str = SIMPLIFIED
+    # 结果视图与模型预算（service 之外的一层，见 horosa_skill/result_view.py）：create_mcp_server 按 Settings 设。
+    result_view: str = READING
+    result_budget: Budget = Budget(max_tokens=20_000, max_chars=48_000)
+
+    async def call_tool(self, name: str, arguments: dict[str, Any], context: Context | None = None) -> Any:
+        if context is None:
+            context = Context(mcp_server=self, subscriptions=self._subscriptions)
+        tool = self._tool_manager.get_tool(name)
+        if tool is None:
+            return _unknown_tool_result(name)
+        # 视图参数只管返回体的形状：进工具之前取走，服务层、闸门、存档都见不到；过长的自由文本先截断（会被回显进结果与存档）。
+        arguments, view = take_view_request(arguments, default_view=self.result_view)
+        arguments, capped = cap_free_text(arguments)
+        token = _CURRENT_CONTEXT.set(context)
+        try:
+            with request_conflict_scope(arguments) as request_notes:
+                raw = await self._tool_manager.call_tool(name, arguments, context, convert_result=False)
+        finally:
+            _CURRENT_CONTEXT.reset(token)
+        if isinstance(raw, mcp_types.InputRequiredResult):
+            return raw
+        raw = _with_request_notes(raw, [*request_notes, *capped])
+        convert = functools.partial(_compact_convert, tool.fn_metadata)
+        # 阅读视图 + 模型预算：在转字形之前（少转几十万字），在盘图内嵌之前（内嵌按整形后的体积算余量）。
+        raw = await anyio.to_thread.run_sync(shape_result, raw, view, self.result_budget)
+        # 盘图 PNG 在转文字之前定好内嵌几张：没内嵌的说明进 summary，要跟着结果一起转字形。
+        images: list[mcp_types.ImageContent] = []
+        if _png_cards(raw):  # 读文件、base64 放进线程；别的结果一个字节都不碰
+            raw, images = await anyio.to_thread.run_sync(_plan_inline_images, raw, convert)
+        if self.output_script != SIMPLIFIED and name not in UNLOCALIZED_TOOLS:
+            # 一份结果可达数百 KB 文本（合参 / 调度会带多个技法），转换放进线程，别卡住事件循环上的 ping / cancel。
+            raw = await anyio.to_thread.run_sync(localize, raw, self.output_script)
+        protocol = context.protocol_version if context._request_context is not None else None
+        converted = convert(raw)
+        if _wire_bytes(converted) > MCP_RESULT_WIRE_BUDGET:
+            raw = await anyio.to_thread.run_sync(_fit_result_budget, raw, convert)
+            converted = convert(raw)
+        return _mark_error(raw, _with_file_link(raw, converted, str(protocol or ""), images))
+
+
+def _unknown_tool_result(name: str) -> Any:
+    """客户端调了一个不存在的工具名：以前是 SDK 的裸「Unknown tool: …」（审计 S-29）。现在回结构化 tool.unknown（isError），
+    带最像的技法候选；只作注册键别名的旧平铺名（horosa_cn_bazi_direct）点名替代写法。"""
+    from horosa_skill.agent_guidance import unknown_tool_details
+    from horosa_skill.engine.registry import UNADVERTISED_TECHNIQUES, resolve_tool_name
+
+    key = resolve_tool_name(name)
+    details = unknown_tool_details(name)
+    if key in UNADVERTISED_TECHNIQUES:
+        message = bilingual(
+            f"工具 {name} 不再单独提供：用 horosa_cn_bazi_birth（同一输出），或 horosa_tool_run(tool_name=\"{key}\")。",
+            f"Tool {name} is no longer listed separately: use horosa_cn_bazi_birth (same output) or horosa_tool_run(tool_name=\"{key}\").",
+        ) if key == "bazi_direct" else bilingual(
+            f"工具 {name} 不单独提供：用 horosa_tool_run(tool_name=\"{key}\")。", f"Tool {name} is not listed separately: use horosa_tool_run(tool_name=\"{key}\").")
+        details["replacement"] = "horosa_cn_bazi_birth" if key == "bazi_direct" else "horosa_tool_run"
+    elif key is not None:
+        message = bilingual(f"这个面没有注册 {name}（工具集裁剪或精简面）：用 horosa_tool_run(tool_name=\"{key}\")。",
+                            f"{name} is not registered on this surface (toolsets / compact): use horosa_tool_run(tool_name=\"{key}\").")
+        details["replacement"] = "horosa_tool_run"
+    else:
+        message = bilingual(f"未知工具：{name}", f"Unknown tool: {name}")
+    details = recovery_for("tool.unknown", details)
+    body = {"ok": False, "tool": name, "code": "tool.unknown", "message": message, "details": details,
+            "error": {"code": "tool.unknown", "message": message, "details": details}}
+    return mcp_types.CallToolResult(content=[mcp_types.TextContent(type="text", text=json.dumps(body, ensure_ascii=False))], isError=True)
+
+
+# 「在问用户」的回包不是失败（审计待决项 1(c)）：闸门、地名有歧义、要用户挑技法、缺只有用户知道的事实。它们是工具在提问，
+# 新修订把这类建模成 input_required；标成 isError 会让每个第一次调用都显示成红色失败。
+_ASKING_CODES = frozenset({"agent_guidance.required", "place.ambiguous", "place.zone_ambiguous", "dispatch.technique_choice_required"})
+
+
+def _error_code_and_asking(raw: Any) -> tuple[str | None, bool]:
+    if not isinstance(raw, dict) or raw.get("ok") is not False:
+        return None, False
+    error = raw.get("error") if isinstance(raw.get("error"), dict) else {}
+    code = str(raw.get("code") or error.get("code") or "") or None
+    details = raw.get("details") if isinstance(raw.get("details"), dict) else error.get("details") if isinstance(error.get("details"), dict) else {}
+    recovery = details.get("agent_recovery") if isinstance(details.get("agent_recovery"), dict) else {}
+    return code, bool(code in _ASKING_CODES or recovery.get("must_ask_user") is True)
+
+
+def _mark_error(raw: Any, converted: Any) -> Any:
+    """真失败（模型自己能改的入参错、runtime / js_engine / transport / 内部错误 / 报告错）以 isError:true 返回（MCP 规范：工具执行期
+    错误走 isError）；在问用户的不标（见 _ASKING_CODES）。正文不变。HOROSA_MCP_ISERROR=0 关回旧行为（留一个版本）。"""
+    code, asking = _error_code_and_asking(raw)
+    if code is None or asking or str(os.environ.get("HOROSA_MCP_ISERROR", "1")).strip().lower() in {"0", "false", "no", "off"}:
+        return converted
+    if isinstance(converted, mcp_types.CallToolResult):
+        return converted.model_copy(update={"is_error": True})
+    return mcp_types.CallToolResult(content=list(converted), isError=True)
+
+
+def _compact_convert(metadata: Any, raw: Any) -> Any:
+    """SDK 的 convert_result，但 JSON 正文不缩进。
+
+    SDK 把非字符串结果按 `indent=2` 序列化：一份结果三成是缩进空格，客户端按字符计上限（Claude Code 5 万字符落盘）时
+    这些空格白占额度。没有 outputSchema 时直接交给它一段紧凑 JSON 文本（SDK 原样放进 text 块）；有 outputSchema
+    （HOROSA_OUTPUT_SCHEMA=1）时照常让 SDK 校验、生成 structuredContent，只把 text 块换成紧凑版。"""
+    if raw is None or isinstance(raw, (str, list, tuple, mcp_types.CallToolResult, mcp_types.InputRequiredResult)):
+        return metadata.convert_result(raw)
+    text = pydantic_core.to_json(raw, fallback=str).decode()
+    if metadata.output_schema is None:
+        return metadata.convert_result(text)
+    converted = metadata.convert_result(raw)
+    content = getattr(converted, "content", None)
+    if isinstance(converted, mcp_types.CallToolResult) and content and isinstance(content[0], mcp_types.TextContent):
+        return converted.model_copy(update={"content": [mcp_types.TextContent(type="text", text=text), *content[1:]]})
+    return converted
+
+
+# 一次工具结果的线上体积上限（v0.46.1）。官方 MCP SDK（mcp 2.x）客户端走 streamable HTTP 时单条 SSE 事件上限
+# 1 MiB（1 048 576 B），超出整条调用报「Server-sent event exceeded the 1048576 byte limit」；stdio 没有这个上限，但同样会把
+# 数百 KB 的原始引擎树塞进 AI 上下文。八字 bazi_birth 的原始盘（smallDirection / direction 整生流年·大运明细 ≈ 0.8 MB）
+# 序列化成 text 块约 2.2 MB——v0.45.1 起即如此，v0.46.0 发布后 surface_audit 的 HTTP 阶段查出。超预算时从 data 里最大的
+# 原始子树起逐个换成说明占位，直到放得下：快照、导出段、技法依据卡等给 AI 读的部分一律不动；本机存档仍是全量。
+MCP_RESULT_WIRE_BUDGET = 900_000
+_PROTECTED_DATA_KEYS = frozenset({
+    "snapshot_text", "export_snapshot", "technique_card", "compute_sources", "route", "knowledge_context", "file",
+})
+_MIN_OMITTED_SUBTREE_BYTES = 50_000
+
+
+def _with_request_notes(raw: Any, notes: list[str]) -> Any:
+    """把入参合并的说明并进结果的 warnings：信封（pydantic）与门面（dict）两种形状；没有说明就原样返回，不碰字节。"""
+    if not notes:
+        return raw
+    if isinstance(raw, dict):
+        return {**raw, "warnings": [*(raw.get("warnings") or []), *notes]}
+    if hasattr(raw, "warnings"):
+        return raw.model_copy(update={"warnings": [*raw.warnings, *notes]})
+    return raw
+
+
+def _wire_bytes(converted: Any) -> int:
+    """转换后结果（CallToolResult 或内容块列表）按 JSON-RPC 线上形状的 UTF-8 字节数。"""
+    if hasattr(converted, "model_dump_json"):
+        return len(converted.model_dump_json(by_alias=True, exclude_none=True).encode("utf-8"))
+    if isinstance(converted, (list, tuple)):
+        return sum(_wire_bytes(block) for block in converted)
+    return len(json.dumps(converted, ensure_ascii=False, default=str).encode("utf-8"))
+
+
+def _json_bytes(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+
+
+def _fit_result_budget(raw: Any, convert: Any) -> Any:
+    """超预算的结果按形状裁：技法信封裁 `data`，记忆门面（`results[]` / `result`）裁各产物的 `payload`。别的形状原样返回。"""
+    if hasattr(raw, "model_dump"):   # 工具回的是 ToolEnvelope（pydantic）：按 JSON 形状拿出来再裁
+        raw = raw.model_dump(mode="json")
+    if not isinstance(raw, dict):
+        return raw
+    if isinstance(raw.get("data"), dict):
+        return _fit_envelope(raw, convert)
+    if isinstance(raw.get("results"), dict):
+        return _fit_results_map(raw, convert)
+    if isinstance(raw.get("result"), dict) or isinstance(raw.get("results"), list):
+        return _fit_memory_records(raw, convert)
+    return raw
+
+
+def _fit_envelope(raw: dict[str, Any], convert: Any) -> dict[str, Any]:
+    """把超预算结果里 `data` 下最大的原始子树（深度 ≤ 2、不含受保护键）逐个换成说明占位，直到线上体积放得下。
+
+    不改入参（逐层浅拷贝）；放不下（受保护的部分本身就超）时原样返回已裁的那份——宁可交出能用的部分，也不让客户端整条报错。"""
+    result = dict(raw)
+    data = dict(result["data"])
+    result["data"] = data
+    run_id = ((result.get("memory_ref") or {}) if isinstance(result.get("memory_ref"), dict) else {}).get("run_id")
+    omitted: list[str] = []
+    while _wire_bytes(convert(result)) > MCP_RESULT_WIRE_BUDGET:
+        candidates: list[tuple[int, tuple[str, ...]]] = []
+        for key, value in data.items():
+            if key in _PROTECTED_DATA_KEYS or _is_placeholder(value):
+                continue
+            if isinstance(value, dict) and value:
+                candidates.extend((_json_bytes(sub), (key, sub_key)) for sub_key, sub in value.items() if not _is_placeholder(sub))
+            candidates.append((_json_bytes(value), (key,)))
+        # 先拿最大的二级子树（八字 = bazi.smallDirection / bazi.direction，四柱等小块留着）；只剩一级可拿时才整键拿掉。
+        deep = [c for c in candidates if len(c[1]) == 2 and c[0] >= _MIN_OMITTED_SUBTREE_BYTES]
+        pick = max(deep or candidates, default=None)
+        if pick is None:
+            break
+        size, path = pick
+        placeholder = _omitted_placeholder(size, run_id)
+        if len(path) == 2:
+            parent = dict(data[path[0]])
+            parent[path[1]] = placeholder
+            data[path[0]] = parent
+        else:
+            data[path[0]] = placeholder
+        omitted.append(".".join(path))
+    if omitted:
+        warnings = list(result.get("warnings") or [])
+        warnings.append(f"返回体超过 MCP 单条消息上限，已略去原始明细：{'、'.join(omitted)}（本机存档为全量）。")
+        result["warnings"] = warnings
+    return result
+
+
+def _omitted_placeholder(size: int, run_id: Any) -> dict[str, Any]:
+    return {
+        "omitted": "too_large_for_mcp",
+        "bytes": size,
+        "note": (f"原始引擎明细过大（约 {size // 1024} KB），MCP 返回体略去；snapshot_text / export_snapshot 已含其要点。"
+                 f"完整结果在本机存档：`horosa-skill memory show {run_id or '<run_id>'}`。"),
+    }
+
+
+def _is_placeholder(value: Any) -> bool:
+    return isinstance(value, dict) and value.get("omitted") == "too_large_for_mcp"
+
+
+def _fit_memory_records(raw: dict[str, Any], convert: Any) -> dict[str, Any]:
+    """记忆门面的结果放不下时，先照技法结果的规矩裁产物 `payload.data` 里的原始子树，还放不下再整份换成占位（路径、sha 留着）。
+
+    记忆结果没有顶层 `data`，v0.46.1 的预算一直管不到它：`horosa_memory_show` 读回一份大八字 2.1 MB，带载荷的 `horosa_memory_query`
+    能到几十 MB。这里每裁一块不重新量全量（一次 42 MB 的序列化要秒级），按字节估算，估够了再量一次。不改入参。"""
+    result = dict(raw)
+    records: list[dict[str, Any]] = []
+    if isinstance(result.get("result"), dict):
+        result["result"] = dict(result["result"])
+        records.append(result["result"])
+    if isinstance(result.get("results"), list):
+        result["results"] = [dict(item) if isinstance(item, dict) else item for item in result["results"]]
+        records.extend(item for item in result["results"] if isinstance(item, dict))
+    holders: list[tuple[dict[str, Any], Any]] = []
+    for record in records:
+        if isinstance(record.get("artifacts"), list):
+            record["artifacts"] = [dict(item) if isinstance(item, dict) else item for item in record["artifacts"]]
+            holders.extend((item, record.get("run_id")) for item in record["artifacts"]
+                           if isinstance(item, dict) and isinstance(item.get("payload"), (dict, list)))
+    omitted: list[str] = []
+
+    def over_budget() -> int:
+        return _wire_bytes(convert(result)) - MCP_RESULT_WIRE_BUDGET
+
+    excess = over_budget()
+    if excess > 0:
+        excess = _omit_raw_subtrees(holders, excess, omitted, over_budget)
+    if excess > 0:
+        # 裁完原始子树还超：整份载荷换占位，最大的先走。manifest 是别的产物的索引，同样大小时先让它走。
+        for artifact, run_id in sorted(holders, key=lambda h: (_json_bytes(h[0]["payload"]), h[0].get("kind") == "run_manifest"), reverse=True):
+            if excess <= 0:
+                break
+            if _is_placeholder(artifact["payload"]):
+                continue
+            size = _json_bytes(artifact["payload"])
+            artifact["payload"] = _omitted_placeholder(size, run_id)
+            omitted.append(f"{artifact.get('kind')}.payload")
+            excess -= size
+            if excess <= 0:
+                excess = over_budget()
+    if omitted:
+        warnings = list(result.get("warnings") or [])
+        warnings.append(f"返回体超过 MCP 单条消息上限，已略去原始明细：{'、'.join(sorted(set(omitted)))}（本机存档为全量）。")
+        result["warnings"] = warnings
+    return result
+
+
+def _fit_results_map(raw: dict[str, Any], convert: Any) -> dict[str, Any]:
+    """调度 / 合参（`results.<tool>` 是一份份技法信封）放不下时，跨全部技法从最大的原始子树起裁，规则与单个技法相同。
+
+    v0.49.0 的预算只认 `data` 与记忆结果两种形状，调度落在中间：两个技法 3.2 MB 原样上线，HTTP 客户端整条报错。"""
+    result = dict(raw)
+    results = dict(result["results"])
+    result["results"] = results
+    run_id = ((result.get("memory_ref") or {}) if isinstance(result.get("memory_ref"), dict) else {}).get("run_id")
+    holders = [({"payload": envelope}, run_id, name) for name, envelope in results.items() if isinstance(envelope, dict)]
+    omitted: list[str] = []
+
+    def sync() -> None:
+        for holder, _run, name in holders:
+            results[name] = holder["payload"]
+
+    def over_budget() -> int:
+        sync()
+        return _wire_bytes(convert(result)) - MCP_RESULT_WIRE_BUDGET
+
+    excess = over_budget()
+    if excess > 0:
+        _omit_raw_subtrees([(holder, run) for holder, run, _name in holders], excess, omitted, over_budget)
+    sync()
+    if omitted:
+        warnings = list(result.get("warnings") or [])
+        warnings.append(f"返回体超过 MCP 单条消息上限，已略去原始明细：{'、'.join(sorted(set(omitted)))}（本机存档为全量）。")
+        result["warnings"] = warnings
+    return result
+
+
+def _omit_raw_subtrees(holders: list[tuple[dict[str, Any], Any]], excess: int, omitted: list[str], measure: Any) -> int:
+    """按从大到小把各产物 `payload.data` 下的原始子树换成占位（受保护键不动），返回还超出多少。"""
+    candidates: list[tuple[int, int, dict[str, Any], tuple[str, ...], Any]] = []
+    for order, (artifact, run_id) in enumerate(holders):
+        payload = artifact["payload"]
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
+            continue
+        data = dict(payload["data"])
+        artifact["payload"] = {**payload, "data": data}
+        for key, value in data.items():
+            if key in _PROTECTED_DATA_KEYS or _is_placeholder(value):
+                continue
+            subtrees = value.items() if isinstance(value, dict) and value else ()
+            sized = [(_json_bytes(sub), (key, sub_key)) for sub_key, sub in subtrees]
+            big = [item for item in sized if item[0] >= _MIN_OMITTED_SUBTREE_BYTES]
+            for size, path in big or [(_json_bytes(value), (key,))]:
+                if size >= _MIN_OMITTED_SUBTREE_BYTES:
+                    candidates.append((size, order, data, path, run_id))
+    candidates.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+    for size, _, data, path, run_id in candidates:
+        if excess <= 0:
+            break
+        placeholder = _omitted_placeholder(size, run_id)
+        if len(path) == 2:
+            data[path[0]] = {**data[path[0]], path[1]: placeholder}
+        else:
+            data[path[0]] = placeholder
+        omitted.append(".".join(path))
+        excess -= size
+        if excess <= 0:
+            excess = measure()
+    return excess
+
+
+# resource_link 内容块随 MCP 2025-06-18 修订进入规范。只给协商到该修订或更新的客户端：更早的客户端按旧联合类型
+# 校验整个结果，多一个不认识的块可能让整条结果作废（与 outputSchema 让 Claude Code 工具列表消失同一类风险）。
+RESOURCE_LINK_SINCE = "2025-06-18"
+
+# 盘图 PNG 内嵌（v0.48.0，report format=png）：image 内容块从 MCP 第一版就有，所有客户端都发。上限：
+# - 整条结果（JSON 正文 + 各图 base64）仍守 MCP_RESULT_WIRE_BUDGET（SDK HTTP 客户端单条 SSE 1 MiB）；
+# - 单张原始字节 ≤ PNG_INLINE_MAX_BYTES、最多 PNG_INLINE_MAX_IMAGES 张（Claude 多图请求 > 20 张时每张收紧到 3000 px；
+#   Claude Code 带图的结果仍受 MAX_MCP_OUTPUT_TOKENS 管，不让一次报告占满）。
+# 放不下的只给文件链接，结果的 `inline_images` 与 summary 写明哪几张没内嵌、为什么。
+PNG_INLINE_MAX_IMAGES = 4
+PNG_INLINE_MAX_BYTES = 512 * 1024
+_INLINE_SLACK_BYTES = 4_096  # 说明文字与 resource_link 块的余量
+_INLINE_REASONS = {
+    "result_size_cap": "超过单次返回上限",
+    "image_too_large": "单张图太大",
+    "too_many_images": "张数超过内嵌上限",
+    "file_unreadable": "文件读不到或已被改动",
+}
+
+
+def _png_cards(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, dict) or raw.get("format") != "png":
+        return []
+    cards = raw.get("files") if isinstance(raw.get("files"), list) else [raw.get("file")]
+    return [card for card in cards if isinstance(card, dict) and card.get("mime") == "image/png" and card.get("path")]
+
+
+def _card_bytes(card: dict[str, Any]) -> bytes | None:
+    """按文件卡读回 PNG；读不到、或内容与卡上的 sha256 不符（落盘后被改过）→ None（不内嵌，结果里说明）。"""
+    import hashlib
+    from pathlib import Path
+
+    try:
+        data = Path(str(card["path"])).read_bytes()
+    except OSError:
+        return None
+    return data if hashlib.sha256(data).hexdigest() == card.get("sha256") else None
+
+
+def _plan_inline_images(raw: Any, convert: Any) -> tuple[Any, list[mcp_types.ImageContent]]:
+    """PNG 结果：按上限挑出能内嵌的图（按文件顺序），在结果上记 `inline_images`；其余形状原样返回、不读任何文件。"""
+    import base64
+
+    cards = _png_cards(raw)
+    if not cards:
+        return raw, []
+    used = _wire_bytes(convert(raw)) + _INLINE_SLACK_BYTES
+    images: list[mcp_types.ImageContent] = []
+    omitted: list[dict[str, Any]] = []
+    for card in cards:
+        data = _card_bytes(card)
+        reason = None
+        if data is None:
+            reason = "file_unreadable"
+        elif len(images) >= PNG_INLINE_MAX_IMAGES:
+            reason = "too_many_images"
+        elif len(data) > PNG_INLINE_MAX_BYTES:
+            reason = "image_too_large"
+        else:
+            encoded = base64.b64encode(data).decode("ascii")
+            cost = len(encoded) + 64
+            if used + cost > MCP_RESULT_WIRE_BUDGET:
+                reason = "result_size_cap"
+            else:
+                used += cost
+                images.append(mcp_types.ImageContent(type="image", data=encoded, mime_type="image/png"))
+        if reason:
+            omitted.append({"name": card.get("name"), "path": card.get("path"), "reason": reason})
+    result = {**raw, "inline_images": {"shown": len(images), "total": len(cards), **({"omitted": omitted} if omitted else {})}}
+    if omitted:
+        why = "、".join(dict.fromkeys(_INLINE_REASONS[item["reason"]] for item in omitted))
+        result["summary"] = [*(raw.get("summary") or []),
+                             f"有 {len(omitted)} 张盘图没有内嵌显示（{why}），只给了文件链接：{'、'.join(str(i['path']) for i in omitted)}"]
+    return result, images
+
+
+def _with_file_link(raw: Any, converted: Any, protocol: str, images: Any = ()) -> Any:
+    """报告类工具（结果里有 `file` 文件卡）在 JSON 正文之外再附 resource_link（多文件逐个附），客户端可直接打开 / 附带文件；
+    PNG 盘图另附 image 内容块（_plan_inline_images 已按上限挑好）。"""
+    blocks: list[Any] = list(images)
+    if isinstance(raw, dict) and protocol and protocol >= RESOURCE_LINK_SINCE:
+        cards = raw.get("files") if isinstance(raw.get("files"), list) else [raw.get("file")]
+        blocks += [mcp_types.ResourceLink(type="resource_link", uri=card["uri"], name=str(card.get("name") or "report"),
+                                          mime_type=card.get("mime"), size=card.get("bytes"))
+                   for card in cards if isinstance(card, dict) and card.get("uri")]
+    if not blocks:
+        return converted
+    if isinstance(converted, mcp_types.CallToolResult):
+        return converted.model_copy(update={"content": [*converted.content, *blocks]})
+    return [*converted, *blocks]

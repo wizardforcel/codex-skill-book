@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Build the wheel and assert everything `uvx horosa-skill` needs is inside it.
+
+PyPI is the v0.36.0 distribution channel (issues #6/#11/#14 were all the "clone + uv sync" barrier).
+A wheel that installs but lacks its data files fails at the first knowledge lookup, bench run, or
+clarification gate — silently, on the user's machine. This guard builds the wheel exactly like the
+publish workflow (`uv build --wheel`) and checks the entries the runtime code reads via
+`importlib.resources` / `Path(__file__)`:
+
+- knowledge packs + index (`knowledge/data/**`), the bench dataset, the clarification-gate table,
+- the Windows start/stop script overrides (force-included from scripts/runtime_templates), with their
+  UTF-8 BOM intact,
+- the console script entry point.
+
+`horosa-core-js` is deliberately NOT in the wheel: the offline runtime payload bundles it
+(`artifacts.horosa_core_js_root`) and `HOROSA_CORE_JS_ROOT` overrides it. Stdlib + uv. Wired into CI.
+"""
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+import tempfile
+import zipfile
+from pathlib import Path
+
+PKG_ROOT = Path(__file__).resolve().parents[1]
+REQUIRED_ENTRIES = (
+    "horosa_skill/knowledge/data/index.json",
+    "horosa_skill/knowledge/data/helpdocs/bazi.json",
+    "horosa_skill/knowledge/data/helpdocs/bazi_pithy.json",
+    "horosa_skill/benchmark/data/horosa_bench.json",
+    "horosa_skill/data/sensitive_settings.json",
+    "horosa_skill/data/report_technique_profiles.json",
+    "horosa_skill/data/tarot-art/manifest.json",
+    "horosa_skill/runtime/templates/windows/start_horosa_local.ps1",
+    "horosa_skill/runtime/templates/windows/stop_horosa_local.ps1",
+    "horosa_skill/surfaces/mcp_server.py",
+    "horosa_skill/surfaces/mcp_schema.py",
+    # v0.40.0 P1：运行期契约的包内副本（Jev 阈值锁 / 技法算源）——缺了就是 v0.39.0 那个「enforce 永不生效」的 bug。
+    "horosa_skill/contracts/jev_thresholds.json",
+    "horosa_skill/contracts/technique_provenance.json",
+    # v0.41.0：`setup` 装进客户端 skills 目录的 skill 副本——缺了，只装 wheel 的用户拿不到「先问后调 / 禁手算」规则。
+    "horosa_skill/agent_skill/horosa-agent/SKILL.md",
+    "horosa_skill/agent_skill/horosa-agent/references/troubleshooting.md",
+)
+MIN_HELPDOC_PACKS = 18
+# v0.38.1 A16：知识包的 `source` 字段曾带着维护者机器的绝对路径（`/Users/<name>/Desktop/…`）进了 wheel ——
+# 泄露本机目录结构，也让「上游来源」在别的机器上不可解析。任何看起来像**真实用户**主目录的绝对路径都不许进 wheel；
+# 文档示例里的占位用户名（`/Users/<you>/`、`/Users/x/`、`C:\\Users\\张三\\`）放行。
+_HOME_PATH = re.compile(r"(?:/Users/|/home/|[A-Za-z]:\\{1,2}Users\\{1,2})(?P<user>[^/\\\s\"'`<>$*{}]+)[/\\]")
+_PLACEHOLDER_USERS = frozenset({"x", "you", "me", "user", "username", "name", "张三", "runner", "someone"})
+_TEXT_SUFFIXES = (".py", ".json", ".md", ".txt", ".toml", ".ps1", ".mjs", ".js", ".yaml", ".yml", ".csv", ".cfg", ".ini")
+
+
+def host_path_hits(entries: dict[str, bytes]) -> list[str]:
+    """`{entry_name: bytes}` → 含真实主目录路径的条目说明；纯函数，tests/test_wheel_host_paths.py 做负向对照。"""
+    hits: list[str] = []
+    for name, data in entries.items():
+        if not name.endswith(_TEXT_SUFFIXES):
+            continue
+        text = data.decode("utf-8", errors="replace")
+        for match in _HOME_PATH.finditer(text):
+            user = match.group("user")
+            if user in _PLACEHOLDER_USERS or user.startswith(("<", "$", "{")):
+                continue
+            line_no = text.count("\n", 0, match.start()) + 1
+            hits.append(f"{name}:{line_no} carries a host home path `{match.group(0)}…`")
+            break
+    return hits
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="horosa-wheel-") as tmp:
+        completed = subprocess.run(
+            ["uv", "build", "--wheel", "-o", tmp], cwd=PKG_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False
+        )
+        if completed.returncode != 0:
+            print("wheel-contents: `uv build --wheel` failed:", file=sys.stderr)
+            print(completed.stderr[-2000:], file=sys.stderr)
+            return 1
+        wheels = sorted(Path(tmp).glob("*.whl"))
+        if len(wheels) != 1:
+            print(f"wheel-contents: expected exactly one wheel, got {[w.name for w in wheels]}", file=sys.stderr)
+            return 1
+        with zipfile.ZipFile(wheels[0]) as archive:
+            names = set(archive.namelist())
+            entry_points = next((n for n in names if n.endswith("entry_points.txt")), None)
+            entry_text = archive.read(entry_points).decode("utf-8") if entry_points else ""
+            launcher_heads = {n: archive.read(n)[:3] for n in names if n.endswith(".ps1")}
+            text_entries = {n: archive.read(n) for n in names if n.endswith(_TEXT_SUFFIXES)}
+        errors = [f"missing {entry}" for entry in REQUIRED_ENTRIES if entry not in names]
+        # The .ps1 overrides must keep their UTF-8 BOM *inside the wheel*: Windows PowerShell 5.1
+        # decodes a BOM-less file as ANSI, and one non-ASCII character then unparses the whole
+        # launcher (v0.25.1 — `runtime.start_failed` before a single service starts). The source-tree
+        # test covers scripts/runtime_templates; this covers the artifact `uvx horosa-skill` ships.
+        for name, head in launcher_heads.items():
+            if head != b"\xef\xbb\xbf":
+                errors.append(f"{name} lost its UTF-8 BOM inside the wheel (Windows PowerShell 5.1 would parse it as ANSI)")
+        packs = [n for n in names if n.startswith("horosa_skill/knowledge/data/helpdocs/") and n.endswith(".json")]
+        if len(packs) < MIN_HELPDOC_PACKS:
+            errors.append(f"only {len(packs)} helpdoc packs in the wheel (expected ≥ {MIN_HELPDOC_PACKS})")
+        if "horosa-skill = horosa_skill.surfaces.cli:app" not in entry_text:
+            errors.append("console script `horosa-skill` entry point missing from entry_points.txt")
+        errors.extend(host_path_hits(text_entries))
+        # 塔罗牌面图：报告牌阵图按 manifest 逐张取图；wheel 里少一张，那张牌就静默退回符号牌面
+        art_manifest = PKG_ROOT / "src" / "horosa_skill" / "data" / "tarot-art" / "manifest.json"
+        art_files = sorted(json.loads(art_manifest.read_text(encoding="utf-8")).get("files") or {}) if art_manifest.is_file() else []
+        if not art_files:
+            errors.append("src/horosa_skill/data/tarot-art/manifest.json missing or empty (scripts/sync_tarot_art.py)")
+        errors += [f"missing tarot card picture horosa_skill/data/tarot-art/{rel}" for rel in art_files
+                   if f"horosa_skill/data/tarot-art/{rel}" not in names]
+        if any("horosa-core-js" in n for n in names):
+            errors.append("horosa-core-js must not be vendored into the wheel (it ships in the runtime payload)")
+        if errors:
+            print(f"wheel-contents FAILED ({wheels[0].name}):", file=sys.stderr)
+            for err in errors:
+                print(f"  - {err}", file=sys.stderr)
+            return 1
+        print(f"wheel-contents OK: {wheels[0].name} carries {len(names)} entries, {len(packs)} helpdoc packs, {len(art_files)} tarot pictures, "
+              "runtime templates, console script")
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

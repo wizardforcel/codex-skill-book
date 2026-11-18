@@ -1,0 +1,91 @@
+#!/usr/bin/env node
+import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import process from 'node:process';
+import { fileURLToPath } from 'node:url';
+
+import { listTools, runTool } from '../src/tools/index.js';
+
+async function readStdin() {
+  const chunks = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+function printJson(data) {
+  process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
+}
+
+async function main() {
+  const [command = 'help', arg] = process.argv.slice(2);
+  if (command === 'list') {
+    printJson({ ok: true, tools: listTools() });
+    return;
+  }
+  if (command === 'render-charts') {
+    // 报告盘图：跑星阙 app 自己的绘图代码（dist/app-charts.cjs，见 app-charts/build.mjs）。
+    // stdin = { figures: [{ kind, data, options }] } → { ok, results: [{ ok, svg, width, height } | { ok:false, error }] }
+    try {
+      const bundlePath = fileURLToPath(new URL('../dist/app-charts.cjs', import.meta.url));
+      if (!existsSync(bundlePath)) {
+        printJson({ ok: false, error: { code: 'app_charts.missing', message: 'dist/app-charts.cjs is not built' } });
+        process.exitCode = 1;
+        return;
+      }
+      const raw = await readStdin();
+      const parsed = raw.trim() ? JSON.parse(raw) : {};
+      const charts = createRequire(import.meta.url)(bundlePath);
+      // 写完就退：app 原版代码在加载时留着轮询用的 setTimeout，事件循环要空等约 2.5 s 才自然退出，每份报告都白等。
+      // 只在 stdout 真的写完之后退出（管道下 write 是异步的，直接 exit 会截断输出）。
+      const body = `${JSON.stringify({ ok: true, kinds: charts.listKinds(), results: charts.renderCharts(parsed.figures || []) }, null, 2)}\n`;
+      await new Promise((resolve) => process.stdout.write(body, resolve));
+      process.exit(0);
+    } catch (error) {
+      printJson({ ok: false, error: { code: 'cli.execution_failed', message: error instanceof Error ? error.message : String(error) } });
+      process.exitCode = 1;
+    }
+    return;
+  }
+  if (command !== 'run' || !arg) {
+    printJson({
+      ok: false,
+      error: {
+        code: 'cli.invalid_arguments',
+        message: 'Usage: horosa-core-js list | horosa-core-js run <tool>',
+      },
+    });
+    process.exitCode = 2;
+    return;
+  }
+
+  try {
+    const raw = await readStdin();
+    const parsed = raw.trim() ? JSON.parse(raw) : {};
+    // Coerce a null / scalar payload (e.g. stdin is literally `null`, a number, or a string) to {}
+    // so tools degrade to a structured "insufficient input" result instead of throwing on
+    // `payload.field`. Objects and arrays pass through unchanged (they already degrade gracefully).
+    const payload = parsed && typeof parsed === 'object' ? parsed : {};
+    // await：多数 runner 同步（await 对其为 no-op），zhengchuan 因异步载条文正文库返 Promise。
+    const result = await runTool(arg, payload);
+    // 顶层 `ok` 是**传输层**语义（CLI 跑起来没有），Python 侧 js_client 读完即 pop；
+    // 技法自身的成败一律走 `data.ok`（两层不能混）。展开放在前面、传输标志放在后面 ——
+    // 反过来写的话，任何返回顶层 ok 的 tool 都能把传输标志顶掉，语义失败会被误报成引擎崩溃。
+    if (result && typeof result === 'object' && Object.prototype.hasOwnProperty.call(result, 'ok')) {
+      process.stderr.write(`[horosa-core-js] warning: tool '${arg}' returned a top-level 'ok'; 技法成败请放 data.ok。\n`);
+    }
+    printJson({ ...result, ok: true });
+  } catch (error) {
+    printJson({
+      ok: false,
+      error: {
+        code: 'cli.execution_failed',
+        message: error instanceof Error ? error.message : String(error),
+      },
+    });
+    process.exitCode = 1;
+  }
+}
+
+await main();

@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Build and packaging
+build/
+dist/
+*.egg-info/
+
+# Secrets and local configuration
+.env
+.env.local
+.env*.local
+*.pem
+*.key
+
+# Local caches and generated output
+.cache/
+output/
+*.log
+
+# Local agent and editor state
+.agents/
+.claude/
+.omx/
+.senior-mode/
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,23 @@
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Local credentials must never be committed (they live in ~/.outlook, not here)
+.outlook/
+*.token
+inbox/
+
+# Local agent tooling state
+.serena/
+.superpowers/
+
+# Python venv provisioned by outlook-to-md/setup.sh
+.venv/
+__pycache__/
+*.pyc
+

@@ -1,0 +1,200 @@
+"""MCP 工具面的「外观」：图标、工具注解（只读 / 计算 / 写报告）、alwaysLoad 元数据、结构化输出开关、HOROSA_TOOLSETS 分组与服务器档案、工具标题。"""
+from __future__ import annotations
+
+import logging
+import os
+import re
+from inspect import Signature
+from typing import Any
+
+from mcp import types as mcp_types
+
+from horosa_skill.config import Settings
+from horosa_skill.engine.registry import LOOKUP_TOOLS, TOOL_DEFINITIONS
+
+# HOROSA_TOOLSETS 的解析与「这一进程注册哪些工具」的计划在 surfaces/toolsets.py（不依赖 MCP SDK：doctor 也要读它）。
+from horosa_skill.surfaces.toolsets import (  # noqa: F401 - _resolve_toolsets 供测试 / 旧调用方
+    _resolve_toolsets,
+    surface_plan,
+)
+
+logger = logging.getLogger("horosa_skill.surfaces.mcp_server")  # 拆分前的日志名，不变
+
+
+# 太极图 SVG（data URI，离线友好）：server 级图标，客户端渲染刚起步、成本近零先埋。
+_SERVER_ICON = mcp_types.Icon(
+    src=(
+        "data:image/svg+xml;utf8,"
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>"
+        "<circle cx='32' cy='32' r='30' fill='%23111827'/>"
+        "<path d='M32 2a30 30 0 000 60 15 15 0 010-30 15 15 0 000-30z' fill='%23f9fafb'/>"
+        "<circle cx='32' cy='17' r='5' fill='%23111827'/>"
+        "<circle cx='32' cy='47' r='5' fill='%23f9fafb'/></svg>"
+    ),
+    mimeType="image/svg+xml",
+    sizes=["64x64"],
+)
+
+# Tool annotations（MCP 2025-11-25）：客户端用它决定确认摩擦/自动放行；目录审核要求标注准确。
+# 判定口径（如实标注，见 AGENTS.md §4 / LESSONS）：
+# - 全部工具 openWorldHint=False（local-first：只打本机 runtime，不出网）。
+# - 查询类（registry/knowledge/guidance/memory 读、报告模板、LOOKUP_TOOLS 查资料技法）readOnlyHint=True + idempotent=True；
+#   查资料技法 run_tool 缺省不存档，这个注解才是真的（审计 S-14）。
+# - 技法计算类 readOnlyHint=False（默认会写一条本地 run 记录，memory_query 可见）、
+#   destructiveHint=False（只追加、不改不删）、idempotentHint=False（重复调用会追加新 run 行）。
+# - 报告渲染 readOnly=False + idempotent=True（同 run_id+format 原子覆盖同一产物）；
+#   report_from_tool 会重新起盘+新 run → idempotent=False。
+# - v0.40.0 P0：三个报告类工具会按 output_path **覆盖**磁盘文件（虽已限定在输出目录 / 白名单根内）→ destructiveHint=True，
+#   如实标注让客户端对它们保留确认摩擦；memory_record_answer 只追加记录，仍非 destructive。
+_ANN_QUERY = mcp_types.ToolAnnotations(
+    readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False
+)
+# idempotentHint 规范缺省即 false：不写 = 同义（线上 exclude_none 不发），每个计算类工具省 24 B。readOnly / destructive /
+# openWorld 三项照写——前两项缺省值与本仓口径相反或 ChatGPT 目录审核要求显式。
+_ANN_CALC = mcp_types.ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, openWorldHint=False
+)
+_ANN_RENDER = mcp_types.ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False
+)
+_ANN_REPORT_WRITE = mcp_types.ToolAnnotations(
+    readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False
+)
+# 命主档案：save 覆盖 / delete 删除用户数据 → destructive（客户端保留确认摩擦）；同参数重复调用结果相同 → idempotent。
+_ANN_PROFILE = mcp_types.ToolAnnotations(
+    readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False
+)
+# 存档管理（审计待决项 6）：delete 会删用户数据 → destructive；同参数重复调用结果相同 → idempotent。
+_ANN_MEMORY_MANAGE = mcp_types.ToolAnnotations(
+    readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False
+)
+_ANN_REPORT_FROM_TOOL = mcp_types.ToolAnnotations(
+    readOnlyHint=False, destructiveHint=True, openWorldHint=False
+)
+
+def _tool_annotations(tool_name: str) -> mcp_types.ToolAnnotations:
+    # 查资料类（engine/registry.LOOKUP_TOOLS）缺省不写 run（审计 S-14：以前标只读却每次落一个 run，并把记忆检索刷屏）。
+    if tool_name in LOOKUP_TOOLS:
+        return _ANN_QUERY
+    return _ANN_CALC
+
+
+# 入口型工具：即使客户端把 MCP 工具全部 deferred（Claude Code 的工具搜索默认行为），这几个也常驻，
+# 保证模型永远看得见「怎么问路」和「有哪些技法」。键名是 Claude Code 侧的 _meta 约定。
+_ALWAYS_LOAD_TOOLS = {"horosa_agent_guidance", "horosa_dispatch", "horosa_tool_run", "horosa_knowledge_search"}
+_ALWAYS_LOAD_META = {"anthropic/alwaysLoad": True}
+
+
+def _tool_meta(mcp_name: str) -> dict[str, Any] | None:
+    return dict(_ALWAYS_LOAD_META) if mcp_name in _ALWAYS_LOAD_TOOLS else None
+
+
+def _structured_output_enabled() -> bool:
+    """是否给工具声明 `outputSchema`（→ 客户端拿到 `structuredContent`）。**默认关**。
+
+    规范鼓励它，但 Claude Code 有过 anthropics/claude-code#25081：服务器带 outputSchema 时**整个
+    工具列表静默消失**——该 issue 至今 stale-closed、未确认修复。工具全体消失对本产品是灾难级故障，
+    而收益只是「结构化副本」（正文 JSON 一直都在 content 里）。因此默认不开，`HOROSA_OUTPUT_SCHEMA=1`
+    给已在自己客户端验证过 `/mcp` 工具计数不掉的用户使用。
+    """
+    return os.environ.get("HOROSA_OUTPUT_SCHEMA", "0").strip().lower() in {"1", "true", "on"}
+
+
+def _return_type(annotation: Any) -> Any:
+    return annotation if _structured_output_enabled() else Signature.empty
+
+
+def _user_knowledge_profile(settings: Settings) -> dict[str, Any]:
+    from horosa_skill.knowledge import user as user_knowledge
+
+    summary = user_knowledge.overview(settings, limit=50)
+    return {
+        "count": summary["count"],
+        "entries": [entry["id"] for entry in summary["entries"]],
+        "problems": len(summary["problems"]),
+        "use": "knowledge=[条目 id / 标题 / #标签 / auto / ?检索词] 传给任一技法，正文在 data.knowledge_context；"
+               "查资料用 horosa_knowledge_search，精读用 horosa_knowledge_read(domain=\"user\", key, from_line)",
+        "search_index": summary.get("search_index"),
+    }
+
+
+def _birth_profiles(settings: Settings) -> dict[str, Any]:
+    """已存的命主档案名（新对话里 AI 第一眼就知道「妈妈」存过）；只给名字与别名，不给出生信息。读不了档案库只报原因。"""
+    from horosa_skill.errors import HorosaSkillError
+    from horosa_skill.profiles import USE_HINT, ProfileStore
+
+    try:
+        items = ProfileStore(settings).all()
+    except HorosaSkillError as exc:
+        return {"count": None, "error": exc.code, "use": USE_HINT}
+    return {"count": len(items), "names": [item.summary() for item in items[:50]], "use": USE_HINT}
+
+
+def _server_profile(settings: Settings) -> dict[str, Any]:
+    """本进程实际暴露了什么（经 horosa_agent_guidance 可查；_SERVER_INSTRUCTIONS 没预算放它）。"""
+    plan = surface_plan(settings)
+    resolved = plan["resolved"]
+    effective = resolved["effective"]
+    return {
+        "compact": plan["compact"],
+        "toolsets_requested": resolved["requested"],
+        "toolsets_effective": None if effective is None else sorted(effective),
+        "toolsets_unknown": resolved["unknown"],
+        **({"toolsets_problem": resolved["problem"]} if resolved["problem"] else {}),
+        "tools_registered": plan["total_tools"],
+        "technique_tools_registered": len(plan["technique_tools"]),
+        "tool_run_registered": plan["tool_run"],
+        # 结果里给人读的字段用哪种文字（zh-Hans / zh-Hant / zh-Hant-HK）；选项、设置值、段名入参始终是简体。
+        "output_script": settings.output_script,
+        # 自备知识库：有几条、在哪；计算时传 knowledge=[条目 / #标签 / auto] 才会带进结果（缺省不带）。
+        "user_knowledge": _user_knowledge_profile(settings),
+        # 命主档案（horosa_profile）：技法载荷带 profile=名字 即填入出生信息。
+        "birth_profiles": _birth_profiles(settings),
+        "hint": "技法工具未平铺时用 horosa_tool_run(tool_name=…) 直呼；HOROSA_TOOLSETS 合法域见 toolsets_effective。",
+    }
+
+
+_TITLE_TAIL_PAREN = re.compile(r"[（(][^（()）]*[)）]\s*$")
+
+
+def _tool_title(tool_name: str) -> str | None:
+    """人类可读的工具标题（客户端工具选择器显示它，而不是 `horosa_cn_xiaochengtu` 这种 raw id）。
+
+    工具描述是「中文首句（补充）。English sentence.」的双语形态（registry.py），取中文首句、去掉
+    结尾括注即得一个准确的技法名——中文技法名是本产品最大的可读性资产，不该丢在 raw id 后面。
+    """
+    definition = TOOL_DEFINITIONS.get(tool_name)
+    if definition is None:
+        return None
+    head = str(definition.description or "").split("。", 1)[0].strip()
+    if not head:
+        return None
+    head = _TITLE_TAIL_PAREN.sub("", head).strip()
+    if not head or head.isascii():  # 纯英文描述 → 交回 FastMCP 默认（用 name）
+        return None
+    return _word_safe(head, TITLE_LIMIT)
+
+
+TITLE_LIMIT = 24
+_TITLE_BREAKS = "，、：；／/（(· "
+
+
+def _word_safe(text: str, limit: int) -> str:
+    """标题不切在词中间（MCP-11：旧写法 `head[:24]` 切出「…结构化 JSO」「…domain+」）。
+
+    超长时退到上限内最后一个分隔符（，、：；/ 括号 空格）之前；上限内没有分隔符就退到最后一个非 ASCII 字母数字之后，
+    英文词整个留下或整个去掉。
+    """
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    if text[limit] in _TITLE_BREAKS:  # 上限正好落在词界上
+        return cut.rstrip(" ，、：；/／(（·")
+    breaks = [cut.rfind(ch) for ch in _TITLE_BREAKS]
+    best = max(breaks)
+    if best >= limit // 2:
+        return cut[:best].rstrip(" ，、：；/／(（·")
+    while cut and cut[-1].isascii() and cut[-1].isalnum() and len(cut) < len(text) and text[len(cut)].isascii() and text[len(cut)].isalnum():
+        cut = cut[:-1]
+    return cut.rstrip()
+

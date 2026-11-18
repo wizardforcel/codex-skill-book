@@ -1,0 +1,1259 @@
+{
+  "_comment": "每个技法工具的**算源**声明（AGENTS §4「工具算源普查」的机器可读版）。技法依据卡/报告用它说明「这一段是谁算的」；运行期实测（pan.source / compute_sources）优先于本声明，两者不一致时如实标注分歧，不静默采信任何一边。由 scripts/verify_technique_provenance.py 守：新增技法不声明算源即红。",
+  "_classes": {
+    "chart_service_shenshu": "kentang 神数引擎挂在 Python chart 服务上，后端直出 snapshot（真身在 Result.snapshot）",
+    "composite": "多腿/多请求聚合；请求型 builder 归 Python，JS 层不发 HTTP",
+    "frontend_read_port": "读已算好的 chart 对象再排版的 Python 移植",
+    "headless_js": "纯 headless JS，无后端引擎",
+    "java_backend": "Java 聚合层（:9999）计算，Python 只转发与排版",
+    "ken_backed": "ken 后端算、JS 只格式化；健康结果带 pan.source/jinkou.source == 引擎名，runner 必须调 _require_ken_pan",
+    "local_data": "不起盘：读本地离线库 / 内置注册表",
+    "native_js_numerology": "core-js 进程内经 vendored bazi 链（lunar-javascript）起四柱后自行起数/起卦 + 条文查表，不打 chart 服务",
+    "python_chart_backend": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder",
+    "python_port": "星阙前端算法的 Python 移植（金标对上游测试）"
+  },
+  "tools": {
+    "acg": {
+      "compute_class": "python_chart_backend",
+      "engines": [
+        "acg_section"
+      ],
+      "endpoints": [
+        "/chart",
+        "/location/acg",
+        "/location/acgevent",
+        "/location/acgpoint"
+      ],
+      "export_technique": "acg",
+      "notes": "chart 服务 /location/acg*（ACGraph）算行星线、落点与世运事件；vendored JS acgSnapshot 只排 [占星地图] 段"
+    },
+    "agepoint": {
+      "compute_class": "python_chart_backend",
+      "engines": [
+        "progextra"
+      ],
+      "endpoints": [
+        "/predict/agepoint"
+      ],
+      "export_technique": "agepoint",
+      "notes": "chart 服务 /predict/agepoint 算年龄点与事件；vendored 星阙前端 buildAgePointSnapshotFromResult（horosa-core-js progextra）按回包排版"
+    },
+    "astrodata": {
+      "compute_class": "local_data",
+      "engines": [],
+      "endpoints": [],
+      "export_technique": "astrodata",
+      "notes": "不起盘：读本地离线库 / 内置注册表"
+    },
+    "babylon": {
+      "compute_class": "headless_js",
+      "engines": [
+        "babylon"
+      ],
+      "endpoints": [
+        "/astroextra/babylontables",
+        "/astroextra/ephemeris",
+        "/chart"
+      ],
+      "export_technique": "babylon",
+      "notes": "纯 headless JS，无后端引擎"
+    },
+    "balbillus": {
+      "compute_class": "composite",
+      "engines": [
+        "progextra"
+      ],
+      "endpoints": [
+        "/chart"
+      ],
+      "export_technique": "balbillus",
+      "notes": "chart 服务 /chart 铸本命盘；技法本身由 vendored 星阙前端 builder（horosa-core-js progextra）在盘上推算并直出快照"
+    },
+    "bazi_birth": {
+      "compute_class": "composite",
+      "engines": [
+        "lunar-local",
+        "java"
+      ],
+      "endpoints": [
+        "/bazi/direct"
+      ],
+      "export_technique": "bazi",
+      "notes": "本地 vendored lunar.js 引擎优先（同星阙八字页 BaZi.js:716-755 fetchBaziCached），公元前等域外日期或 byLon 回退 Java /bazi/*（adjustJieqi 随上游 v3.13.0 恒发 0）；两路都由 vendored buildBaziSnapshotText 出快照（compute_sources.bazi = lunar-local | java）"
+    },
+    "bazi_direct": {
+      "compute_class": "composite",
+      "engines": [
+        "lunar-local",
+        "java"
+      ],
+      "endpoints": [
+        "/bazi/direct"
+      ],
+      "export_technique": "bazi",
+      "notes": "本地 vendored lunar.js 引擎优先（同星阙八字页 BaZi.js:716-755 fetchBaziCached），公元前等域外日期或 byLon 回退 Java /bazi/*（adjustJieqi 随上游 v3.13.0 恒发 0）；两路都由 vendored buildBaziSnapshotText 出快照（compute_sources.bazi = lunar-local | java）"
+    },
+    "bazi_inverse": {
+      "compute_class": "java_backend",
+      "engines": [],
+      "endpoints": [
+        "/common/inversebazi"
+      ],
+      "export_technique": "bazi_inverse",
+      "notes": "Java BaZiHelper.getBirthes 逐年回推；Python 只校验四柱干支、转发与排版"
+    },
+    "bazizeri": {
+      "compute_class": "composite",
+      "engines": [],
+      "endpoints": [],
+      "export_technique": "bazizeri",
+      "notes": "多腿/多请求聚合；请求型 builder 归 Python，JS 层不发 HTTP"
+    },
+    "beiji": {
+      "compute_class": "chart_service_shenshu",
+      "engines": [
+        "tieban_framework",
+        "yanqin_yanfa"
+      ],
+      "endpoints": [
+        "/beiji/pan",
+        "/cetian/texts",
+        "/wangji/xinyi"
+      ],
+      "export_technique": "beiji",
+      "notes": "kentang 神数引擎挂在 Python chart 服务上，后端直出 snapshot（真身在 Result.snapshot）"
+    },
+    "bezzafigure": {
+      "compute_class": "python_chart_backend",
+      "engines": [
+        "progextra"
+      ],
+      "endpoints": [
+        "/astroextra/bezzafigure"
+      ],
+      "export_technique": "bezzafigure",
+      "notes": "chart 服务 /astroextra/bezzafigure（astrostudy/directed_figures.py）按定义算；vendored 星阙前端 buildDirectedFigureText（horosa-core-js progextra）按回包排版"
+    },
+    "calendar_month": {
+      "compute_class": "java_backend",
+      "engines": [],
+      "endpoints": [
+        "/calendar/month"
+      ],
+      "export_technique": "calendar",
+      "notes": "Java 聚合层（:9999）计算，Python 只转发与排版"
+    },
+    "canping": {
+      "compute_class": "native_js_numerology",
+      "engines": [
+        "canping"
+      ],
+      "endpoints": [],
+      "export_technique": "canping",
+      "notes": "core-js 进程内经 vendored bazi 链（lunar-javascript）起四柱后自行起数/起卦 + 条文查表，不打 chart 服务"
+    },
+    "cetian": {
+      "compute_class": "chart_service_shenshu",
+      "engines": [
+        "tieban_framework",
+        "yanqin_yanfa"
+      ],
+      "endpoints": [
+        "/cetian/pan",
+        "/cetian/texts",
+        "/wangji/xinyi"
+      ],
+      "export_technique": "cetian",
+      "notes": "kentang 神数引擎挂在 Python chart 服务上，后端直出 snapshot（真身在 Result.snapshot）"
+    },
+    "chart": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/chart"
+      ],
+      "export_technique": "astrochart",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "chart12": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/chart12"
+      ],
+      "export_technique": "dwadasamsa",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "chart13": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/chart13"
+      ],
+      "export_technique": "astrochart_like",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "chunzi": {
+      "compute_class": "chart_service_shenshu",
+      "engines": [
+        "tieban_framework",
+        "yanqin_yanfa"
+      ],
+      "endpoints": [
+        "/cetian/texts",
+        "/chunzi/pan",
+        "/wangji/xinyi"
+      ],
+      "export_technique": "chunzi",
+      "notes": "kentang 神数引擎挂在 Python chart 服务上，后端直出 snapshot（真身在 Result.snapshot）"
+    },
+    "decennials": {
+      "compute_class": "python_port",
+      "engines": [],
+      "endpoints": [
+        "/chart"
+      ],
+      "export_technique": "decennials",
+      "notes": "星阙前端算法的 Python 移植（金标对上游测试）"
+    },
+    "distributions": {
+      "compute_class": "python_chart_backend",
+      "engines": [
+        "progextra"
+      ],
+      "endpoints": [
+        "/predict/dist"
+      ],
+      "export_technique": "distributions",
+      "notes": "chart 服务 /predict/dist 算界推运与伙伴星；vendored 星阙前端 buildDistributionsSnapshotFromResult（horosa-core-js progextra）按回包排版"
+    },
+    "dongya": {
+      "compute_class": "composite",
+      "engines": [
+        "dongya"
+      ],
+      "endpoints": [
+        "/chart"
+      ],
+      "export_technique": "dongya",
+      "notes": "藏历 / 藏占 / 蒙古 Zurkhai / 算命学 / 九星气学 / 洛书流年六段由 vendored 星阙前端 eastAsiaArts（horosa-core-js dongya）进程内算；[易卦星盘] 读 chart 服务 /chart 本命盘七政的黄经与宫位后同样在 JS 内合卦（取不到本命盘时该段只出推运一行并进 warnings）；整份快照由 vendored eastAsiaSnapshotLines 排版"
+    },
+    "draconic": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/astroextra/draconic"
+      ],
+      "export_technique": "draconic",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "election": {
+      "compute_class": "headless_js",
+      "engines": [
+        "election"
+      ],
+      "endpoints": [
+        "/chart"
+      ],
+      "export_technique": "election",
+      "notes": "纯 headless JS，无后端引擎"
+    },
+    "ephemeris": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/astroextra/ephemeris",
+        "/chart"
+      ],
+      "export_technique": "ephemeris",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "export_parse": {
+      "compute_class": "local_data",
+      "engines": [],
+      "endpoints": [],
+      "export_technique": null,
+      "notes": "不起盘：读本地离线库 / 内置注册表"
+    },
+    "export_registry": {
+      "compute_class": "local_data",
+      "engines": [],
+      "endpoints": [],
+      "export_technique": null,
+      "notes": "不起盘：读本地离线库 / 内置注册表"
+    },
+    "extrareturns": {
+      "compute_class": "composite",
+      "engines": [],
+      "endpoints": [
+        "/astroextra/planetreturn",
+        "/astroextra/returns"
+      ],
+      "export_technique": "extrareturns",
+      "notes": "多腿/多请求聚合；请求型 builder 归 Python，JS 层不发 HTTP"
+    },
+    "feigong": {
+      "compute_class": "headless_js",
+      "engines": [
+        "feigong"
+      ],
+      "endpoints": [
+        "/nongli/time"
+      ],
+      "export_technique": "feigong",
+      "notes": "纯 headless JS，无后端引擎"
+    },
+    "fendjing": {
+      "compute_class": "chart_service_shenshu",
+      "engines": [
+        "tieban_framework",
+        "yanqin_yanfa"
+      ],
+      "endpoints": [
+        "/cetian/texts",
+        "/fendjing/pan",
+        "/wangji/xinyi"
+      ],
+      "export_technique": "fendjing",
+      "notes": "kentang 神数引擎挂在 Python chart 服务上，后端直出 snapshot（真身在 Result.snapshot）"
+    },
+    "firdaria": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/chart"
+      ],
+      "export_technique": "firdaria",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "geomancy": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/geomancy/catalog",
+        "/geomancy/reading"
+      ],
+      "export_technique": "geomancy",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "germany": {
+      "compute_class": "headless_js",
+      "engines": [
+        "uranian_extra"
+      ],
+      "endpoints": [
+        "/chart",
+        "/germany/midpoint"
+      ],
+      "export_technique": "germany",
+      "notes": "纯 headless JS，无后端引擎"
+    },
+    "givenyear": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/predict/givenyear"
+      ],
+      "export_technique": "givenyear",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "gua_desc": {
+      "compute_class": "java_backend",
+      "engines": [],
+      "endpoints": [
+        "/gua/desc"
+      ],
+      "export_technique": "sixyao",
+      "notes": "Java 聚合层（:9999）计算，Python 只转发与排版"
+    },
+    "gua_meiyi": {
+      "compute_class": "java_backend",
+      "engines": [],
+      "endpoints": [
+        "/gua/meiyi"
+      ],
+      "export_technique": "sixyao",
+      "notes": "Java 聚合层（:9999）计算，Python 只转发与排版"
+    },
+    "guice": {
+      "compute_class": "headless_js",
+      "engines": [
+        "guice"
+      ],
+      "endpoints": [
+        "/nongli/time"
+      ],
+      "export_technique": "guice",
+      "notes": "纯 headless JS，无后端引擎"
+    },
+    "guolao_chart": {
+      "compute_class": "composite",
+      "engines": [
+        "guolao_moira",
+        "guolao_star_dignity"
+      ],
+      "endpoints": [
+        "/chart",
+        "/qizheng/moira"
+      ],
+      "export_technique": "guolao",
+      "notes": "盘面 /chart（Python chart 服务）+ 政余格局/庙旺 headless JS + [虚实]/[本命化曜]/[流年流曜] 走 Java /qizheng/moira 规则层（流年盘二次铸盘；Java 不可用时三段缺席进 warnings）"
+    },
+    "harmonic": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/astroextra/harmonic"
+      ],
+      "export_technique": "harmonic",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "hellen_chart": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/chart13"
+      ],
+      "export_technique": "hellenastro",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "heluo": {
+      "compute_class": "native_js_numerology",
+      "engines": [
+        "heluo"
+      ],
+      "endpoints": [],
+      "export_technique": "heluo",
+      "notes": "core-js 进程内经 vendored bazi 链（lunar-javascript）起四柱后自行起数/起卦 + 条文查表，不打 chart 服务"
+    },
+    "horary": {
+      "compute_class": "headless_js",
+      "engines": [
+        "horary"
+      ],
+      "endpoints": [
+        "/chart"
+      ],
+      "export_technique": "horary",
+      "notes": "纯 headless JS，无后端引擎"
+    },
+    "huangli": {
+      "compute_class": "headless_js",
+      "engines": [
+        "huangli"
+      ],
+      "endpoints": [],
+      "export_technique": "huangli",
+      "notes": "纯 headless JS，无后端引擎"
+    },
+    "huanglizeri": {
+      "compute_class": "composite",
+      "engines": [],
+      "endpoints": [],
+      "export_technique": "huanglizeri",
+      "notes": "多腿/多请求聚合；请求型 builder 归 Python，JS 层不发 HTTP"
+    },
+    "india_chart": {
+      "compute_class": "python_chart_backend",
+      "engines": [
+        "india_jyotish"
+      ],
+      "endpoints": [
+        "/astroextra/transitevents",
+        "/india/chart"
+      ],
+      "export_technique": "indiachart",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "india_rectify": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/india/rectify"
+      ],
+      "export_technique": "india_rectify",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "indiazeri": {
+      "compute_class": "composite",
+      "engines": [],
+      "endpoints": [
+        "/indiaelectionscan/scan"
+      ],
+      "export_technique": "indiazeri",
+      "notes": "多腿/多请求聚合；请求型 builder 归 Python，JS 层不发 HTTP"
+    },
+    "jaynesprog": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/astroextra/jaynesprog"
+      ],
+      "export_technique": "jaynesprog",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "jayprofection": {
+      "compute_class": "python_chart_backend",
+      "engines": [
+        "progextra"
+      ],
+      "endpoints": [
+        "/astroextra/jayprofection"
+      ],
+      "export_technique": "jayprofection",
+      "notes": "chart 服务 /astroextra/jayprofection（astrostudy/directed_figures.py）按定义算；vendored 星阙前端 buildDirectedFigureText（horosa-core-js progextra）按回包排版"
+    },
+    "jieqi_birth": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/jieqi/birth"
+      ],
+      "export_technique": "jieqi_birth",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "jieqi_year": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/jieqi/year"
+      ],
+      "export_technique": "jieqi",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "jingjue": {
+      "compute_class": "chart_service_shenshu",
+      "engines": [
+        "tieban_framework",
+        "yanqin_yanfa"
+      ],
+      "endpoints": [
+        "/cetian/texts",
+        "/jingjue/pan",
+        "/wangji/xinyi"
+      ],
+      "export_technique": "jingjue",
+      "notes": "kentang 神数引擎挂在 Python chart 服务上，后端直出 snapshot（真身在 Result.snapshot）"
+    },
+    "jinkou": {
+      "compute_class": "ken_backed",
+      "engines": [
+        "kinjinkou",
+        "local_route_buildJinKouData"
+      ],
+      "endpoints": [
+        "/chart",
+        "/jinkou/pan",
+        "/liureng/gods"
+      ],
+      "export_technique": "jinkou",
+      "notes": "ken 后端算、JS 只格式化；健康结果带 pan.source/jinkou.source == 引擎名，runner 必须调 _require_ken_pan"
+    },
+    "keypoints": {
+      "compute_class": "composite",
+      "engines": [
+        "progextra"
+      ],
+      "endpoints": [
+        "/chart"
+      ],
+      "export_technique": "keypoints",
+      "notes": "chart 服务 /chart 铸本命盘；技法本身由 vendored 星阙前端 builder（horosa-core-js progextra）在盘上推算并直出快照"
+    },
+    "knowledge_read": {
+      "compute_class": "local_data",
+      "engines": [],
+      "endpoints": [],
+      "export_technique": null,
+      "notes": "不起盘：读本地离线库 / 内置注册表"
+    },
+    "knowledge_registry": {
+      "compute_class": "local_data",
+      "engines": [],
+      "endpoints": [],
+      "export_technique": null,
+      "notes": "不起盘：读本地离线库 / 内置注册表"
+    },
+    "lingqi": {
+      "compute_class": "headless_js",
+      "engines": [
+        "lingqi"
+      ],
+      "endpoints": [],
+      "export_technique": "lingqi",
+      "notes": "纯 headless JS，无后端引擎"
+    },
+    "liureng_gods": {
+      "compute_class": "headless_js",
+      "engines": [
+        "liureng"
+      ],
+      "endpoints": [
+        "/chart",
+        "/liureng/gods",
+        "/liureng/runyear"
+      ],
+      "export_technique": "liureng",
+      "notes": "纯 headless JS，无后端引擎"
+    },
+    "liureng_runyear": {
+      "compute_class": "headless_js",
+      "engines": [
+        "liureng"
+      ],
+      "endpoints": [
+        "/chart",
+        "/liureng/gods",
+        "/liureng/runyear"
+      ],
+      "export_technique": "liureng",
+      "notes": "纯 headless JS，无后端引擎"
+    },
+    "liurengzeri": {
+      "compute_class": "composite",
+      "engines": [],
+      "endpoints": [],
+      "export_technique": "liurengzeri",
+      "notes": "多腿/多请求聚合；请求型 builder 归 Python，JS 层不发 HTTP"
+    },
+    "lunarreturn": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/predict/lunarreturn"
+      ],
+      "export_technique": "lunarreturn",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "lunationphase": {
+      "compute_class": "composite",
+      "engines": [
+        "progextra"
+      ],
+      "endpoints": [
+        "/chart"
+      ],
+      "export_technique": "lunationphase",
+      "notes": "chart 服务 /chart 铸本命盘；技法本身由 vendored 星阙前端 builder（horosa-core-js progextra）在盘上推算并直出快照"
+    },
+    "michon": {
+      "compute_class": "python_chart_backend",
+      "engines": [
+        "progextra"
+      ],
+      "endpoints": [
+        "/astroextra/michon"
+      ],
+      "export_technique": "michon",
+      "notes": "chart 服务 /astroextra/michon（astrostudy/directed_figures.py）按定义算；vendored 星阙前端 buildDirectedFigureText（horosa-core-js progextra）按回包排版"
+    },
+    "mundane": {
+      "compute_class": "composite",
+      "engines": [
+        "mundane_cards",
+        "mundane_horary",
+        "mundane_solunar"
+      ],
+      "endpoints": [
+        "/chart",
+        "/jieqi/year"
+      ],
+      "export_technique": "mundane",
+      "notes": "多腿/多请求聚合；请求型 builder 归 Python，JS 层不发 HTTP"
+    },
+    "nanji": {
+      "compute_class": "chart_service_shenshu",
+      "engines": [
+        "tieban_framework",
+        "yanqin_yanfa"
+      ],
+      "endpoints": [
+        "/cetian/texts",
+        "/nanji/pan",
+        "/wangji/xinyi"
+      ],
+      "export_technique": "nanji",
+      "notes": "kentang 神数引擎挂在 Python chart 服务上，后端直出 snapshot（真身在 Result.snapshot）"
+    },
+    "neroman": {
+      "compute_class": "python_chart_backend",
+      "engines": [
+        "progextra"
+      ],
+      "endpoints": [
+        "/astroextra/neroman"
+      ],
+      "export_technique": "neroman",
+      "notes": "chart 服务 /astroextra/neroman（astrostudy/directed_figures.py）按定义算；vendored 星阙前端 buildDirectedFigureText（horosa-core-js progextra）按回包排版"
+    },
+    "nongli_time": {
+      "compute_class": "java_backend",
+      "engines": [],
+      "endpoints": [
+        "/nongli/time"
+      ],
+      "export_technique": "generic",
+      "notes": "Java 聚合层（:9999）计算，Python 只转发与排版"
+    },
+    "otherbu": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/predict/dice"
+      ],
+      "export_technique": "otherbu",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "pd": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/predict/pd"
+      ],
+      "export_technique": "primarydirect",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "pdchart": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/predict/pdchart"
+      ],
+      "export_technique": "primarydirchart",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "persiandirected": {
+      "compute_class": "frontend_read_port",
+      "engines": [],
+      "endpoints": [
+        "/chart"
+      ],
+      "export_technique": "persiandirected",
+      "notes": "读已算好的 chart 对象再排版的 Python 移植"
+    },
+    "planet_cycles": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/astroextra/planetcycles"
+      ],
+      "export_technique": "planet_cycles",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "planetaryages": {
+      "compute_class": "frontend_read_port",
+      "engines": [],
+      "endpoints": [
+        "/chart"
+      ],
+      "export_technique": "planetaryages",
+      "notes": "读已算好的 chart 对象再排版的 Python 移植"
+    },
+    "planetaryarc": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/chart",
+        "/predict/planetaryarc"
+      ],
+      "export_technique": "planetaryarc",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "prenatalsyzygy": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/astroextra/prenatal_syzygy",
+        "/chart"
+      ],
+      "export_technique": "prenatalsyzygy",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "profection": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/predict/profection"
+      ],
+      "export_technique": "profection",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "prog": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/astroextra/progressions",
+        "/chart"
+      ],
+      "export_technique": "prog",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "qimen": {
+      "compute_class": "ken_backed",
+      "engines": [
+        "kinqimen",
+        "local_route_calcDunJia"
+      ],
+      "endpoints": [
+        "/jieqi/year",
+        "/nongli/time",
+        "/qimen/pan"
+      ],
+      "export_technique": "qimen",
+      "notes": "ken 后端算、JS 只格式化；健康结果带 pan.source/jinkou.source == 引擎名，runner 必须调 _require_ken_pan"
+    },
+    "qimenzeri": {
+      "compute_class": "composite",
+      "engines": [
+        "kinqimen",
+        "local_route_calcDunJia",
+        "local_calcDunJia"
+      ],
+      "endpoints": [],
+      "export_technique": "qimenzeri",
+      "notes": "多腿/多请求聚合；请求型 builder 归 Python，JS 层不发 HTTP"
+    },
+    "qizhengelection": {
+      "compute_class": "local_data",
+      "engines": [],
+      "endpoints": [],
+      "export_technique": "qizhengelection",
+      "notes": "不起盘：读本地离线库 / 内置注册表"
+    },
+    "qizhengkin": {
+      "compute_class": "chart_service_shenshu",
+      "engines": [
+        "tieban_framework",
+        "yanqin_yanfa"
+      ],
+      "endpoints": [
+        "/cetian/texts",
+        "/qizhengkin/pan",
+        "/wangji/xinyi"
+      ],
+      "export_technique": "qizhengkin",
+      "notes": "kentang 神数引擎挂在 Python chart 服务上，后端直出 snapshot（真身在 Result.snapshot）"
+    },
+    "qizhengzeri": {
+      "compute_class": "composite",
+      "engines": [],
+      "endpoints": [
+        "/qizhengelectionscan/scan"
+      ],
+      "export_technique": "qizhengzeri",
+      "notes": "多腿/多请求聚合；请求型 builder 归 Python，JS 层不发 HTTP"
+    },
+    "relative": {
+      "compute_class": "python_chart_backend",
+      "engines": [
+        "india_tables"
+      ],
+      "endpoints": [
+        "/astroextra/ashtakoota",
+        "/astroextra/relative",
+        "/modern/relative"
+      ],
+      "export_technique": "relative",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "relocation": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/astroextra/relocation",
+        "/chart"
+      ],
+      "export_technique": "relocation",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "returntimeline": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/astroextra/returns",
+        "/chart"
+      ],
+      "export_technique": "returntimeline",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "sanshiunited": {
+      "compute_class": "composite",
+      "engines": [
+        "sanshiunited"
+      ],
+      "endpoints": [
+        "/chart",
+        "/nongli/time",
+        "/ziwei/birth"
+      ],
+      "export_technique": "sanshiunited",
+      "notes": "多腿/多请求聚合；请求型 builder 归 Python，JS 层不发 HTTP"
+    },
+    "sanshizeri": {
+      "compute_class": "composite",
+      "engines": [],
+      "endpoints": [],
+      "export_technique": "sanshizeri",
+      "notes": "多腿/多请求聚合；请求型 builder 归 Python，JS 层不发 HTTP"
+    },
+    "shaozi": {
+      "compute_class": "chart_service_shenshu",
+      "engines": [
+        "tieban_framework",
+        "yanqin_yanfa"
+      ],
+      "endpoints": [
+        "/cetian/texts",
+        "/shaozi/pan",
+        "/wangji/xinyi"
+      ],
+      "export_technique": "shaozi",
+      "notes": "kentang 神数引擎挂在 Python chart 服务上，后端直出 snapshot（真身在 Result.snapshot）"
+    },
+    "shenyishu": {
+      "compute_class": "chart_service_shenshu",
+      "engines": [
+        "tieban_framework",
+        "yanqin_yanfa"
+      ],
+      "endpoints": [
+        "/cetian/texts",
+        "/shenyishu/pan",
+        "/wangji/xinyi"
+      ],
+      "export_technique": "shenyishu",
+      "notes": "kentang 神数引擎挂在 Python chart 服务上，后端直出 snapshot（真身在 Result.snapshot）"
+    },
+    "sixyao": {
+      "compute_class": "headless_js",
+      "engines": [
+        "liuyao"
+      ],
+      "endpoints": [
+        "/gua/desc",
+        "/nongli/time"
+      ],
+      "export_technique": "sixyao",
+      "notes": "纯 headless JS，无后端引擎"
+    },
+    "solararc": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/predict/solararc"
+      ],
+      "export_technique": "solararc",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "solarreturn": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/predict/solarreturn"
+      ],
+      "export_technique": "solarreturn",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "suzhan": {
+      "compute_class": "composite",
+      "engines": [
+        "java",
+        "chart_service"
+      ],
+      "endpoints": [
+        "/chart"
+      ],
+      "export_technique": "suzhan",
+      "notes": "人事十二宫八字公式起盘（缺省）走 Java /chart（ChartController 附农历四柱，时支定宫序）；ASC 档或 Java 不可用走 chart 服务；vendored buildSuzhanSnapshotText 出快照（compute_sources.chart = java | chart_service）"
+    },
+    "taixuan": {
+      "compute_class": "chart_service_shenshu",
+      "engines": [
+        "tieban_framework",
+        "yanqin_yanfa"
+      ],
+      "endpoints": [
+        "/cetian/texts",
+        "/taixuan/pan",
+        "/wangji/xinyi"
+      ],
+      "export_technique": "taixuan",
+      "notes": "kentang 神数引擎挂在 Python chart 服务上，后端直出 snapshot（真身在 Result.snapshot）"
+    },
+    "taiyi": {
+      "compute_class": "ken_backed",
+      "engines": [
+        "kintaiyi"
+      ],
+      "endpoints": [
+        "/nongli/time",
+        "/taiyi/pan"
+      ],
+      "export_technique": "taiyi",
+      "notes": "ken 后端算、JS 只格式化；健康结果带 pan.source/jinkou.source == 引擎名，runner 必须调 _require_ken_pan"
+    },
+    "taiyizeri": {
+      "compute_class": "composite",
+      "engines": [],
+      "endpoints": [],
+      "export_technique": "taiyizeri",
+      "notes": "多腿/多请求聚合；请求型 builder 归 Python，JS 层不发 HTTP"
+    },
+    "tarot": {
+      "compute_class": "headless_js",
+      "engines": [
+        "tarot"
+      ],
+      "endpoints": [],
+      "export_technique": "tarot",
+      "notes": "纯 headless JS，无后端引擎"
+    },
+    "tianxing": {
+      "compute_class": "composite",
+      "engines": [
+        "tianxing"
+      ],
+      "endpoints": [
+        "/electionscan/conditiontypes",
+        "/electionscan/scan"
+      ],
+      "export_technique": "tianxing",
+      "notes": "多腿/多请求聚合；请求型 builder 归 Python，JS 层不发 HTTP"
+    },
+    "tieban": {
+      "compute_class": "chart_service_shenshu",
+      "engines": [
+        "tieban_framework",
+        "yanqin_yanfa"
+      ],
+      "endpoints": [
+        "/cetian/texts",
+        "/tieban/pan",
+        "/wangji/xinyi"
+      ],
+      "export_technique": "tieban",
+      "notes": "kentang 神数引擎挂在 Python chart 服务上，后端直出 snapshot（真身在 Result.snapshot）"
+    },
+    "timelords": {
+      "compute_class": "python_chart_backend",
+      "engines": [
+        "progextra"
+      ],
+      "endpoints": [
+        "/astroextra/timelords"
+      ],
+      "export_technique": "timelords",
+      "notes": "chart 服务 /astroextra/timelords（astrostudy/timelord_tables.py）按所选方法算期表 / 事件表；vendored 星阙前端 buildTimeLordText（horosa-core-js progextra）按回包排版"
+    },
+    "tongshefa": {
+      "compute_class": "headless_js",
+      "engines": [
+        "tongshefa"
+      ],
+      "endpoints": [],
+      "export_technique": "tongshefa",
+      "notes": "纯 headless JS，无后端引擎"
+    },
+    "tongshu": {
+      "compute_class": "headless_js",
+      "engines": [
+        "tongshu"
+      ],
+      "endpoints": [],
+      "export_technique": "tongshu",
+      "notes": "纯 headless JS，无后端引擎"
+    },
+    "transformchart": {
+      "compute_class": "python_chart_backend",
+      "engines": [
+        "aux_labs"
+      ],
+      "endpoints": [
+        "/astroextra/transformchart"
+      ],
+      "export_technique": "transformchart",
+      "notes": "chart 服务 /astroextra/transformchart（astrostudy/transform_charts.py）把本命盘换算成新盘；整盘通用段走 Python snapshot builder，[变换盘] 专属段由 vendored 星阙前端 transformSnapshotLines（horosa-core-js aux_labs）按回包排版"
+    },
+    "triplicityrulers": {
+      "compute_class": "composite",
+      "engines": [
+        "progextra"
+      ],
+      "endpoints": [
+        "/chart"
+      ],
+      "export_technique": "triplicityrulers",
+      "notes": "chart 服务 /chart 铸本命盘；技法本身由 vendored 星阙前端 builder（horosa-core-js progextra）在盘上推算并直出快照"
+    },
+    "vedicprog": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/astroextra/progressions"
+      ],
+      "export_technique": "vedicprog",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    },
+    "wangji": {
+      "compute_class": "chart_service_shenshu",
+      "engines": [
+        "tieban_framework",
+        "yanqin_yanfa"
+      ],
+      "endpoints": [
+        "/cetian/texts",
+        "/wangji/pan",
+        "/wangji/xinyi"
+      ],
+      "export_technique": "wangji",
+      "notes": "kentang 神数引擎挂在 Python chart 服务上，后端直出 snapshot（真身在 Result.snapshot）"
+    },
+    "wuzhao": {
+      "compute_class": "chart_service_shenshu",
+      "engines": [
+        "tieban_framework",
+        "yanqin_yanfa"
+      ],
+      "endpoints": [
+        "/cetian/texts",
+        "/wangji/xinyi",
+        "/wuzhao/pan"
+      ],
+      "export_technique": "wuzhao",
+      "notes": "kentang 神数引擎挂在 Python chart 服务上，后端直出 snapshot（真身在 Result.snapshot）"
+    },
+    "xianqin": {
+      "compute_class": "chart_service_shenshu",
+      "engines": [
+        "tieban_framework",
+        "yanqin_yanfa"
+      ],
+      "endpoints": [
+        "/cetian/texts",
+        "/wangji/xinyi",
+        "/xianqin/pan"
+      ],
+      "export_technique": "xianqin",
+      "notes": "kentang 神数引擎挂在 Python chart 服务上，后端直出 snapshot（真身在 Result.snapshot）"
+    },
+    "xiaochengtu": {
+      "compute_class": "headless_js",
+      "engines": [
+        "xiaochengtu"
+      ],
+      "endpoints": [
+        "/nongli/time"
+      ],
+      "export_technique": "xiaochengtu",
+      "notes": "纯 headless JS，无后端引擎"
+    },
+    "xiaoliuren": {
+      "compute_class": "headless_js",
+      "engines": [
+        "xiaoliuren"
+      ],
+      "endpoints": [
+        "/nongli/time"
+      ],
+      "export_technique": "xiaoliuren",
+      "notes": "纯 headless JS，无后端引擎"
+    },
+    "xuanshi": {
+      "compute_class": "local_data",
+      "engines": [],
+      "endpoints": [],
+      "export_technique": "xuanshi",
+      "notes": "不起盘：读本地离线库 / 内置注册表"
+    },
+    "yearsystem129": {
+      "compute_class": "composite",
+      "engines": [
+        "progextra"
+      ],
+      "endpoints": [
+        "/chart"
+      ],
+      "export_technique": "yearsystem129",
+      "notes": "chart 服务 /chart 铸本命盘；技法本身由 vendored 星阙前端 builder（horosa-core-js progextra）在盘上推算并直出快照"
+    },
+    "yizhangjing": {
+      "compute_class": "headless_js",
+      "engines": [
+        "yizhangjing"
+      ],
+      "endpoints": [],
+      "export_technique": "yizhangjing",
+      "notes": "纯 headless JS，无后端引擎"
+    },
+    "zhengchuan": {
+      "compute_class": "headless_js",
+      "engines": [
+        "zhengchuan"
+      ],
+      "endpoints": [
+        "/nongli/time"
+      ],
+      "export_technique": "zhengchuan",
+      "notes": "纯 headless JS，无后端引擎"
+    },
+    "zhufang": {
+      "compute_class": "composite",
+      "engines": [
+        "zhufang"
+      ],
+      "endpoints": [
+        "/astroextra/zhufang"
+      ],
+      "export_technique": "zhufang",
+      "notes": "[玛雅历] / [十三月亮历] 由 vendored 星阙前端 zhufangArts（horosa-core-js zhufang）进程内算；[人类图] / [灵名字母] 由 chart 服务 /astroextra/zhufang（astrostudy/zhufang_arts.py）算、vendored zhufangSnapshotLines 按回包排版（后端没算出的块写「未算出」并进 warnings）"
+    },
+    "ziwei_birth": {
+      "compute_class": "composite",
+      "engines": [
+        "java",
+        "ZiweiCalc"
+      ],
+      "endpoints": [
+        "/ziwei/birth"
+      ],
+      "export_technique": "ziwei",
+      "notes": "Java /ziwei/birth 起盘（流派非通用时附四化表）；22 个传本开关任一非缺省 → 本地 vendored ZiweiCalc 重排盘核心 + 重算格局（同星阙 buildZiweiSnapshotForParams，ZiWeiMain.js:716-822）；vendored buildZiWeiSnapshotText 出快照（compute_sources.chart = java | ZiweiCalc）"
+    },
+    "ziwei_rules": {
+      "compute_class": "java_backend",
+      "engines": [],
+      "endpoints": [
+        "/ziwei/rules"
+      ],
+      "export_technique": "ziwei_rules",
+      "notes": "Java 聚合层（:9999）计算，Python 只转发与排版"
+    },
+    "ziweizeri": {
+      "compute_class": "composite",
+      "engines": [],
+      "endpoints": [],
+      "export_technique": "ziweizeri",
+      "notes": "多腿/多请求聚合；请求型 builder 归 Python，JS 层不发 HTTP"
+    },
+    "zodiacsystems": {
+      "compute_class": "python_chart_backend",
+      "engines": [
+        "aux_labs"
+      ],
+      "endpoints": [
+        "/astroextra/zodiacsystems"
+      ],
+      "export_technique": "zodiacsystems",
+      "notes": "chart 服务 /astroextra/zodiacsystems（astrostudy/zodiac_systems.py）算各黄道版本的落段、星座与换星座时刻；[黄道制] 段由 vendored 星阙前端 zodiacSnapshotLines（horosa-core-js aux_labs）按回包排版"
+    },
+    "zr": {
+      "compute_class": "python_chart_backend",
+      "engines": [],
+      "endpoints": [
+        "/predict/zr"
+      ],
+      "export_technique": "zodialrelease",
+      "notes": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder"
+    }
+  }
+}

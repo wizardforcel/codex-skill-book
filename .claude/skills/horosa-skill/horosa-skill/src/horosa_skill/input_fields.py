@@ -1,0 +1,1355 @@
+"""逐字段的入参理解（v0.50.0）：时区 / 时刻 / 日期 / 经纬度 / 性别 / 宫制 / 黄道。
+
+每个 `parse_*` 只有两种结局：读懂了 → `Parsed(规范值, 说明)`（说明非空 = 这是「解读」出来的，要进 warnings）；读不懂 → `FieldIssue`
+（带错误码、中英说明、可接受的写法、示例、可选的候选项）。**没有第三种**：认不出的值绝不原样往下传，也绝不换成缺省值。
+`input_normalization.normalize_request_payload` 是唯一的调用方（全部技法、嵌套当事人、调度 / 合参 / 档案都经它）；
+这里不 import service / surfaces，不碰引擎。引擎自己的宽容（把 `东八区` 当 +08:00、把 2 月 30 日进位）是上游行为，不在这里改。
+"""
+from __future__ import annotations
+
+import math
+import re
+import unicodedata
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from typing import Any
+
+from horosa_skill.astro_rulers import HOUSE_SYSTEM_LABELS
+
+
+@dataclass(frozen=True)
+class Parsed:
+    value: Any
+    note_zh: str = ""
+    note_en: str = ""
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+class FieldIssue(Exception):
+    """一个字段读不懂。`ask_user` = 缺的是只有用户知道的事实（要问用户，不是改写法）。"""
+
+    def __init__(
+        self, code: str, zh: str, en: str, *, expected_zh: str, expected_en: str, example: Any,
+        options: list[Any] | None = None, ask_user: bool = False,
+    ) -> None:
+        super().__init__(zh)
+        self.code, self.zh, self.en = code, zh, en
+        self.expected_zh, self.expected_en, self.example = expected_zh, expected_en, example
+        self.options, self.ask_user = options or [], ask_user
+
+
+def clean_text(value: Any) -> str:
+    """NFKC（全角 → 半角：＋０８：００、８点）+ 各种减号 / 破折号 → '-' + 去首尾空白。"""
+    text = unicodedata.normalize("NFKC", f"{value}")
+    return re.sub(r"[\u2212\u2012\u2013\u2014\u2015\ufe63\uff0d]", "-", text).strip()
+
+
+def is_blank(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and not clean_text(value))
+
+
+_CN_DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "兩": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+
+
+def _cn_number(text: str) -> int | None:
+    """0–99 的中文数字（八、十、十二、二十、二十三、五十九）或阿拉伯数字 → int；别的 → None。"""
+    if not text:
+        return None
+    if text.isascii() and text.isdigit():
+        return int(text)
+    if text in _CN_DIGITS:
+        return _CN_DIGITS[text]
+    if "十" in text and len(text) <= 3:
+        head, _, tail = text.partition("十")
+        tens = 1 if not head else _CN_DIGITS.get(head)
+        ones = 0 if not tail else _CN_DIGITS.get(tail)
+        if tens is None or ones is None or not 1 <= tens <= 9:
+            return None
+        return tens * 10 + ones
+    return None
+
+
+# ───────────────────────── 时区 ─────────────────────────
+
+ZONE_MIN_MINUTES, ZONE_MAX_MINUTES = -12 * 60, 14 * 60
+_ZONE_EXPECTED_ZH = "UTC 偏移 ±HH:MM（-12:00…+14:00），或小时数 8 / -5 / 5.5、UTC+8、东八区、E8 / W5，或 IANA 名 Asia/Shanghai"
+_ZONE_EXPECTED_EN = "a UTC offset ±HH:MM (-12:00…+14:00), hours such as 8 / -5 / 5.5, UTC+8, 东八区, E8 / W5, or an IANA name such as Asia/Shanghai"
+
+# 有唯一含义的地名式时区 → IANA 名（偏移随日期，由调用方按盘面日期换算；中国大陆 1986–1991 夏令时照常生效）。
+ZONE_NAME_TO_IANA: dict[str, str] = {
+    "北京时间": "Asia/Shanghai", "北京": "Asia/Shanghai", "中国标准时间": "Asia/Shanghai", "中国时间": "Asia/Shanghai",
+    "beijing": "Asia/Shanghai", "beijing time": "Asia/Shanghai", "china standard time": "Asia/Shanghai", "prc": "Asia/Shanghai",
+    "香港时间": "Asia/Hong_Kong", "hkt": "Asia/Hong_Kong", "台北时间": "Asia/Taipei", "台湾时间": "Asia/Taipei",
+    "东京时间": "Asia/Tokyo", "日本时间": "Asia/Tokyo", "jst": "Asia/Tokyo", "首尔时间": "Asia/Seoul", "韩国时间": "Asia/Seoul", "kst": "Asia/Seoul",
+    "新加坡时间": "Asia/Singapore", "sgt": "Asia/Singapore",
+}
+# 固定偏移的缩写（没有第二种通行读法）。
+_ZONE_FIXED_ABBREVIATIONS: dict[str, int] = {"utc": 0, "gmt": 0, "ut": 0, "z": 0, "zulu": 0}
+# 一词多义的缩写：拒，并把候选偏移交给调用方去问用户。
+ZONE_AMBIGUOUS_ABBREVIATIONS: dict[str, list[tuple[str, str]]] = {
+    "cst": [("+08:00", "China Standard Time 中国标准时间"), ("-06:00", "US Central Standard Time 美国中部标准时间"), ("-05:00", "Cuba Standard Time 古巴标准时间")],
+    "est": [("-05:00", "US Eastern Standard Time 美国东部标准时间"), ("+10:00", "Australian Eastern Standard Time 澳大利亚东部标准时间")],
+    "edt": [("-04:00", "US Eastern Daylight Time 美国东部夏令时"), ("+11:00", "Australian Eastern Daylight Time 澳大利亚东部夏令时")],
+    "ist": [("+05:30", "India Standard Time 印度标准时间"), ("+01:00", "Irish Standard Time 爱尔兰标准时间"), ("+02:00", "Israel Standard Time 以色列标准时间")],
+    "pst": [("-08:00", "US Pacific Standard Time 美国太平洋标准时间"), ("+08:00", "Philippine Standard Time 菲律宾标准时间")],
+    "pdt": [("-07:00", "US Pacific Daylight Time 美国太平洋夏令时")],
+    "mst": [("-07:00", "US Mountain Standard Time 美国山地标准时间"), ("+08:00", "Malaysia Standard Time 马来西亚标准时间")],
+    "mdt": [("-06:00", "US Mountain Daylight Time 美国山地夏令时")],
+    "cdt": [("-05:00", "US Central Daylight Time 美国中部夏令时"), ("-04:00", "Cuba Daylight Time 古巴夏令时")],
+    "bst": [("+01:00", "British Summer Time 英国夏令时"), ("+06:00", "Bangladesh Standard Time 孟加拉标准时间")],
+    "ast": [("-04:00", "Atlantic Standard Time 大西洋标准时间"), ("+03:00", "Arabia Standard Time 阿拉伯标准时间")],
+    "cet": [("+01:00", "Central European Time 中欧时间（冬令）")], "cest": [("+02:00", "Central European Summer Time 中欧夏令时")],
+    "eet": [("+02:00", "Eastern European Time 东欧时间（冬令）")], "aest": [("+10:00", "Australian Eastern Standard Time")],
+    "aedt": [("+11:00", "Australian Eastern Daylight Time")], "nzst": [("+12:00", "New Zealand Standard Time")],
+    "wet": [("+00:00", "Western European Time 西欧时间（冬令）")], "msk": [("+03:00", "Moscow Time 莫斯科时间")],
+}
+_ZONE_CN_RE = re.compile(r"^(?P<side>[东東西])(?P<num>[0-9零〇一二两兩三四五六七八九十]{1,3})(?:时区|時區|区|區)$")
+_ZONE_EW_RE = re.compile(r"^(?P<side>[EW])(?P<num>\d{1,2})$", re.IGNORECASE)
+_ZONE_HM_TEXT_RE = re.compile(r"^(?P<sign>[+-]?)(?P<hours>\d{1,2}):(?P<minutes>\d{2})(?::(?P<seconds>\d{2}))?$")
+_ZONE_COMPACT_RE = re.compile(r"^(?P<sign>[+-]?)(?P<digits>\d{3,4})$")
+_ZONE_DECIMAL_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
+
+
+def format_zone_minutes(total_minutes: int) -> str:
+    sign = "-" if total_minutes < 0 else "+"
+    hours, minutes = divmod(abs(total_minutes), 60)
+    return f"{sign}{hours:02d}:{minutes:02d}"
+
+
+def _zone_issue(value: Any, zh: str, en: str, *, options: list[Any] | None = None, ask_user: bool = False) -> FieldIssue:
+    return FieldIssue("tool.invalid_zone", zh, en, expected_zh=_ZONE_EXPECTED_ZH, expected_en=_ZONE_EXPECTED_EN,
+                      example="+08:00", options=options, ask_user=ask_user)
+
+
+def _zone_from_minutes(value: Any, minutes: float) -> str:
+    if not math.isfinite(minutes) or abs(minutes - round(minutes)) > 1e-6:
+        raise _zone_issue(value, f"时区 {value!r} 不是整分钟的偏移。", f"Zone {value!r} is not a whole-minute offset.")
+    total = round(minutes)
+    if not ZONE_MIN_MINUTES <= total <= ZONE_MAX_MINUTES:
+        raise _zone_issue(
+            value, f"时区 {value!r} 超出 -12:00…+14:00：地球上没有这个偏移。",
+            f"Zone {value!r} is outside -12:00…+14:00; no such UTC offset exists.",
+        )
+    return format_zone_minutes(total)
+
+
+def _zone_from_hours(value: Any, hours: float) -> str:
+    if math.isfinite(hours) and abs(hours) > 14:
+        # 480 / -300 是分钟、28800 是秒：给出「如果是分钟 / 秒」的读法，但不替调用方定。
+        options = []
+        for unit_zh, unit_en, minutes in (("分钟", "minutes", hours), ("秒", "seconds", hours / 60)):
+            if abs(minutes - round(minutes)) < 1e-6 and ZONE_MIN_MINUTES <= round(minutes) <= ZONE_MAX_MINUTES:
+                options.append({"value": format_zone_minutes(round(minutes)), "label": f"若 {value} 是{unit_zh} / if {value} is in {unit_en}"})
+        raise _zone_issue(
+            value, f"时区 {value!r} 不是小时数（-12…+14）。看起来像分钟或秒，请改传 ±HH:MM。",
+            f"Zone {value!r} is not an hour count (-12…+14). It looks like minutes or seconds; pass ±HH:MM instead.",
+            options=options,
+        )
+    return _zone_from_minutes(value, hours * 60)
+
+
+def parse_zone(value: Any) -> Parsed:
+    """偏移类写法 → '±HH:MM'。IANA 名 / 地名式时区由调用方先处理（要盘面日期）；这里遇到会当作认不出。"""
+    if isinstance(value, bool):
+        raise _zone_issue(value, f"时区不能是布尔值 {value!r}。", f"Zone cannot be a boolean ({value!r}).")
+    if isinstance(value, (int, float)):
+        return Parsed(_zone_from_hours(value, float(value)))
+    raw = clean_text(value)
+    text = raw.upper().replace(" ", "")
+    lowered = raw.lower().strip()
+    if lowered in _ZONE_FIXED_ABBREVIATIONS:
+        return Parsed("+00:00")
+    if lowered in ZONE_AMBIGUOUS_ABBREVIATIONS:
+        candidates = ZONE_AMBIGUOUS_ABBREVIATIONS[lowered]
+        options = [{"value": offset, "label": label} for offset, label in candidates]
+        raise _zone_issue(
+            value, f"时区缩写 {raw} 不止一种含义（或随夏令时变化），不能替用户选：请改传偏移或 IANA 名。",
+            f"Zone abbreviation {raw} has more than one meaning (or shifts with DST); pass an offset or an IANA name instead.",
+            options=options, ask_user=True,
+        )
+    for prefix in ("UTC", "GMT", "UT"):
+        if text.startswith(prefix) and len(text) > len(prefix):
+            text = text[len(prefix):]
+            break
+    cn = _ZONE_CN_RE.match(raw.replace(" ", ""))
+    if cn:
+        hours = _cn_number(cn.group("num"))
+        if hours is None or hours > (14 if cn.group("side") in "东東" else 12):
+            raise _zone_issue(value, f"没有「{raw}」这个时区（东 0–14 区、西 0–12 区）。", f"There is no zone '{raw}' (east 0–14, west 0–12).")
+        offset = format_zone_minutes((1 if cn.group("side") in "东東" else -1) * hours * 60)
+        return Parsed(offset, f"时区「{raw}」按 {offset} 读。", f"Zone '{raw}' was read as {offset}.")
+    ew = _ZONE_EW_RE.match(text)
+    if ew:
+        sign = 1 if ew.group("side").upper() == "E" else -1
+        offset = _zone_from_minutes(value, sign * int(ew.group("num")) * 60)
+        return Parsed(offset, f"时区「{raw}」按 {offset} 读。", f"Zone '{raw}' was read as {offset}.")
+    hm = _ZONE_HM_TEXT_RE.match(text)
+    if hm:
+        minutes, seconds = int(hm.group("minutes")), int(hm.group("seconds") or 0)
+        if minutes >= 60 or seconds >= 60:
+            raise _zone_issue(value, f"时区 {raw!r} 的分 / 秒超过 59。", f"Zone {raw!r} has minutes or seconds above 59.")
+        if seconds:
+            raise _zone_issue(
+                value, f"时区 {raw!r} 带秒：起盘只收整分钟的偏移（地方平时请改用真太阳时开关，或给 IANA 名）。",
+                f"Zone {raw!r} carries seconds; only whole-minute offsets are accepted (for local mean time give an IANA name).",
+            )
+        sign = -1 if hm.group("sign") == "-" else 1
+        offset = _zone_from_minutes(value, sign * (int(hm.group("hours")) * 60 + minutes))
+        if not hm.group("sign") and not raw.upper().startswith(("UTC", "GMT", "UT")):
+            # 审计 F23：「08:00」不带正负号更像是把时刻填进了 zone——照读 +08:00，但说一声
+            return Parsed(offset, f"时区「{raw}」没有正负号，按 {offset} 读；若这是时刻，请放进 time、时区写成 +08:00 或给地名。",
+                          f"Zone '{raw}' has no sign and was read as {offset}; if it is a clock time, put it in `time` and give the zone as +08:00 or a place.")
+        return Parsed(offset)
+    compact = _ZONE_COMPACT_RE.match(text)
+    if compact:
+        digits = compact.group("digits")
+        hours, minutes = int(digits[:-2]), int(digits[-2:])
+        if minutes < 60 and hours <= 14:
+            sign = -1 if compact.group("sign") == "-" else 1
+            return Parsed(_zone_from_minutes(value, sign * (hours * 60 + minutes)))
+    if _ZONE_DECIMAL_RE.match(text):
+        return Parsed(_zone_from_hours(value, float(text)))
+    raise _zone_issue(value, f"认不出时区：{raw!r}。", f"Unrecognized time zone: {raw!r}.")
+
+
+# ───────────────────────── 时刻 ─────────────────────────
+
+_TIME_EXPECTED_ZH = "24 小时制钟表时刻 HH:MM[:SS]（00:00:00–23:59:59）；也认 0830、8点半、上午8点、8:30 PM"
+_TIME_EXPECTED_EN = "a 24-hour clock time HH:MM[:SS] (00:00:00–23:59:59); 0830, 8点半, 上午8点 and 8:30 PM are also understood"
+TIME_UNKNOWN_WORDS = frozenset({
+    "unknown", "unk", "n/a", "na", "none", "null", "nil", "?", "??", "不详", "不詳", "不知道", "不清楚", "未知", "不明", "不记得", "不記得",
+    "忘了", "忘记了", "忘記了", "无", "無", "没有", "沒有", "not known", "not sure", "dont know", "don't know", "tbd",
+})
+# 十二时辰 → 钟表时段（起，止）。子时跨日：23:00–01:00。
+SHICHEN_SPANS: dict[str, tuple[str, str]] = {
+    "子": ("23:00", "01:00"), "丑": ("01:00", "03:00"), "寅": ("03:00", "05:00"), "卯": ("05:00", "07:00"),
+    "辰": ("07:00", "09:00"), "巳": ("09:00", "11:00"), "午": ("11:00", "13:00"), "未": ("13:00", "15:00"),
+    "申": ("15:00", "17:00"), "酉": ("17:00", "19:00"), "戌": ("19:00", "21:00"), "亥": ("21:00", "23:00"),
+}
+_SHICHEN_RE = re.compile(r"^(?:早|晚|夜)?(?P<zhi>[子丑寅卯辰巳午未申酉戌亥])(?:时|時|正|初)?(?:辰)?$")
+_TIME_COLON_RE = re.compile(r"^(?P<hour>\d{1,2}):(?P<minute>\d{1,2})(?::(?P<second>\d{1,2})(?:\.\d+)?)?$")
+_TIME_COMPACT_RE = re.compile(r"^(?P<hour>\d{2})(?P<minute>\d{2})(?P<second>\d{2})?$")
+_TIME_CN_RE = re.compile(
+    r"^(?P<hour>[0-9零〇一二两兩三四五六七八九十]{1,3})(?:点钟|點鐘|点|點|时|時)"
+    r"(?:(?P<half>半)|(?P<quarter>[一三1-3]刻)|(?P<minute>[0-9零〇一二两兩三四五六七八九十]{1,3})(?:分)?"
+    r"(?:(?P<second>[0-9零〇一二两兩三四五六七八九十]{1,3})秒)?|整)?$"
+)
+_TIME_AMPM_RE = re.compile(r"^(?:(?P<pre>[AP])\.?M\.?)?(?P<hour>\d{1,2})(?::(?P<minute>\d{2})(?::(?P<second>\d{2}))?)?(?:(?P<post>[AP])\.?M\.?)?$", re.IGNORECASE)
+_PERIOD_AM = ("凌晨", "清晨", "早晨", "早上", "上午", "午前", "早")
+_PERIOD_PM = ("下午", "午后", "午後", "傍晚", "晚上", "夜里", "夜裡", "夜晚", "晚")
+# 审计 F23：时辰的「初 / 正」是确切钟点（辰初 07:00、辰正 08:00；子初 23:00、子正 00:00、午正 12:00）。
+_SHICHEN_EXACT_RE = re.compile(r"^(?P<zhi>[子丑寅卯辰巳午未申酉戌亥])(?P<mark>初|正)(?:时|時)?$")
+_NOON_WORDS = ("正午", "中午12点", "中午十二点", "NOON", "MIDDAY")
+_MIDNIGHT_WORDS = ("午夜", "半夜12点", "半夜十二点", "子夜", "MIDNIGHT")
+_PERIOD_NOON = ("中午", "正午")
+_PERIOD_MIDNIGHT = ("半夜", "午夜", "深夜")
+
+
+def _time_issue(code: str, zh: str, en: str, *, options: list[Any] | None = None, ask_user: bool = False, example: str = "08:30:00") -> FieldIssue:
+    return FieldIssue(code, zh, en, expected_zh=_TIME_EXPECTED_ZH, expected_en=_TIME_EXPECTED_EN, example=example,
+                      options=options, ask_user=ask_user)
+
+
+def _format_clock(hour: int, minute: int, second: int) -> str:
+    return f"{hour:02d}:{minute:02d}:{second:02d}"
+
+
+def _checked_clock(value: Any, hour: int, minute: int, second: int) -> str:
+    if hour == 24 and minute == 0 and second == 0:
+        raise _time_issue(
+            "tool.invalid_time",
+            "24:00 不是一个钟表时刻：若指当天结束的午夜，请把日期加一天并传 00:00:00。",
+            "24:00 is not a clock time: for the midnight that ends the day, add one day to the date and pass 00:00:00.",
+            options=[{"value": "00:00:00", "label": "次日 00:00:00（日期加一天）/ 00:00:00 on the NEXT calendar day"}],
+        )
+    if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
+        raise _time_issue(
+            "tool.invalid_time", f"时刻 {value!r} 越界：时 0–23、分 0–59、秒 0–59。",
+            f"Time {value!r} is out of range: hour 0–23, minute 0–59, second 0–59.",
+        )
+    return _format_clock(hour, minute, second)
+
+
+def _period_hour(value: Any, period: str, hour: int) -> int:
+    """上午 / 下午 / 中午 / 半夜 + 钟点 → 24 小时制的时；读法不唯一的（晚上12点、上午12点）拒并给候选。"""
+    def ambiguous(options: list[tuple[str, str]]) -> FieldIssue:
+        return _time_issue(
+            "tool.invalid_time", f"「{value}」有不止一种读法，请改传 24 小时制 HH:MM。",
+            f"'{value}' can be read more than one way; pass a 24-hour HH:MM instead.",
+            options=[{"value": v, "label": label} for v, label in options], ask_user=True,
+        )
+    if period in _PERIOD_AM:
+        if hour == 12:
+            raise ambiguous([("00:00:00", "当天凌晨零点 / midnight starting that day"), ("12:00:00", "中午十二点 / noon")])
+        if hour > 12:
+            raise _time_issue("tool.invalid_time", f"「{value}」自相矛盾：上午没有 {hour} 点。", f"'{value}' contradicts itself: there is no {hour} o'clock in the morning.")
+        return hour
+    if period in _PERIOD_PM:
+        if hour == 12 and period != "下午":
+            raise ambiguous([("00:00:00", "次日零点（日期加一天）/ 00:00 on the next day"), ("12:00:00", "中午十二点 / noon")])
+        if hour == 0:
+            raise ambiguous([("00:00:00", "次日零点（日期加一天）/ 00:00 on the next day")])
+        return hour if hour >= 12 else hour + 12
+    if period in _PERIOD_NOON:
+        if hour in (11, 12):
+            return hour
+        if hour in (1, 2):
+            return hour + 12
+        raise _time_issue("tool.invalid_time", f"「{value}」读不通：中午只接 11、12、1、2 点。", f"'{value}' does not parse: noon only goes with 11, 12, 1 or 2 o'clock.")
+    # 半夜 / 午夜 / 深夜：12 点与 0 点落在哪一天不唯一
+    if hour in (12, 0):
+        raise ambiguous([("00:00:00", "当天零点（这一天刚开始）/ 00:00 starting that day"), ("00:00:00+1d", "次日零点（日期加一天）/ 00:00 on the next day")])
+    if 1 <= hour <= 5:
+        return hour
+    if hour in (10, 11):
+        return hour + 12
+    if 22 <= hour <= 23:
+        return hour
+    raise _time_issue("tool.invalid_time", f"「{value}」读不通，请改传 24 小时制 HH:MM。", f"'{value}' does not parse; pass a 24-hour HH:MM instead.")
+
+
+# 审计 F06：时段词单独出现、约数（大概 / 左右 / 多 / 快 / around）、钟点区间（7点到9点、八九点）——都不是确切钟点。
+# 以前报 tool.invalid_time 且不要求问用户，弱模型会把「下午」改成 15:00 或抄示例的 08:30。现在：问用户，options 给它覆盖的钟表区间。
+_PERIOD_SPANS: dict[str, tuple[str, str]] = {
+    "凌晨": ("00:00", "06:00"), "清晨": ("05:00", "07:00"), "早晨": ("05:00", "09:00"), "早上": ("05:00", "09:00"), "早": ("05:00", "09:00"),
+    "上午": ("08:00", "12:00"), "午前": ("08:00", "12:00"), "中午": ("11:00", "13:00"), "下午": ("12:00", "18:00"), "午后": ("12:00", "18:00"),
+    "午後": ("12:00", "18:00"), "傍晚": ("17:00", "19:00"), "晚上": ("18:00", "24:00"), "晚": ("18:00", "24:00"), "夜晚": ("18:00", "24:00"),
+    "夜里": ("21:00", "05:00"), "夜裡": ("21:00", "05:00"), "半夜": ("23:00", "03:00"), "深夜": ("23:00", "03:00"),
+    "MORNING": ("05:00", "12:00"), "INTHEMORNING": ("05:00", "12:00"), "AFTERNOON": ("12:00", "18:00"), "INTHEAFTERNOON": ("12:00", "18:00"),
+    "EVENING": ("18:00", "22:00"), "INTHEEVENING": ("18:00", "22:00"), "NIGHT": ("21:00", "05:00"), "ATNIGHT": ("21:00", "05:00"),
+}
+_APPROX_PREFIX_RE = re.compile(r"^(?:大概|大约|大約|约莫|約莫|约|約|大致|差不多|估计|估計|可能|ABOUT|AROUND|APPROXIMATELY|APPROX\.?|CIRCA|CA\.|~|～|≈)", re.IGNORECASE)
+_APPROX_SUFFIX_RE = re.compile(r"(?:左右|前后|前後|上下|多钟|多鐘|多|ISH)$", re.IGNORECASE)
+_BEFORE_RE = re.compile(r"^(?:快到|快|将近|將近|接近)(?P<rest>.+)$")
+_CN_HOUR = r"[0-9零〇一二两兩三四五六七八九十]{1,3}"
+_RANGE_RE = re.compile(rf"^(?P<period>[^0-9零〇一二两兩三四五六七八九十]*?)(?P<a>{_CN_HOUR})(?:点|點|时|時)?(?:到|至|-|~|～|—|–)(?P<b>{_CN_HOUR})(?:点钟|點鐘|点|點|时|時)$")
+_ADJ_RANGE_RE = re.compile(r"^(?P<period>[^0-9零〇一二两兩三四五六七八九十]*?)(?P<a>[一二三四五六七八九])(?P<b>[二三四五六七八九十])(?:点钟|點鐘|点|點)$")
+
+
+def _approximate_time(raw: str) -> FieldIssue | None:
+    """F06：是约数 / 时段 / 区间就返回一个要问用户的 FieldIssue（options = 覆盖的钟表区间或候选钟点）；不是就 None。"""
+    compact = raw.replace(" ", "")
+    key = compact.upper()
+
+    def issue(span: str, options: list[dict[str, str]]) -> FieldIssue:
+        first = next((o["value"] for o in options if re.match(r"^\d{2}:\d{2}$", o["value"])), "08:00")
+        return _time_issue(
+            "tool.time_approximate",
+            f"「{raw}」是约数 / 时段（{span}），不是确切钟点。时柱、命宫 / 上升与宫位都随钟点变，不能替用户挑一个：请问用户能否说得更准；"
+            "用户明确说「就按某个钟点算」时，传那个 time 并带 time_approximate: true，结果会标明这是约数。",
+            f"'{raw}' is approximate / a period ({span}), not an exact clock time. The hour pillar, Ascendant and houses all move with the clock, "
+            "so do not pick one: ask the user to be more precise; when the user explicitly says to use a given time, pass it with time_approximate: true "
+            "and the result will mark it as approximate.",
+            options=options, ask_user=True, example=f"{first}:00",
+        )
+
+    if key in _PERIOD_SPANS:
+        start, end = _PERIOD_SPANS[key]
+        return issue(f"{start}–{end}", [{"value": f"{start}–{end}", "label": f"「{raw}」覆盖的钟表区间 / clock span covered by '{raw}'"}])
+    ranged = _RANGE_RE.match(compact) or _ADJ_RANGE_RE.match(compact)
+    if ranged:
+        try:
+            a, b = _cn_number(ranged.group("a")), _cn_number(ranged.group("b"))
+        except KeyError:
+            return None
+        period = ranged.group("period")
+        if a is None or b is None or (period and period not in _PERIOD_SPANS):
+            return None
+        if period:
+            try:
+                a, b = _period_hour(raw, period, a), _period_hour(raw, period, b)
+            except FieldIssue:
+                return None
+        span = f"{a:02d}:00–{b:02d}:00" if period or a > 12 or b > 12 else f"{a:02d}:00–{b:02d}:00 或 / or {(a % 12) + 12:02d}:00–{(b % 12) + 12:02d}:00"
+        return issue(span, [{"value": span, "label": f"「{raw}」覆盖的钟表区间 / clock span covered by '{raw}'"}])
+    core, mode = compact, ""
+    before = _BEFORE_RE.match(core)
+    if before:
+        core, mode = before.group("rest"), "before"
+    else:
+        stripped = _APPROX_PREFIX_RE.sub("", core)
+        if stripped != core:
+            core, mode = stripped, "about"
+        tail = _APPROX_SUFFIX_RE.search(core)
+        if tail and tail.start() > 0:
+            mode = "after" if tail.group(0) in ("多", "多钟", "多鐘") and mode != "about" else "about"
+            core = core[: tail.start()]
+    if not mode or not core:
+        return None
+    try:
+        clocks = [parse_time(core).value[:5]]
+    except FieldIssue as inner:
+        if inner.code != "tool.time_ampm_unclear":
+            return None
+        clocks = [str(option) for option in (inner.options or [])][:2]
+    if not clocks:
+        return None
+    words = {"about": ("约", "about"), "after": ("刚过", "a little after"), "before": ("快到", "shortly before")}[mode]
+    options = [{"value": clock, "label": f"{words[0]} {clock}（约数，用户确认按此算再用）/ {words[1]} {clock} (approximate; use only if the user confirms)"} for clock in clocks]
+    return issue(" / ".join(f"{words[0]} {clock}" for clock in clocks), options)
+
+
+def parse_time(value: Any) -> Parsed:
+    if isinstance(value, (bool, int, float)):
+        raise _time_issue(
+            "tool.invalid_time", f"时刻不能是数字 {value!r}：请传 HH:MM[:SS] 字符串。",
+            f"Time cannot be the number {value!r}; pass an HH:MM[:SS] string.",
+        )
+    raw = clean_text(value)
+    lowered = raw.lower()
+    if not raw or lowered in TIME_UNKNOWN_WORDS:
+        raise _time_issue(
+            "tool.time_unknown",
+            "没有出生 / 起课的钟点。钟点决定时柱、命宫与上升、月亮的精确位置和全部宫位，不能编一个也不能默认成 0 点：请向用户问到钟点再起盘。",
+            "The clock time is missing. It decides the hour pillar, the Ascendant and houses and the Moon's exact position; it must not be invented or defaulted to midnight. Ask the user for the time.",
+            ask_user=True,
+        )
+    text = raw.upper().lstrip("T") if re.match(r"^[Tt]\d", raw) else raw.upper()
+    text = text.replace(" ", "")
+    # 审计 F23：8.30am / 8h30 → 8:30；正午 / noon → 12:00；午夜 / midnight 要问是哪一天的零点。
+    text = re.sub(r"^(\d{1,2})[.H](\d{2})(?=$|[AP]|:)", r"\1:\2", text)
+    if text in _NOON_WORDS or raw in _NOON_WORDS:
+        return Parsed("12:00:00", f"时刻「{raw}」按 12:00 读。", f"Time '{raw}' was read as 12:00.")
+    if text in _MIDNIGHT_WORDS or raw in _MIDNIGHT_WORDS:
+        raise _time_issue(
+            "tool.time_midnight_ambiguous",
+            f"「{raw}」是哪一天的零点？当天开始的 00:00，还是当天结束（= 次日 00:00）？日期差一天，日柱 / 月亮都会变：请问用户。",
+            f"'{raw}': midnight at the start of the given day (00:00) or at its end (= next day 00:00)? The date differs by one day: ask the user.",
+            options=[{"value": "00:00", "label": "当天 00:00 / 00:00 that day"}, {"value": "next_day_00:00", "label": "次日 00:00 / 00:00 the next day"}],
+            ask_user=True, example="00:00:00",
+        )
+    exact = _SHICHEN_EXACT_RE.match(text)
+    if exact:
+        start = int(SHICHEN_SPANS[exact.group("zhi")][0][:2])
+        hour = start if exact.group("mark") == "初" else (start + 1) % 24
+        clock = f"{hour:02d}:00:00"
+        return Parsed(clock, f"「{raw}」是确切钟点：{clock}（{exact.group('zhi')}{exact.group('mark')}）。",
+                      f"'{raw}' names an exact hour: {clock}.")
+    colon = _TIME_COLON_RE.match(text)
+    if colon:
+        return Parsed(_checked_clock(raw, int(colon.group("hour")), int(colon.group("minute")), int(colon.group("second") or 0)))
+    compact = _TIME_COMPACT_RE.match(text)
+    if compact:
+        clock = _checked_clock(raw, int(compact.group("hour")), int(compact.group("minute")), int(compact.group("second") or 0))
+        return Parsed(clock, f"时刻「{raw}」按 {clock} 读。", f"Time '{raw}' was read as {clock}.")
+    shichen = _SHICHEN_RE.match(text)
+    if shichen:
+        start, end = SHICHEN_SPANS[shichen.group("zhi")]
+        if shichen.group("zhi") == "子" and text[:1] in ("晚", "夜"):
+            start, end = "23:00", "24:00"   # 审计 F24：晚子时就是 23:00–24:00
+        elif shichen.group("zhi") == "子" and text[:1] == "早":
+            start, end = "00:00", "01:00"   # 早子时 = 次日 00:00–01:00
+        raise _time_issue(
+            "tool.time_is_shichen",
+            f"「{raw}」是时辰（{start}–{end}），不是钟表时刻。两小时内的不同钟点会得到不同的命宫 / 上升、宫位与真太阳时换算，不能替用户挑一个：请问用户具体钟点；"
+            "只知道时辰时，把这一点如实告诉用户并由用户决定取哪个钟点。",
+            f"'{raw}' is a double-hour ({start}–{end}), not a clock time. Different times inside it give different Ascendants, houses and true-solar-time results, "
+            "so do not pick one: ask the user for the clock time, or let the user decide which time in the span to use.",
+            options=([{"value": "00:00–01:00", "label": "早子时（当天 00:00–01:00）/ early zi (00:00–01:00 that day)"},
+                      {"value": "23:00–24:00", "label": "晚子时（当天 23:00–24:00）/ late zi (23:00–24:00 that day)"}]
+                     if shichen.group("zhi") == "子" and not text[:1] in ("早", "晚", "夜") else
+                     [{"value": f"{start}–{end}", "label": f"{shichen.group('zhi')}时的钟表时段 / clock span of this double-hour"}]),
+            ask_user=True,
+        )
+    vague = _approximate_time(raw)
+    if vague is not None:
+        raise vague
+    period = next((p for p in (*_PERIOD_AM, *_PERIOD_PM, *_PERIOD_NOON, *_PERIOD_MIDNIGHT) if raw.startswith(p) and len(raw) > len(p)), "")
+    body = raw[len(period):].replace(" ", "") if period else raw.replace(" ", "")
+    cn = _TIME_CN_RE.match(body)
+    body_colon = _TIME_COLON_RE.match(body) if period else None
+    if cn or body_colon:
+        if cn:
+            hour = _cn_number(cn.group("hour"))
+            minute = 30 if cn.group("half") else 0
+            if cn.group("quarter"):
+                minute = 15 * (_cn_number(cn.group("quarter")[0]) or 0)
+            elif cn.group("minute"):
+                minute = _cn_number(cn.group("minute"))
+            second = _cn_number(cn.group("second")) if cn.group("second") else 0
+            if hour is None or minute is None or second is None:
+                raise _time_issue("tool.invalid_time", f"认不出时刻：{raw!r}。", f"Unrecognized time: {raw!r}.")
+        else:
+            hour, minute, second = int(body_colon.group("hour")), int(body_colon.group("minute")), int(body_colon.group("second") or 0)
+        if period:
+            hour = _period_hour(raw, period, hour)
+        elif cn and hour is not None and 1 <= hour <= 12 and ("点" in body or "點" in body):   # 「8时30分」是公文式 24 小时写法，照读
+            # 审计 F25：「8点」口语里上午下午都可能——不替用户选（冒号写法 8:30 照旧按 24 小时读）。
+            am, pm = (0 if hour == 12 else hour), (12 if hour == 12 else hour + 12)
+            options = [f"{am:02d}:{minute:02d}", f"{pm:02d}:{minute:02d}"]
+            raise _time_issue(
+                "tool.time_ampm_unclear",
+                f"「{raw}」是上午还是下午（{options[0]} 还是 {options[1]}）？请问用户；用户说过「早上 / 晚上」就带上那个词。",
+                f"'{raw}': morning or evening ({options[0]} or {options[1]})? Ask the user; include the period word if they said one.",
+                options=options, ask_user=True, example=f"{options[0]}:00",
+            )
+        clock = _checked_clock(raw, hour, minute, second)
+        return Parsed(clock, f"时刻「{raw}」按 {clock} 读。", f"Time '{raw}' was read as {clock}.")
+    ampm = _TIME_AMPM_RE.match(text)
+    if ampm and (ampm.group("pre") or ampm.group("post")) and not (ampm.group("pre") and ampm.group("post")):
+        marker = (ampm.group("pre") or ampm.group("post")).upper()
+        hour, minute, second = int(ampm.group("hour")), int(ampm.group("minute") or 0), int(ampm.group("second") or 0)
+        if not 1 <= hour <= 12:
+            raise _time_issue(
+                "tool.invalid_time", f"「{raw}」自相矛盾：带 AM / PM 的钟点只能是 1–12。",
+                f"'{raw}' contradicts itself: an AM / PM time needs an hour of 1–12.",
+            )
+        hour = (0 if hour == 12 else hour) + (12 if marker == "P" else 0)
+        clock = _checked_clock(raw, hour, minute, second)
+        return Parsed(clock, f"时刻「{raw}」按 {clock} 读。", f"Time '{raw}' was read as {clock}.")
+    raise _time_issue("tool.invalid_time", f"认不出时刻：{raw!r}。", f"Unrecognized time: {raw!r}.")
+
+
+# ───────────────────────── 日期 ─────────────────────────
+
+_DATE_EXPECTED_ZH = "公历日期 YYYY-MM-DD（也认 1990/5/3、1990.5.3、19900503、1990年5月3日；公元前写 -0500-03-21 或配 ad=-1）"
+_DATE_EXPECTED_EN = "a Gregorian date YYYY-MM-DD (1990/5/3, 1990.5.3, 19900503 and 1990年5月3日 are understood; BCE as -0500-03-21 or with ad=-1)"
+_DATE_YMD_RE = re.compile(r"^(?P<year>-?\d{1,5})(?P<sep>[-/.])(?P<month>\d{1,2})(?P=sep)(?P<day>\d{1,2})$")
+_DATE_COMPACT_RE = re.compile(r"^(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})$")
+_DATE_CN_RE = re.compile(r"^(?:公元)?(?P<year>\d{1,5})年(?P<month>\d{1,2})月(?P<day>\d{1,2})[日号號]?$")
+_DATE_DMY_RE = re.compile(r"^(?P<a>\d{1,2})(?P<sep>[-/.])(?P<b>\d{1,2})(?P=sep)(?P<year>\d{4})$")
+_LUNAR_MARKS = ("农历", "農曆", "阴历", "陰曆", "旧历", "舊曆", "正月", "腊月", "臘月", "冬月", "闰", "閏", "初一", "初二", "初三", "初四", "初五",
+                "初六", "初七", "初八", "初九", "初十", "廿", "卅", "lunar")
+_ISO_DATETIME_RE = re.compile(
+    r"^(?P<date>-?\d{1,5}[-/.]\d{1,2}[-/.]\d{1,2}|\d{8}|(?:公元)?\d{1,5}年\d{1,2}月\d{1,2}[日号號]?)"
+    r"(?:T|\s+|,\s*)(?P<time>\S.*?)(?P<offset>Z|[+-]\d{2}:?\d{2})?$",
+    re.IGNORECASE,
+)
+
+
+def _date_issue(code: str, zh: str, en: str, *, options: list[Any] | None = None, ask_user: bool = False) -> FieldIssue:
+    return FieldIssue(code, zh, en, expected_zh=_DATE_EXPECTED_ZH, expected_en=_DATE_EXPECTED_EN, example="1990-05-03",
+                      options=options, ask_user=ask_user)
+
+
+def days_in_month_certain(year: int, month: int) -> int:
+    """这个月**最多**有几天——只拒确定不存在的日子。1583 年起按格里历；此前闰日按儒略历（逢 4 年）且两种纪年法（有无 0 年）都放行。
+    1582-10-05…14 的改历缺口与公元 0 年由 _era_note 拒（审计 F22，问用户；以前不拒）。"""
+    if month in (4, 6, 9, 11):
+        return 30
+    if month != 2:
+        return 31
+    if year >= 1583:
+        return 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28
+    return 29 if year % 4 == 0 or (year <= 0 and (year + 1) % 4 == 0) else 28
+
+
+def _era_note(year: int, month: int, day: int, raw: str) -> Parsed | None:
+    """审计 F22：历法口径要说出来。公元 0 年不存在（历史纪年）→ 拒；1582-10-05…14（改历跳过的日子）→ 拒并给两种读法；
+    1583 年以前 → 照算，但说清「历史纪年、无公元 0 年、按儒略历读」。"""
+    if year == 0:
+        raise _date_issue(
+            "tool.invalid_date",
+            f"「{raw}」：历史纪年没有公元 0 年。公元前 1 年写 -0001（本仓按历史纪年读，-0001 = 公元前 1 年），公元 1 年写 0001。",
+            f"'{raw}': historical numbering has no year 0. 1 BCE is -0001 here (read as historical numbering), 1 CE is 0001.",
+            options=[f"-0001-{month:02d}-{day:02d}", f"0001-{month:02d}-{day:02d}"], ask_user=True,
+        )
+    if year == 1582 and month == 10 and 5 <= day <= 14:
+        raise _date_issue(
+            "tool.invalid_date",
+            f"「{raw}」落在 1582 年改历跳过的日子里（儒略历 10 月 4 日的次日就是格里历 10 月 15 日）：这一天不存在。"
+            "若是按儒略历记的日子，换成格里历要加 10 天；请问用户是哪一种。",
+            f"'{raw}' falls in the days skipped by the 1582 reform (Julian 4 October was followed by Gregorian 15 October). "
+            "If it is a Julian date, the Gregorian equivalent is 10 days later; ask the user which was meant.",
+            options=[{"value": f"1582-10-{day + 10:02d}", "label": f"儒略历 10 月 {day} 日 = 格里历 1582-10-{day + 10:02d} / Julian 4–14 Oct → Gregorian"}],
+            ask_user=True,
+        )
+    if year < 1583:
+        canonical = f"{'-' if year < 0 else ''}{abs(year):04d}-{month:02d}-{day:02d}"
+        era_zh = f"公元前 {abs(year)} 年" if year < 0 else f"公元 {year} 年"
+        era_en = f"{abs(year)} BCE" if year < 0 else f"{year} CE"
+        return Parsed(canonical, f"日期 {canonical} 按{era_zh}读（历史纪年，没有公元 0 年）；1582-10-15 以前各技法引擎的历法口径不一（多数按儒略历），以正文起盘信息为准。",
+                      f"Date {canonical} was read as {era_en} (historical numbering, no year 0). Before 1582-10-15 the engines differ on the calendar "
+                      "(most use the Julian one); the chart's header states what was used.")
+    return None
+
+
+def _checked_date(value: Any, year: int, month: int, day: int) -> str:
+    if not 1 <= month <= 12:
+        raise _date_issue("tool.invalid_date", f"日期 {value!r} 的月份 {month} 不存在。", f"Date {value!r} has no month {month}.")
+    limit = days_in_month_certain(year, month)
+    if not 1 <= day <= limit:
+        raise _date_issue(
+            "tool.invalid_date", f"日期 {value!r} 不存在：{year} 年 {month} 月只有 {limit} 天。",
+            f"Date {value!r} does not exist: month {month} of {year} has {limit} days.",
+        )
+    sign = "-" if year < 0 else ""
+    return f"{sign}{abs(year):04d}-{month:02d}-{day:02d}"
+
+
+# ── 农历日期（审计 F02 / F07 / 待决项 2：直接收农历，按 lunar-javascript 换算；表外年份照旧拒）──
+_CN_DIGITS = {"〇": 0, "零": 0, "○": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_LUNAR_PREFIX_RE = re.compile(r"^(?:农历|農曆|阴历|陰曆|旧历|舊曆|lunar)\s*[:：]?\s*", re.IGNORECASE)
+_LUNAR_MONTH_WORDS = {"正": 1, "冬": 11, "腊": 12, "臘": 12, "元": 1}
+_FESTIVALS = {"春节": (1, 1), "春節": (1, 1), "元宵": (1, 15), "上元": (1, 15), "龙抬头": (2, 2), "龍抬頭": (2, 2), "端午": (5, 5),
+              "七夕": (7, 7), "中元": (7, 15), "中秋": (8, 15), "重阳": (9, 9), "重陽": (9, 9), "腊八": (12, 8), "臘八": (12, 8),
+              "除夕": (12, 0)}  # 0 = 腊月最后一天（29 或 30）
+_LUNAR_TEXT_RE = re.compile(
+    r"^(?:(?P<year>-?\d{1,4}|[〇零○一二三四五六七八九]{4})\s*年)?\s*"
+    r"(?:(?P<festival>春节|春節|元宵|上元|龙抬头|龍抬頭|端午|七夕|中元|中秋|重阳|重陽|腊八|臘八|除夕)(?:节|節)?"
+    r"|(?P<leap>闰|閏)?(?P<month>正|冬|腊|臘|元|十[一二]?|[一二三四五六七八九]|\d{1,2})\s*月\s*"
+    r"(?P<day>初[一二三四五六七八九十]|十[一二三四五六七八九]?|二十|廿[一二三四五六七八九]|三十|卅|[一二三四五六七八九]|\d{1,2})\s*[日号號]?)$"
+)
+_LUNAR_ISO_RE = re.compile(r"^(?P<year>-?\d{1,4})[-/.](?P<leap>闰|閏|L|l)?(?P<month>\d{1,2})[-/.](?P<day>\d{1,2})$")
+
+
+def _cn_lunar_number(text: str) -> int:
+    """农历月日的中文数字（初九、十五、廿三、卅）。与上面钟点用的 _cn_number 分开命名——同名时这一个会把那一个顶掉，「二十三点」曾因此 KeyError。"""
+    if text.isdigit():
+        return int(text)
+    if text in ("十",):
+        return 10
+    if text.startswith("初"):
+        return _cn_lunar_number(text[1:]) if text[1:] != "十" else 10
+    if text in ("二十",):
+        return 20
+    if text in ("三十", "卅"):
+        return 30
+    if text.startswith("廿"):
+        return 20 + _CN_DIGITS[text[1]]
+    if text.startswith("十"):
+        return 10 + (_CN_DIGITS[text[1]] if len(text) > 1 else 0)
+    return _CN_DIGITS[text]
+
+
+def _cn_year(text: str) -> int:
+    return int(text) if text.lstrip("-").isdigit() else int("".join(str(_CN_DIGITS[ch]) for ch in text))
+
+
+def _lunar_parts(raw: str, *, forced: bool) -> tuple[int | None, int, int, bool | None, str] | None:
+    """认得出农历写法 → (年, 月, 日, 闰?, 原文)；不是农历返回 None。forced = 结构化地说了「这是农历」（calendar: lunar 等）。"""
+    text = clean_text(raw)
+    marked = bool(_LUNAR_PREFIX_RE.match(text))
+    body = _LUNAR_PREFIX_RE.sub("", text).strip()
+    iso = _LUNAR_ISO_RE.match(body)
+    if iso and (marked or forced):
+        leap = True if iso.group("leap") else None
+        return int(iso.group("year")), int(iso.group("month")), int(iso.group("day")), leap, text
+    if (marked or forced) and _DATE_CN_RE.match(body):
+        cn = _DATE_CN_RE.match(body)
+        return int(cn.group("year")), int(cn.group("month")), int(cn.group("day")), None, text
+    match = _LUNAR_TEXT_RE.match(body)
+    if not match:
+        return None
+    year = _cn_year(match.group("year")) if match.group("year") else None
+    if match.group("festival"):
+        month, day = _FESTIVALS[match.group("festival")]
+        return year, month, day, False, text
+    month_text, day_text = match.group("month"), match.group("day")
+    month = _LUNAR_MONTH_WORDS.get(month_text) or _cn_lunar_number(month_text)
+    day = _cn_lunar_number(day_text)
+    chinese_numerals = not month_text.isdigit() or not day_text.isdigit()
+    if not (marked or forced or chinese_numerals or match.group("leap")):
+        return None  # 「1990年5月3日」——阿拉伯数字月日不带农历标记 = 公历，交给下面的公历规则
+    return year, month, day, (True if match.group("leap") else None), text
+
+
+def _lunar_issue(code: str, zh: str, en: str, *, options: list[Any] | None = None, ask_user: bool = True) -> FieldIssue:
+    return FieldIssue(code, zh, en, expected_zh="公历 YYYY-MM-DD，或带年份的农历（农历1990年四月初九 / 1990年闰五月初三）",
+                      expected_en="Gregorian YYYY-MM-DD, or a lunar date with its year (农历1990年四月初九 / 1990年闰五月初三)",
+                      example="农历1990年四月初九", options=options, ask_user=ask_user)
+
+
+def parse_lunar_date(raw: Any, *, forced: bool = False, leap: bool | None = None) -> Parsed | None:
+    """农历写法 → 公历 Parsed（note 写明换算）；不是农历写法返回 None。leap：结构化给的「是否闰月」（覆盖文字里没说的情形）。"""
+    from horosa_skill import lunar_calendar as L
+
+    parts = _lunar_parts(str(raw), forced=forced)
+    if parts is None:
+        return None
+    year, month, day, text_leap, text = parts
+    if year is None:
+        raise _lunar_issue("tool.lunar_date_needs_year", f"「{text}」是农历日期，但没有年份：请问用户是哪一年（农历年）。",
+                           f"'{text}' is a lunar date without a year; ask the user which (lunar) year.")
+    is_leap = text_leap if text_leap is not None else leap
+    lo, hi = L.year_range()
+    if not lo <= year <= hi:
+        raise _lunar_issue(
+            "tool.lunar_date_unsupported",
+            f"「{text}」是农历日期，自动换算只支持 {lo}–{hi} 年。先换成公历再传：用 horosa_cn_calendar_month 查到那一天，或向用户问公历生日；不要自己推算。",
+            f"'{text}' is a lunar date; automatic conversion covers {lo}–{hi} only. Convert it first with horosa_cn_calendar_month, or ask the user"
+            " for the Gregorian date. Do not convert by hand.",
+        )
+    if day == 0:  # 除夕 = 腊月最后一天
+        day = L.last_day(year, 12)
+    try:
+        solar = L.to_solar(year, month, day, is_leap)
+    except L.LunarDateError as exc:
+        code = {"leap_ambiguous": "tool.lunar_leap_month_ambiguous"}.get(exc.kind, "tool.invalid_date")
+        raise _lunar_issue(code, f"「{text}」：{exc.zh}", f"'{text}': {exc.en}", options=exc.options,
+                           ask_user=exc.kind == "leap_ambiguous") from exc
+    shown = L.label(year, month, day, bool(is_leap))
+    weekday = L.WEEKDAYS[solar.weekday()]
+    return Parsed(solar.isoformat(), f"「{text}」按农历换算：{shown} → 公历 {solar.isoformat()}（星期{weekday}）。",
+                  f"'{text}' read as a lunar date: {shown} → Gregorian {solar.isoformat()}.", {"lunar_input": text})
+
+
+_EN_MONTHS = {name: index for index, names in enumerate((
+    ("JAN", "JANUARY"), ("FEB", "FEBRUARY"), ("MAR", "MARCH"), ("APR", "APRIL"), ("MAY",), ("JUN", "JUNE"), ("JUL", "JULY"),
+    ("AUG", "AUGUST"), ("SEP", "SEPT", "SEPTEMBER"), ("OCT", "OCTOBER"), ("NOV", "NOVEMBER"), ("DEC", "DECEMBER")), start=1) for name in names}
+_EN_MDY_RE = re.compile(r"^(?P<mon>[A-Za-z]{3,9})\.?\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?,?\s+(?P<year>\d{3,4})$")
+_EN_DMY_RE = re.compile(r"^(?P<day>\d{1,2})(?:st|nd|rd|th)?\s+(?P<mon>[A-Za-z]{3,9})\.?,?\s+(?P<year>\d{3,4})$")
+_ROC_RE = re.compile(r"^民[国國](?P<year>\d{1,3})年(?P<month>\d{1,2})月(?P<day>\d{1,2})[日号號]?$")
+_BCE_CN_RE = re.compile(r"^公元前(?P<year>\d{1,5})年(?:(?P<month>\d{1,2})月(?:(?P<day>\d{1,2})[日号號]?)?)?$")
+_BCE_EN_RE = re.compile(r"^(?:(?P<year1>\d{1,5})[-/.](?P<month>\d{1,2})[-/.](?P<day>\d{1,2})|(?P<year2>\d{1,5}))\s*(?:BCE|BC|B\.C\.E?\.?)$", re.IGNORECASE)
+_PARTIAL_DATE_RE = re.compile(r"^(?:(?P<year>\d{4})(?:年|[-/.])?(?:(?P<month>\d{1,2})(?:月)?)?)$")
+_SOLAR_PREFIXES = ("公历", "公曆", "阳历", "陽曆", "西历", "西曆", "新历", "新曆")
+
+
+def _date_prelude(raw: str) -> Parsed | None:
+    """审计 F23：英文月名、「公历 / 阳历」前缀、民国纪年、公元前、只有年 / 年月（要问日）。都认不出就 None，交给后面的通用规则。"""
+    for prefix in _SOLAR_PREFIXES:
+        if raw.startswith(prefix) and len(raw) > len(prefix):
+            inner = parse_date(raw[len(prefix):].strip())
+            return Parsed(inner.value, f"「{raw}」按公历 {inner.value} 读。", f"'{raw}' was read as the Gregorian date {inner.value}.", inner.extra)
+    for pattern in (_EN_MDY_RE, _EN_DMY_RE):
+        match = pattern.match(raw)
+        if match and match.group("mon").upper() in _EN_MONTHS:
+            value = _checked_date(raw, int(match.group("year")), _EN_MONTHS[match.group("mon").upper()], int(match.group("day")))
+            return Parsed(value, f"日期「{raw}」按 {value} 读。", f"Date '{raw}' was read as {value}.")
+    roc = _ROC_RE.match(raw)
+    if roc:
+        value = _checked_date(raw, int(roc.group("year")) + 1911, int(roc.group("month")), int(roc.group("day")))
+        return Parsed(value, f"「{raw}」民国纪年 = 公历 {value}。", f"'{raw}' (Minguo calendar) = Gregorian {value}.")
+    bce = _BCE_CN_RE.match(raw) or _BCE_EN_RE.match(raw)
+    if bce:
+        year = int(bce.groupdict().get("year") or bce.groupdict().get("year1") or bce.groupdict().get("year2"))
+        if not (bce.groupdict().get("month") and bce.groupdict().get("day")):
+            raise _date_issue("tool.date_incomplete", f"「{raw}」只有年份（公元前 {year} 年）：请问用户月、日。",
+                              f"'{raw}' gives only the year ({year} BCE): ask the user for the month and day.", ask_user=True)
+        value = _checked_date(raw, -year, int(bce.group("month")), int(bce.group("day")))
+        return Parsed(value, f"「{raw}」= 公元前 {year} 年（历史纪年，没有公元 0 年）→ {value}。",
+                      f"'{raw}' = {year} BCE (historical numbering, no year 0) → {value}.")
+    partial = _PARTIAL_DATE_RE.match(raw)
+    if partial and not _DATE_COMPACT_RE.match(raw):
+        missing = "日" if partial.group("month") else "月、日"
+        raise _date_issue("tool.date_incomplete", f"「{raw}」缺{missing}：请问用户具体哪一天。",
+                          f"'{raw}' is missing the {'day' if partial.group('month') else 'month and day'}: ask the user for the exact date.", ask_user=True)
+    return None
+
+
+_ANNOTATED_LUNAR_RE = re.compile(r"^(?P<solar>[^()]+?)\s*\((?P<mark>农历|農曆|阴历|陰曆)\s*(?P<lunar>[^()]+)\)$")
+
+
+def _annotated_lunar(raw: str, *, era_explicit: bool) -> Parsed | None:
+    """审计 F34：「1990年5月3日（农历四月初九）」——公历 + 农历注释。以前整体判成农历拒掉。现在读公历，用注释核对：
+    对得上 → 放行并说明；对不上 → 问用户是哪一个（两个公历候选）。注释里没写年份时按公历那天所在的农历年补。"""
+    match = _ANNOTATED_LUNAR_RE.match(raw)
+    if not match:
+        return None
+    try:
+        solar = parse_date(match.group("solar"), era_explicit=era_explicit)
+    except FieldIssue:
+        return None
+    lunar_text = match.group("lunar").strip()
+    try:
+        from datetime import date as _date
+
+        from horosa_skill.lunar_calendar import to_solar
+
+        y, m, d = (int(part) for part in solar.value.split("-"))
+        year_hint = y if _date(y, m, d) >= to_solar(y, 1, 1) else y - 1   # 农历年从正月初一起
+    except (ValueError, KeyError, IndexError, OverflowError):  # 换算表域外 / 公元前：只读公历并在说明里写「没能核对」
+        year_hint = None
+    candidates = [lunar_text] if re.match(r"^-?\d{3,4}|^[〇零一二三四五六七八九]{4}", lunar_text) else (
+        [f"{year_hint}年{lunar_text}"] if year_hint else [])
+    try:
+        lunar = parse_lunar_date(f"农历{candidates[0]}", forced=True) if candidates else None
+    except FieldIssue:
+        lunar = None
+    if lunar is None:
+        return Parsed(solar.value, f"「{raw}」按公历 {solar.value} 读；括号里的农历注释没能核对。",
+                      f"'{raw}' was read as the Gregorian date {solar.value}; the lunar note in brackets could not be checked.")
+    if lunar.value == solar.value:
+        return Parsed(solar.value, f"「{raw}」按公历 {solar.value} 读，与农历注释对得上。",
+                      f"'{raw}' was read as the Gregorian date {solar.value}; it matches the lunar note.")
+    raise _date_issue(
+        "tool.field_conflict",
+        f"「{raw}」里公历 {solar.value} 与农历注释（= 公历 {lunar.value}）对不上：是哪一天？请问用户。",
+        f"In '{raw}' the Gregorian date {solar.value} and the lunar note (= {lunar.value}) disagree: ask the user which day.",
+        options=[solar.value, lunar.value], ask_user=True,
+    )
+
+
+def parse_date(value: Any, *, era_explicit: bool = False) -> Parsed:
+    """→ Parsed('YYYY-MM-DD'，extra 里可能带从 ISO 日期时间拆出的 time / zone)。`era_explicit` = 载荷显式给了 ad。"""
+    if isinstance(value, (bool, float)):
+        raise _date_issue("tool.invalid_date", f"日期不能是 {value!r}：请传 YYYY-MM-DD 字符串。", f"Date cannot be {value!r}; pass a YYYY-MM-DD string.")
+    raw = clean_text(value)
+    annotated = _annotated_lunar(raw, era_explicit=era_explicit)
+    if annotated is not None:
+        return annotated
+    pre = _date_prelude(raw)
+    if pre is not None:
+        return pre
+    lunar = parse_lunar_date(raw)
+    if lunar is not None:
+        return lunar
+    if any(mark in raw.lower() for mark in _LUNAR_MARKS):
+        raise _date_issue(
+            "tool.lunar_date_unsupported",
+            f"「{raw}」是农历日期，起盘只收公历。先换成公历再传：用 horosa_cn_calendar_month（给公历年、月，逐日列出对应的农历月日）查到那一天，"
+            "或直接向用户问公历生日；不要自己推算。",
+            f"'{raw}' is a lunar-calendar date; charts take Gregorian dates only. Convert it first: horosa_cn_calendar_month (Gregorian year + month, lists "
+            "each day's lunar date) finds the day, or ask the user for the Gregorian date. Do not convert by hand.",
+            ask_user=True,
+        )
+    iso = _ISO_DATETIME_RE.match(raw)
+    if iso and not _DATE_YMD_RE.match(raw):
+        date_part = parse_date(iso.group("date"), era_explicit=era_explicit)
+        time_part = parse_time(iso.group("time"))
+        extra: dict[str, Any] = {"time": time_part.value}
+        if iso.group("offset"):
+            extra["zone"] = parse_zone(iso.group("offset")).value
+        return Parsed(date_part.value, f"「{raw}」拆成日期 {date_part.value} 与时刻 {time_part.value}。",
+                      f"'{raw}' was split into date {date_part.value} and time {time_part.value}.", extra)
+    match = _DATE_YMD_RE.match(raw) or _DATE_CN_RE.match(raw) or _DATE_COMPACT_RE.match(raw)
+    if match:
+        year_text = match.group("year")
+        year = int(year_text)
+        if len(year_text.lstrip("-")) <= 2 and not year_text.startswith("-") and not era_explicit:
+            full = [f"19{int(year_text):02d}", f"20{int(year_text):02d}"]
+            raise _date_issue(
+                "tool.invalid_date",
+                f"日期 {raw!r} 的年份只有 {len(year_text)} 位：是 {full[0]} 年、{full[1]} 年，还是公元 {int(year_text)} 年？请写四位年（公元 {int(year_text)} 年写 {int(year_text):04d}，或显式带 ad）。",
+                f"Date {raw!r} has a {len(year_text)}-digit year: {full[0]}, {full[1]} or the year {int(year_text)} CE? Write four digits ({int(year_text):04d} for year {int(year_text)} CE, or pass ad explicitly).",
+                options=[f"{y}-{int(match.group('month')):02d}-{int(match.group('day')):02d}" for y in (*full, f"{int(year_text):04d}")],
+                ask_user=True,
+            )
+        canonical = _checked_date(raw, year, int(match.group("month")), int(match.group("day")))
+        era = _era_note(year, int(match.group("month")), int(match.group("day")), raw)
+        # 显式带了 ad：纪元由 ad 折进日期（input_normalization._fold_era 写那条说明，带历法口径）；这里先说「按公元 500 年读」会与折后的公元前相反。
+        if era is not None and not era_explicit:
+            return era
+        if canonical == raw:
+            return Parsed(canonical)
+        plain = _DATE_YMD_RE.match(raw) is not None and match.group("sep") in "-/"
+        return Parsed(canonical) if plain else Parsed(canonical, f"日期「{raw}」按 {canonical} 读。", f"Date '{raw}' was read as {canonical}.")
+    dmy = _DATE_DMY_RE.match(raw)
+    if dmy:
+        a, b, year = int(dmy.group("a")), int(dmy.group("b")), int(dmy.group("year"))
+        readings: list[str] = []
+        for month, day in ((a, b), (b, a)):  # 月/日/年、日/月/年
+            if 1 <= month <= 12 and 1 <= day <= days_in_month_certain(year, month):
+                text = f"{year:04d}-{month:02d}-{day:02d}"
+                if text not in readings:
+                    readings.append(text)
+        if len(readings) == 1:
+            return Parsed(readings[0], f"日期「{raw}」只有一种读得通：{readings[0]}。", f"Date '{raw}' has only one valid reading: {readings[0]}.")
+        if len(readings) == 2:
+            raise _date_issue(
+                "tool.ambiguous_date",
+                f"日期 {raw!r} 有两种读法（月/日/年 → {readings[0]}，日/月/年 → {readings[1]}），不能替用户选：请改传 YYYY-MM-DD。",
+                f"Date {raw!r} reads two ways (month/day/year → {readings[0]}, day/month/year → {readings[1]}); pass YYYY-MM-DD instead.",
+                options=readings, ask_user=True,
+            )
+        raise _date_issue("tool.invalid_date", f"日期 {raw!r} 不存在。", f"Date {raw!r} does not exist.")
+    raise _date_issue("tool.invalid_date", f"认不出日期：{raw!r}。", f"Unrecognized date: {raw!r}.")
+
+
+# ───────────────────────── 经纬度 ─────────────────────────
+
+_COORD_EXPECTED = {
+    "lat": ("纬度：十进制度（31.22，南纬为负）或 31n13 / 31°13′N / 北纬31.22，范围 0–90",
+            "latitude: decimal degrees (31.22, south negative) or 31n13 / 31°13′N / 北纬31.22, within 0–90", "31n13"),
+    "lon": ("经度：十进制度（121.47，西经为负）或 121e28 / 121°28′E / 东经121.47，范围 0–180",
+            "longitude: decimal degrees (121.47, west negative) or 121e28 / 121°28′E / 东经121.47, within 0–180", "121e28"),
+}
+_HEMI_WORDS = (("北纬", "N"), ("北緯", "N"), ("南纬", "S"), ("南緯", "S"), ("东经", "E"), ("東經", "E"), ("西经", "W"), ("西經", "W"),
+               ("north", "N"), ("south", "S"), ("east", "E"), ("west", "W"))
+_COORD_COMPACT_RE = re.compile(r"^(?P<deg>\d{1,3})(?P<hemi>[NSEW])(?P<min>\d{1,2})(?::(?P<sec>\d{1,2}))?$")
+_COORD_NUMBER = r"\d+(?:\.\d+)?"
+# 秒的单位只能跟在秒的数字后面，且不收裸字母 s：IGNORECASE 下它会把尾随的 S（南）吃成「秒」——「33°52′S」曾读成北纬（审计 F01）。
+_COORD_DMS_RE = re.compile(
+    rf"^(?P<pre>[NSEW])?(?P<sign>[+-])?(?P<deg>{_COORD_NUMBER})(?:[°度d:\s]\s*(?P<min>{_COORD_NUMBER})?(?:['′分m:\s]\s*(?:(?P<sec>{_COORD_NUMBER})(?:\"|″|''|′′|秒)?)?)?)?\s*(?P<post>[NSEW])?$",
+    re.IGNORECASE,
+)
+_COORD_DOMAIN = 1e21
+
+
+def _coord_issue(axis: str, zh: str, en: str, *, options: list[Any] | None = None, ask_user: bool = False) -> FieldIssue:
+    expected_zh, expected_en, example = _COORD_EXPECTED[axis]
+    return FieldIssue("tool.invalid_coordinate", zh, en, expected_zh=expected_zh, expected_en=expected_en, example=example,
+                      options=options, ask_user=ask_user)
+
+
+def _axis_name(axis: str) -> tuple[str, str]:
+    return ("纬度", "latitude") if axis == "lat" else ("经度", "longitude")
+
+
+def parse_coordinate(value: Any, *, axis: str) -> Parsed:
+    """→ Parsed(十进制度 float)。罗盘串由调用方统一格式化（上游 AstroHelper 同式）。"""
+    zh_axis, en_axis = _axis_name(axis)
+    limit = 90.0 if axis == "lat" else 180.0
+    hemis = "NS" if axis == "lat" else "EW"
+
+    def bounded(decimal: float) -> float:
+        if not math.isfinite(decimal) or abs(decimal) >= _COORD_DOMAIN:
+            raise _coord_issue(axis, f"{zh_axis} {value!r} 不是一个有限的数。", f"{en_axis.capitalize()} {value!r} is not a finite number.")
+        if abs(decimal) > limit:
+            hint_zh = "（经纬度是不是传反了？）" if axis == "lat" and abs(decimal) <= 180 else ""
+            hint_en = " (are latitude and longitude swapped?)" if hint_zh else ""
+            raise _coord_issue(
+                axis, f"{zh_axis} {value!r} 超出 ±{limit:g}°{hint_zh}。", f"{en_axis.capitalize()} {value!r} is outside ±{limit:g}°{hint_en}.",
+            )
+        return decimal
+
+    if isinstance(value, bool):
+        raise _coord_issue(axis, f"{zh_axis}不能是布尔值。", f"{en_axis.capitalize()} cannot be a boolean.")
+    if isinstance(value, (int, float)):
+        return Parsed(bounded(float(value)))
+    raw = clean_text(value)
+    text = raw
+    for word, letter in _HEMI_WORDS:
+        text = re.sub(re.escape(word), letter, text, flags=re.IGNORECASE)
+    text = text.replace("º", "°").replace("˚", "°").replace("’", "'").replace("‘", "'").replace("”", '"').replace("“", '"').strip()
+    upper = text.upper().replace(" ", "")
+    compact = _COORD_COMPACT_RE.match(upper)
+    if compact:
+        hemi, degrees, minutes = compact.group("hemi"), int(compact.group("deg")), int(compact.group("min"))
+        if hemi not in hemis:
+            raise _coord_issue(axis, f"{zh_axis} {raw!r} 用了 {hemi}：{zh_axis}只认 {' / '.join(hemis)}（经纬度是不是传反了？）。",
+                               f"{en_axis.capitalize()} {raw!r} uses {hemi}; only {' / '.join(hemis)} apply (are latitude and longitude swapped?).")
+        if minutes >= 60:
+            as_decimal = float(f"{degrees}.{compact.group('min')}")
+            carried = degrees + minutes / 60
+            raise _coord_issue(
+                axis,
+                f"{zh_axis} {raw!r} 的「分」是 {minutes}（要小于 60）。它是十进制度 {as_decimal}°，还是 {degrees}°{minutes}′（= {carried:.4f}°）？请改成不含糊的写法。",
+                f"{en_axis.capitalize()} {raw!r} has {minutes} arc-minutes (must be below 60). Is it {as_decimal}° in decimal degrees, or {degrees}°{minutes}′ (= {carried:.4f}°)? Rewrite it unambiguously.",
+                options=[{"value": as_decimal * (-1 if hemi in "SW" else 1), "label": f"{as_decimal}°{hemi}（十进制度 / decimal degrees）"},
+                         {"value": round(carried * (-1 if hemi in "SW" else 1), 6), "label": f"{degrees}°{minutes}′{hemi}（度分 / degrees and minutes）"}],
+            )
+        seconds = int(compact.group("sec") or 0)
+        if seconds >= 60:
+            raise _coord_issue(axis, f"{zh_axis} {raw!r} 的秒要小于 60。", f"{en_axis.capitalize()} {raw!r} needs seconds below 60.")
+        return Parsed(bounded((degrees + minutes / 60 + seconds / 3600) * (-1 if hemi in "SW" else 1)))
+    dms = _COORD_DMS_RE.match(text.strip())
+    if dms and dms.group("deg") is not None:
+        pre, post = (dms.group("pre") or "").upper(), (dms.group("post") or "").upper()
+        if pre and post and pre != post:
+            raise _coord_issue(axis, f"{zh_axis} {raw!r} 同时写了 {pre} 和 {post}。", f"{en_axis.capitalize()} {raw!r} carries both {pre} and {post}.")
+        hemi = pre or post
+        # 「31d13m12s」：度、分、秒三段齐全且秒数字后面紧贴一个 s（无空格、无秒号）——s 是「秒」还是「南」说不清：问，不猜（审计 F01 回归）。
+        if post == "S" and not pre and dms.group("sec") and re.search(r"\d[sS]$", text.strip()):
+            south = -(float(dms.group("deg")) + float(dms.group("min") or 0) / 60 + float(dms.group("sec")) / 3600)
+            raise _coord_issue(
+                axis,
+                f"{zh_axis} {raw!r} 末尾的 s 说不清是「秒」还是「南（S）」。请写成 31°13′12″N / 31°13′12″S 这类不含糊的形式。",
+                f"{en_axis.capitalize()} {raw!r}: the trailing s could mean seconds or South. Write it unambiguously, e.g. 31°13′12″N or 31°13′12″S.",
+                options=[{"value": round(-south, 6), "label": "s = 秒（北纬 / north）"}, {"value": round(south, 6), "label": "S = 南纬 / south"}],
+                ask_user=True,
+            )
+        if hemi and hemi not in hemis:
+            raise _coord_issue(axis, f"{zh_axis} {raw!r} 用了 {hemi}：{zh_axis}只认 {' / '.join(hemis)}（经纬度是不是传反了？）。",
+                               f"{en_axis.capitalize()} {raw!r} uses {hemi}; only {' / '.join(hemis)} apply (are latitude and longitude swapped?).")
+        if hemi and dms.group("sign"):
+            raise _coord_issue(axis, f"{zh_axis} {raw!r} 既有正负号又有方向字母。", f"{en_axis.capitalize()} {raw!r} carries both a sign and a hemisphere letter.")
+        degrees = float(dms.group("deg"))
+        minutes = float(dms.group("min")) if dms.group("min") else 0.0
+        seconds = float(dms.group("sec")) if dms.group("sec") else 0.0
+        if (dms.group("min") and "." in dms.group("deg")) or (dms.group("sec") and "." in (dms.group("min") or "")):
+            raise _coord_issue(axis, f"{zh_axis} {raw!r} 的度 / 分带小数又接着写了下一级。", f"{en_axis.capitalize()} {raw!r} mixes a fractional part with a further sexagesimal part.")
+        if minutes >= 60 or seconds >= 60:
+            raise _coord_issue(axis, f"{zh_axis} {raw!r} 的分 / 秒要小于 60。", f"{en_axis.capitalize()} {raw!r} needs minutes and seconds below 60.")
+        decimal = degrees + minutes / 60 + seconds / 3600
+        negative = hemi in ("S", "W") or dms.group("sign") == "-"
+        parsed = bounded(-decimal if negative else decimal)
+        plain = re.fullmatch(r"[+-]?\d+(?:\.\d+)?", text.strip()) is not None
+        return Parsed(parsed) if plain else Parsed(parsed, f"{zh_axis}「{raw}」按 {parsed:.4f}° 读。", f"{en_axis.capitalize()} '{raw}' was read as {parsed:.4f}°.")
+    raise _coord_issue(axis, f"认不出{zh_axis}：{raw!r}。", f"Unrecognized {en_axis}: {raw!r}.")
+
+
+# ───────────────────────── 性别 ─────────────────────────
+
+# 性别标签 → 1 男 / 0 女（全仓唯一词表：service/_common._gender_label 的回显也用它）。键一律小写、NFKC、繁体折成简体后比较。
+GENDER_MALE_LABELS = frozenset({
+    "男", "male", "m", "boy", "man", "男性", "乾", "1", "乾造", "男命", "男士", "先生", "男生", "男孩", "男人", "♂", "mr", "mr.", "he", "him",
+})
+GENDER_FEMALE_LABELS = frozenset({
+    "女", "female", "f", "girl", "woman", "女性", "坤", "0", "坤造", "女命", "女士", "小姐", "太太", "女生", "女孩", "女人", "♀", "ms", "ms.", "mrs",
+    "mrs.", "miss", "she", "her",
+})
+
+
+def parse_gender(value: Any) -> Parsed:
+    # 审计 F29：「nan」「nv」两个拼音别名去掉、NaN 拒绝——序列化缺失值得到的 "NaN" 以前会变成男命。
+    # 布尔值照收（偏离审计建议）：好几个技法模型的 gender 是 bool，归一后存成 True / False，dispatch / 合参再交给 run_tool 时会再归一一次，
+    # 拒绝布尔值会把这条内部链路打断；广告层 gender 的类型是 integer / string，照 schema 填的客户端本来不传布尔值。
+    if isinstance(value, bool):
+        return Parsed(1 if value else 0)
+    if isinstance(value, float) and value != value:
+        raise FieldIssue(
+            "tool.invalid_gender", f"性别不能是 {value!r}：请问用户是男是女。", f"Gender cannot be {value!r}: ask the user.",
+            expected_zh="1 / 男 / male = 男；0 / 女 / female = 女", expected_en="1 / 男 / male = male; 0 / 女 / female = female",
+            example=1, options=[{"value": 1, "label": "男 / male"}, {"value": 0, "label": "女 / female"}], ask_user=True,
+        )
+    if isinstance(value, int) and value in (0, 1):
+        return Parsed(value)
+    if isinstance(value, float) and value in (0.0, 1.0):
+        return Parsed(int(value))
+    key = clean_text(value).lower()
+    if key in GENDER_MALE_LABELS:
+        return Parsed(1)
+    if key in GENDER_FEMALE_LABELS:
+        return Parsed(0)
+    raise FieldIssue(
+        "tool.invalid_gender", f"认不出性别：{value!r}。起盘只分男 / 女（大运、大限的顺逆由它定）。",
+        f"Unrecognized gender: {value!r}. Charts only distinguish male / female (it sets the direction of the luck cycles).",
+        expected_zh="1 / 男 / male / 乾造 = 男；0 / 女 / female / 坤造 = 女", expected_en="1 / 男 / male / 乾造 = male; 0 / 女 / female / 坤造 = female",
+        example=1, options=[{"value": 1, "label": "男 / male"}, {"value": 0, "label": "女 / female"}], ask_user=True,
+    )
+
+
+# ───────────────────────── 纪元（ad）与日界开关 ─────────────────────────
+
+_ERA_WORDS = {
+    1: ("ad", "ce", "a.d.", "c.e.", "公元", "公元后", "西元"),
+    -1: ("bc", "bce", "b.c.", "b.c.e.", "公元前", "西元前", "前"),
+}
+ERA_OPTIONS = [{"value": 1, "label": "1 = 公元（AD）"}, {"value": -1, "label": "-1 = 公元前（BC）"}]
+_ERA_VOCAB: Vocabulary | None = None
+
+
+def parse_era(value: Any) -> Parsed:
+    """`ad` / `guaAd`：1 公元 / -1 公元前（同一个 Vocabulary 机制；'-1' 与 '1' 是两个键，见 `_vocab_key`）。
+    0 拒：上游 DateTime 的公元前是 ad=0，而 Python 后端 `int(ad or 1)` 把 0 读成公元——两种读法相反。"""
+    global _ERA_VOCAB
+    if _ERA_VOCAB is None:
+        _ERA_VOCAB = Vocabulary("ad", _ERA_WORDS, labels={item["value"]: item["label"] for item in ERA_OPTIONS})
+    if isinstance(value, bool):
+        raise _era_issue(value)
+    if isinstance(value, float) and value in (1.0, -1.0):
+        return Parsed(int(value))
+    try:
+        parsed = _ERA_VOCAB.parse(value)
+    except FieldIssue:
+        raise _era_issue(value) from None
+    if parsed.note_zh:
+        return Parsed(parsed.value, f"纪元「{value}」按 ad={parsed.value} 读。", f"Era '{value}' was read as ad={parsed.value}.")
+    return parsed
+
+
+def _era_issue(value: Any) -> FieldIssue:
+    return FieldIssue(
+        "tool.invalid_option", f"ad 认不出 {value!r}：只收 1（公元）或 -1（公元前）。", f"Unrecognized ad {value!r}: only 1 (AD) or -1 (BC).",
+        expected_zh="1 = 公元，-1 = 公元前（或把日期写成带负号的 -0500-03-21）", expected_en="1 = AD, -1 = BC (or write the date with a leading minus, -0500-03-21)",
+        example=1, options=ERA_OPTIONS,
+    )
+
+
+# 日界两开关（上游全局出厂缺省 1 / 1：dayBoundary.js defaultAfter23NewDay / defaultLateZiHourUseNextDay）。
+DAY_SWITCH_KEYS = ("after23NewDay", "lateZiHourUseNextDay")
+DAY_SWITCH_DEFAULTS = {"after23NewDay": 1, "lateZiHourUseNextDay": 1}
+_DAY_SWITCH_LABELS = {
+    "after23NewDay": {1: "23 点换日（日柱进次日，缺省）", 0: "24 点换日"},
+    "lateZiHourUseNextDay": {1: "晚子时时干按次日日干起（缺省）", 0: "晚子时时干按当日日干起"},
+}
+_DAY_SWITCH_WORDS = {1: ("1", "true", "yes", "on", "是"), 0: ("0", "false", "no", "off", "否")}
+
+
+def parse_day_switch(value: Any, *, field_name: str = "after23NewDay") -> Parsed:
+    """日界 / 晚子时开关 → 0 / 1。旧做法「不是 1 / true 就当 0」把 'bogus'、2 都悄悄读成 24 点换日。"""
+    labels = _DAY_SWITCH_LABELS.get(field_name, _DAY_SWITCH_LABELS["after23NewDay"])
+    if isinstance(value, bool):
+        return Parsed(1 if value else 0)
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return Parsed(int(value))
+    if isinstance(value, str):
+        key = clean_text(value).lower()
+        for switch, words in _DAY_SWITCH_WORDS.items():
+            if key in words:
+                return Parsed(switch)
+    pairs = " ".join(f"{v}={label}" for v, label in labels.items())
+    raise FieldIssue(
+        "tool.invalid_option", f"{field_name} 认不出 {value!r}：只收 1 / 0（或 true / false）。",
+        f"Unrecognized {field_name} {value!r}: only 1 / 0 (or true / false).",
+        expected_zh="可选值：" + pairs, expected_en="accepted values: " + pairs, example=1,
+        options=[{"value": v, "label": label} for v, label in labels.items()],
+    )
+
+
+# ───────────────────────── 宫制 / 黄道 ─────────────────────────
+
+def _name_key(text: str) -> str:
+    return re.sub(r"[\s_\-·.]+", "", clean_text(text).lower())
+
+
+# 宫制别名 → 索引。正名取自 astro_rulers.HOUSE_SYSTEM_LABELS（上游 AstroConst.HOUSE_SYSTEM_OPTIONS 的镜像），这里只补通行的别写。
+_HOUSE_SYSTEM_ALIASES: dict[str, int] = {
+    "wholesign": 0, "wholesigns": 0, "wholesignhouses": 0, "whole": 0, "ws": 0, "整宫": 0, "整宫制": 0, "整宮制": 0, "整宮": 0, "rashi": 0,
+    "alcabitius": 1, "alchabitius": 1, "alcabitus": 1, "阿卡比特": 1, "阿卡比特制": 1,
+    "regio": 2, "regiomontanus": 2, "芮氏": 2, "芮氏分宫制": 2, "雷氏": 2,
+    "placidus": 3, "placidian": 3, "普拉西德": 3, "普拉西德制": 3, "普拉西度": 3, "普氏": 3, "普氏分宫制": 3,
+    "koch": 4, "柯赫": 4, "科赫": 4, "柯氏": 4, "vehlow": 5, "vehlowequal": 5, "polichpage": 6, "topocentric": 6, "sripati": 7,
+    "porphyry": 9, "porphyrius": 9, "波菲利": 9, "campanus": 10, "坎帕纳斯": 10, "equal": 11, "equalhouse": 11, "equalhouses": 11, "等宫制": 11, "等宫": 11,
+    "equalmc": 12, "meridian": 13, "axial": 13, "horizontal": 14, "azimuthal": 14, "morinus": 15, "莫林": 15,
+}
+
+
+# 印占（webindiasrv）另有一张编号表（astro_sidereal.INDIA_HOUSE_SYSTEM_LABELS：3=KP/Placidus、5=Equal、8=Alcabitus……）。
+_INDIA_HOUSE_SYSTEM_ALIASES: dict[str, int] = {
+    "wholesign": 0, "wholesigns": 0, "whole": 0, "rashi": 0, "整宫": 0, "整宫制": 0, "regiomontanus": 2, "regio": 2, "kp": 3, "placidus": 3,
+    "koch": 4, "equal": 5, "lagnabhava": 5, "bhava": 5, "等宫制": 5, "vehlow": 6, "sripati": 7, "alcabitus": 8, "alcabitius": 8, "porphyry": 9,
+    "campanus": 10, "morinus": 11, "meridian": 12, "axial": 12, "polichpage": 13, "topocentric": 13, "equalmc": 14, "azimuthal": 15,
+    "horizon": 15, "horizontal": 15,
+}
+
+
+def house_system_table(family: str = "astro") -> dict[int, str]:
+    """宫制索引 → 名称。西占 = astro_rulers.HOUSE_SYSTEM_LABELS（报告人话化用的同一张表），印占 = astro_sidereal 那张。"""
+    if family in ("india", "india-hsys"):
+        from horosa_skill.astro_sidereal import INDIA_HOUSE_SYSTEM_LABELS
+
+        table = dict(INDIA_HOUSE_SYSTEM_LABELS)
+        if family == "india-hsys":
+            # 印占模型上的通用 `hsys`：上游印占页的请求照带页面通用宫制（缺省 1，录制见 tests/fixtures/sync311_w3b_india_live.json），
+            # 印占后端只在没有 indiaHsys / 流派预设时才按印占表读它——所以多收一个 1。`indiaHsys` 严格按印占表。
+            table = dict(sorted({**table, 1: "Alcabitus（页面通用缺省；印占按 indiaHsys / 流派预设）"}.items()))
+        return table
+    return {int(key): label for key, label in HOUSE_SYSTEM_LABELS.items()}
+
+
+def _house_system_names(family: str) -> dict[str, int]:
+    names = dict(_INDIA_HOUSE_SYSTEM_ALIASES if family.startswith("india") else _HOUSE_SYSTEM_ALIASES)
+    for index, label in house_system_table(family).items():
+        names.setdefault(_name_key(label), index)
+    return names
+
+
+def parse_house_system(value: Any, *, family: str = "astro") -> Parsed:
+    table = house_system_table(family)
+    pairs = [f"{index}={label}" for index, label in table.items()]
+
+    def issue(zh: str, en: str) -> FieldIssue:
+        return FieldIssue("tool.invalid_house_system", zh, en, expected_zh="宫制索引或名称：" + " ".join(pairs),
+                          expected_en="a house-system index or name: " + " ".join(pairs), example=0 if family.startswith("india") else 3,
+                          options=[{"value": index, "label": label} for index, label in table.items()])
+
+    if isinstance(value, bool):
+        raise issue("宫制不能是布尔值。", "House system cannot be a boolean.")
+    number: int | None = None
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, float) and value == int(value):
+        number = int(value)
+    elif isinstance(value, str) and re.fullmatch(r"[+-]?\d+", clean_text(value)):
+        number = int(clean_text(value))
+    if number is not None:
+        if number not in table:
+            raise issue(f"没有索引为 {number} 的宫制。", f"There is no house system with index {number}.")
+        return Parsed(number)
+    if isinstance(value, str):
+        from horosa_skill.textscript import fold_to_simplified
+
+        key = _name_key(fold_to_simplified(clean_text(value)))
+        names = _house_system_names(family)
+        for suffix in ("", "housesystem", "houses", "house", "system", "分宫制", "宫制", "制"):
+            if suffix and not key.endswith(suffix):
+                continue
+            hit = names.get(key[: len(key) - len(suffix)])
+            if hit is not None:
+                return Parsed(hit, f"宫制「{value}」按 {hit}（{table[hit]}）读。", f"House system '{value}' was read as {hit} ({table[hit]}).")
+    raise issue(f"认不出宫制：{value!r}。", f"Unrecognized house system: {value!r}.")
+
+
+_ZODIACAL_NAMES: dict[str, int] = {
+    "tropical": 0, "tropic": 0, "回归": 0, "回归黄道": 0, "回归制": 0, "0": 0,
+    "sidereal": 1, "恒星": 1, "恒星黄道": 1, "恒星制": 1, "vedic": 1, "1": 1,
+}
+
+
+def parse_zodiacal(value: Any) -> Parsed:
+    def issue(zh: str, en: str) -> FieldIssue:
+        return FieldIssue("tool.invalid_zodiacal", zh, en, expected_zh="0 / tropical / 回归黄道，或 1 / sidereal / 恒星黄道",
+                          expected_en="0 / tropical, or 1 / sidereal", example=0,
+                          options=[{"value": 0, "label": "回归黄道 tropical"}, {"value": 1, "label": "恒星黄道 sidereal"}])
+
+    if isinstance(value, bool):
+        return Parsed(1 if value else 0)
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return Parsed(int(value))
+    if isinstance(value, str):
+        from horosa_skill.textscript import fold_to_simplified
+
+        hit = _ZODIACAL_NAMES.get(_name_key(fold_to_simplified(clean_text(value))))
+        if hit is not None:
+            plain = clean_text(value) in ("0", "1")
+            return Parsed(hit) if plain else Parsed(hit, f"黄道「{value}」按 {hit} 读。", f"Zodiac '{value}' was read as {hit}.")
+    raise issue(f"认不出黄道制：{value!r}。", f"Unrecognized zodiac: {value!r}.")
+
+
+# ───────────────────────── 解读说明收集 ─────────────────────────
+
+# 一次调用里「读懂了但做了解读」的说明（东八区 → +08:00、1990年5月3日 → 1990-05-03…）。嵌套作用域共用最外层那张表：
+# MCP 层先归一化一遍、service 再归一化一遍（幂等，第二遍不再产出说明），说明只记一次、由 run_tool 并进 warnings。
+_NOTES: ContextVar[list[str] | None] = ContextVar("horosa_input_notes", default=None)
+
+
+@contextmanager
+def input_notes_scope(*, fresh: bool = False) -> Iterator[list[str]]:
+    """`fresh=True`：技法内部再调技法（择日铸展示盘、三式合一取奇门 / 太乙）用自己的一张表，内部载荷的说明不漏到用户的结果里。"""
+    current = _NOTES.get()
+    if current is not None and not fresh:
+        yield current
+        return
+    notes: list[str] = []
+    token = _NOTES.set(notes)
+    try:
+        yield notes
+    finally:
+        _NOTES.reset(token)
+
+
+def add_input_note(zh: str, en: str) -> None:
+    notes = _NOTES.get()
+    if notes is None or not zh:
+        return
+    text = f"{zh} / {en}"
+    if text not in notes:
+        notes.append(text)
+
+
+def is_truthy(value: Any) -> bool:
+    """结构化开关的真值：True / 1 / "true" / "yes" / "是" / "闰" 等为真；其余（含 None、""、"false"、"0"、"否"）为假。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return clean_text(value).lower() in {"true", "1", "yes", "y", "on", "是", "对", "闰", "閏", "leap"}
+
+
+def note_parsed(parsed: Parsed, field_name: str = "") -> Any:
+    if parsed.note_zh:
+        prefix = f"`{field_name}`：" if field_name else ""
+        add_input_note(prefix + parsed.note_zh, (f"`{field_name}`: " if field_name else "") + parsed.note_en)
+    return parsed.value
+
+
+# ───────────────────────── 取值词表（枚举类设置的通用机制） ─────────────────────────
+
+
+class Vocabulary:
+    """一个枚举类设置的全部合法值 + 每个值认得的别名（大小写 / 繁简 / 全角 / 空格不敏感）。
+
+    `parse(value)` 只有两种结局：规范值，或 `tool.invalid_option`（details 带 `accepted` 全表）。schema 里用
+    `vocabulary_field(vocab)` 把它挂成 pydantic BeforeValidator：认不出的值在校验层就被拒，永远到不了 runner 的
+    `payload.get(k) or 缺省`。西占 / 中式各族的枚举旋钮（westNodeType、decennials 选项……）都用这一个机制，不另起一套。
+    """
+
+    def __init__(self, field_name: str, choices: Mapping[Any, Sequence[str]], *, labels: Mapping[Any, str] | None = None,
+                 code: str = "tool.invalid_option", numeric: bool = False) -> None:
+        """`numeric=True`：取值是数（容许度 8.5、界系 0–4、开关 0/1）。数与数字串按数值比（容差 1e-3，选项之间至少差 1′），
+        `8.5°` / `17′`（角分）也认；数值不在表里即拒——绝不落进别名表（`_vocab_key` 会吃掉小数点，`1.5` 与 `15` 撞键）。"""
+        self.field_name, self.code, self.numeric = field_name, code, numeric
+        self.labels = {value: (labels or {}).get(value, str(value)) for value in choices}
+        self._lookup: dict[str, Any] = {}
+        for value, aliases in choices.items():
+            for alias in ((*aliases,) if numeric else (str(value), *aliases)):
+                self._lookup.setdefault(_vocab_key(alias), value)
+
+    @property
+    def accepted(self) -> list[dict[str, Any]]:
+        return [{"value": value, "label": label} for value, label in self.labels.items()]
+
+    def _read_as(self, value: Any, hit: Any) -> Parsed:
+        plain = not isinstance(value, bool) and ((self.numeric and value == hit) or clean_text(value) == str(hit))
+        return Parsed(hit) if plain else Parsed(
+            # 字段名由 note_parsed 加前缀（`field`：…），这里不再重复。
+            hit, f"「{value}」按 {hit}（{self.labels[hit]}）读。", f"'{value}' was read as {hit} ({self.labels[hit]}).")
+
+    def issue(self, value: Any) -> FieldIssue:
+        pairs = " ".join(f"{v}={label}" for v, label in self.labels.items())
+        return FieldIssue(
+            self.code, f"{self.field_name} 认不出 {value!r}。", f"Unrecognized {self.field_name}: {value!r}.",
+            expected_zh="可选值：" + pairs, expected_en="accepted values: " + pairs, example=next(iter(self.labels)), options=self.accepted,
+        )
+
+    def parse(self, value: Any) -> Parsed:
+        if self.numeric and not isinstance(value, bool):
+            number = _vocab_number(value)
+            if number is not None:
+                for choice in self.labels:
+                    if isinstance(choice, (int, float)) and not isinstance(choice, bool) and abs(float(choice) - number) <= 1e-3:
+                        return self._read_as(value, choice)
+                raise self.issue(value)
+        if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+            exact = next((choice for choice in self.labels if type(choice) is type(value) and choice == value), None)
+            if exact is not None:
+                return Parsed(exact)
+            hit = self._lookup.get(_vocab_key(value))
+        else:
+            hit = self._lookup.get(_vocab_key(str(value).lower())) if isinstance(value, bool) else None
+        if hit is not None:
+            return self._read_as(value, hit)
+        raise self.issue(value)
+
+
+_VOCAB_NUMERAL_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
+
+
+def _vocab_key(value: Any) -> str:
+    """别名表的键：大小写 / 繁简 / 全角 / 分隔符（空格 _ - · .）不敏感。**数字字面量例外**：按数值写成规范串
+    （'-1' → '-1'、'+1' / '1.0' → '1'），绝不去符号、去小数点——否则 '-1' 与 '1'、'1.0' 与 '10' 撞成同一个键（v0.50.0 深审余项）。"""
+    from horosa_skill.textscript import fold_to_simplified
+
+    text = clean_text(value)
+    if _VOCAB_NUMERAL_RE.match(text):
+        number = float(text)
+        return str(int(number)) if number.is_integer() else repr(number)
+    return re.sub(r"[\s_\-·.]", "", fold_to_simplified(text).lower())
+
+
+_VOCAB_NUMBER_RE = re.compile(r"^(?P<num>[+-]?\d+(?:\.\d+)?)\s*(?P<unit>°|度|′|'|分)?$")
+
+
+def _vocab_number(value: Any) -> float | None:
+    """数 / 数字串（`8.5`、`8.5°`、`17′` = 17 角分）→ float；别的 → None（交给别名表）。"""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) if math.isfinite(float(value)) else None
+    if not isinstance(value, str):
+        return None
+    match = _VOCAB_NUMBER_RE.match(clean_text(value))
+    if not match:
+        return None
+    number = float(match.group("num"))
+    return number / 60 if match.group("unit") in ("′", "'", "分") else number
+
+
+def parse_with(vocabulary: Vocabulary, field_name: str, value: Any) -> Any:
+    """词表字段的 BeforeValidator 体（中式 / 西占 / 七政择日旋钮共用这一个）：None / 空串 = 没给（交给模型 / runner 的缺省），
+    其余必须读成规范值（做了解读的进 warnings），认不出 → tool.invalid_option（details.options 是全表）。"""
+    if value is None or is_blank(value):
+        return None
+    return field_validator_for(vocabulary.parse, field_name)(value)
+
+
+def field_validator_for(parse: Callable[[Any], Parsed], field_name: str) -> Callable[[Any], Any]:
+    """`parse_*` / `Vocabulary.parse` → pydantic BeforeValidator 用的函数：None 原样放行（缺省由模型定），解读说明进 warnings，
+    读不懂 → PydanticCustomError('horosa_field', ctx=issue)，由 `input_normalization.tool_error_from_validation` 还原成结构化的逐字段错误。"""
+
+    def validate(value: Any) -> Any:
+        if value is None:
+            return None
+        try:
+            return note_parsed(parse(value), field_name)
+        except FieldIssue as issue:
+            from pydantic_core import PydanticCustomError
+
+            raise PydanticCustomError("horosa_field", "{message}", {"message": f"{issue.zh} / {issue.en}", **issue_context(issue)}) from None
+
+    return validate
+
+
+def pydantic_field_error(issue: FieldIssue, field_name: str) -> Exception:
+    """模型级校验器（没有 loc 的 model_validator）用：同一个 horosa_field 错误，字段名放进 ctx（tool_error_from_validation 认它）。"""
+    from pydantic_core import PydanticCustomError
+
+    return PydanticCustomError("horosa_field", "{message}", {"message": f"{issue.zh} / {issue.en}", "field": field_name, **issue_context(issue)})
+
+
+def issue_context(issue: FieldIssue) -> dict[str, Any]:
+    return {"code": issue.code, "zh": issue.zh, "en": issue.en, "expected": f"{issue.expected_zh} / {issue.expected_en}",
+            "example": issue.example, "options": issue.options, "ask_user": issue.ask_user}

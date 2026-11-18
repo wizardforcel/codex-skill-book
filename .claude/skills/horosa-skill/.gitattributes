@@ -1,0 +1,19 @@
+* text=auto eol=lf
+# RFC 5545 要求 CRLF 行尾：日历文件（含 ICS 金样）不做换行归一，否则提交后金样变成 LF、逐字节对比全红。
+*.ics -text
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.tar.gz binary
+*.jar binary
+*.dll binary
+*.exe binary
+*.ttf binary
+*.gz binary
+# 星阙 app 原版绘图代码的打包产物（app-charts/build.mjs 生成，contracts/app_charts_bundle.json 记来源）：diff 里折叠。
+horosa-skill/horosa-core-js/dist/** linguist-generated=true

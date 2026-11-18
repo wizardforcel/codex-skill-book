@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex工作起步器"
+  short_description: "把邮件、日历、表格、会议和网页任务变成安全可检查的工作流"
+  default_prompt: "Use $codex-work-starter to turn my daily work into safe, checkable Codex workflows."

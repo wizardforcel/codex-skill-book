@@ -1,0 +1,1126 @@
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any
+
+AI_EXPORT_SETTINGS_KEY = "horosa.ai.export.settings.v1"
+# v17 (v0.51.0): 上游 v3.14.0（aiExport v60→v65）全量重同步。v61：astrochart / astrochart_like / relocation / locastro(acg)
+#   [盘面细节]、mundane [世运周期表]；v62：indiachart [Yoga 判定表] / [印占补充表]、relative [八重合]（首位）；v64：babylon
+#   [天象实算]、新技法键 dongya / zhufang；v65：indiachart [穿界时刻]，indiazeri = 印占全文段 + 择时三段。新技法键另有
+#   transformchart / zodiacsystems（辅盘）、timelords（星运）。AI_EXPORT_PLANET_INFO_TECHNIQUES 拆出「只进释义表」一组。
+# v16 (v0.46.0): 上游 v3.12.0/v3.13.0（aiExport v58→v60）全量重同步。v59：germany [赤纬接触] 自 [汉堡学派要素] 拆出
+#   （缺省流派也产，上游 AI_SECTION_SPLITS 拆段迁移）；v60：germany [中点坐标]/[公式求解]。同轮补段键（加段不升上游迁移闸）：
+#   distributions [伙伴星期]、indiachart 从日过运/过运×大运联动/Tajika 年主/年 Yoginī/Patyāyinī 五段 + 改名
+#   [分盘吉位 Vimśopaka]→[分盘吉位 Vaiśeṣikāṁśa]（实为 Vaiśeṣikāṁśa 吉位计数）、fengshui [成員卦象]→[成员卦象]；
+#   两处改名同进 map_legacy_section_title（上游 sectionFilter.js:51 LEGACY_CONTENT_SECTION_TITLES）。
+# v15 (v0.40.0): 上游 v3.11.0/v3.11.1 + 三个发布后修（aiExport v57→v58）全量重同步。v57：西占九键补
+#   [分宫制宫神星表]（整宫制宫主表单独成段）；v58：sanshiunited 补 七政。同轮补段键另有 babylon 三页签（数理星历/
+#   吉日历/年历预测，默认关）、calendar/huangli/tongshu 逐日表与吉日榜（默认关）、tongshefa 爻位（默认关）、
+#   zhengchuan 流年总纲/死月扫描、heluo 起卦详情、yizhangjing 三段、ziwei 运限概览 等；四个星运新键
+#   ephemeris/returntimeline/prenatalsyzygy/prog 随各自工具入册。默认关集合随上游扩。
+# v14 (v0.28.0): 上游 v3.9.2「AI 挂载一致性 + 快照内容补齐」。14 个新段/8 键：astrochart 古典衍化四段
+#   （opt-in 条件段）/ bazi 干支合冲（后端字段纯排版）/ ziwei 身宫+八字大运（引擎字段条件排版）/
+#   calendar 三个子源标签（【农历】【老黄历】【日子馆】，E-6 来源分界非内容段）/ 派生盘三键各+同名
+#   专属段（快照重定源）/ tianxing 选中时刻星盘（命中时补铸 /chart）。上游 generic 键降为运行时
+#   兜底 context（无 preset 行）——skill 侧 generic 保留（DIVERGENCE_WHITELIST catch-all）。
+# v13 (v0.27.0): 上游 v3.8.0→v3.9.1 全量重同步。新技法键 lingqi（灵棋经）入册；八个既有键补段
+#   cetian +28 / geomancy +7 / wuzhao +6 / tarot +1 / qimen +1 / qimenzeri +1 / sanshiunited +1 /
+#   astrochart_like +1（占星地图 —— 它是 v13 之前**从未被任何一版欠账计入**的一段：
+#   verify_export_section_baseline 的 SKILL_ONLY_KEYS 曾把整个 astrochart_like 跳过）。
+#   fengshui +4 段按政策排除（canvas + 户型图上传 + 交互点位，AGENTS §5 审计前置）。
+#   段序改为逐字镜像上游 preset —— selected_sections 决定导出正文出段顺序，不是装饰。
+# v12 (v0.26.0): 上游 v3.7.0/v3.7.1 两个新技法键 tianxing/qimenzeri 入册。
+#   ⚠️ 上游 aiExport 仍是 v50 —— 它那句「新技法键只加键、两把版本闸恒不动」(aiExport.js:306) 是针对
+#   localStorage **迁移闸**的纪律（新键无存档，迁移对它本就是 no-op）。本常量语义不同：它是**内容版本**，
+#   无持久化 blob，进每个信封的 settings_used.version / provenance.bundle_version，是下游客户端判断
+#   「段目录变了、我的缓存过期了」的依据。24 个新段正是该事件，故按仓内先例（v8 三技法入册、v11 五技法
+#   入册）照常 +1。MIRRORED_UPSTREAM_AIEXPORT_VERSION 保持 50（上游数字确实没动）——别把两者「修」成一致。
+# v10: 星运族 22 键补 当前时点/方法说明 公共段；六壬补 七政（日月五星临支合参）段。
+# v9: tarot 段结构对齐引擎直出（牌阵综览/逐牌详解/综合断语/定局/生命牌），relative 补关系量化
+# 三段，qimen 补全局速览，horary 补专题深化·X，cetian 补今制 4 宫识别 → preset 内容变更须升版。
+# v11 (v0.23.0): 5 个上游 v3.5.0 新技法入册（xiaoliuren/feigong/xiaochengtu/guice/zhengchuan）；
+#   geomancy 升 v3.5.1 地占大改版段表、primarydirect 段名对齐 v48、sixyao [断卦结构] 富化。
+# v8: 新技法 yizhangjing/acg/astrodata 入册，heluo/canping 补全生涯流年与断验段，fengshui 扩十三派。
+# v7: sanshiunited 追加三独立技法富化段、mundane 追加子盘群段。
+AI_EXPORT_SETTINGS_VERSION = 17
+AI_EXPORT_SECTION_MIGRATION_VERSION = 17
+# 镜像基线（机读）：vendored aiExport.js 的版本，也就是本注册表**对账所依据**的上游版本。
+#
+# ⚠️ 语义澄清（v0.23.0 的教训）：这个数字表示「对到了哪一版」，**不**表示「该版的段全都有了」。
+# 段级欠账由 contracts/export_section_debt.json 逐键量化并棘轮化（只减不增），由
+# scripts/verify_export_section_baseline.py 强制。v0.23.0 曾以键级对齐宣称「整版对齐 v48」，
+# 实际欠 180 段——两个数字必须一起读：版本号说对账基准，欠账文件说还差多少。
+# v0.23.0（2026-07）：全面重同步至上游 v3.5.1（aiExport v48），逐技法对齐（geomancy/primarydirect/
+# 5 新技法段表逐字镜像；skill-extra 段如 起卦信息、UI-only 死段、收缩契约走 verify_export_contract_mirror.py
+# 的 DIVERGENCE 白名单）。守卫：vendored aiExport 的 AI_EXPORT_SETTINGS_VERSION 必须 == 本常量（版本锁步）。
+# v0.40.0（2026-09）：重同步至上游 v3.11.1+（HEAD 9b74714b，aiExport v58）。
+# v0.46.0（2026-10）：重同步至上游 v3.13.0（HEAD 965af0f4，aiExport v60；v3.12.0 起 aiExport.js 是门面 +
+#   aiExport/ 目录，版本号在 aiExport/presets.js —— 读源码一律经 scripts/_upstream_preset.read_aiexport_source）。
+# v0.51.0（2026-11）：重同步至上游 v3.14.0（HEAD e55c3a66，aiExport v65）。
+MIRRORED_UPSTREAM_AIEXPORT_VERSION = 65
+AI_EXPORT_SECTION_MIGRATION_KEYS = [
+    "liureng", "qimen", "sanshiunited", "mundane",
+    "yizhangjing", "acg", "astrodata", "heluo", "canping", "fengshui",
+    "bazi_inverse",
+    "geomancy", "xiaoliuren", "feigong", "xiaochengtu", "guice", "zhengchuan",
+    "tarot", "relative", "horary", "cetian",
+    # v13 上游 v3.8.0→v3.9.1：新技法键 + 八个补段键（补段也要进迁移键，否则老客户端的
+    # 段勾选存档不会被迁移到新段集上）。
+    "lingqi", "wuzhao", "astrochart_like",
+    # v14 上游 v3.9.2 补段键
+    "astrochart", "bazi", "ziwei", "calendar", "draconic", "harmonic", "relocation",
+    # v10 星运族公共段升版键
+    "primarydirect", "zodialrelease", "firdaria", "profection", "solararc", "solarreturn",
+    "lunarreturn", "givenyear", "decennials", "agepoint", "distributions", "jaynesprog",
+    "vedicprog", "planetaryarc", "planetaryages", "balbillus", "yearsystem129", "persiandirected",
+    "triplicityrulers", "keypoints", "lunationphase", "extrareturns",
+    # v12 上游 v3.7.x 新技法键
+    "tianxing", "qimenzeri",
+    # v13 上游 v3.10.0「择日十技法」新增八键
+    "huanglizeri", "bazizeri", "taiyizeri", "ziweizeri", "liurengzeri", "sanshizeri",
+    "qizhengzeri", "indiazeri",
+    # v15 上游 v3.11.x（aiExport v57/v58）补段键
+    "babylon", "dwadasamsa", "hellenastro", "election", "germany", "guolao", "huangli", "indiachart",
+    "jieqi", "otherbu", "tongshefa", "tongshu",
+    # 上游 v3.11 星运四键（aiExport.js:309-311,374 在迁移键表内；新技法键老用户无存档，迁移对其为 no-op，照登记）
+    "ephemeris", "returntimeline", "prenatalsyzygy", "prog",
+    # 上游 v3.13.0 之后（219d8a67）推运图族四法：presets.js 迁移键表同批登记
+    "neroman", "bezzafigure", "jayprofection", "michon",
+    # 上游 v3.14.0 辅盘新技法：变换盘 / 黄道制（presets.js 迁移键表同批登记）
+    "transformchart", "zodiacsystems",
+    # 上游 v3.14.0（aiExport v64）命 · 其他两个新技法键：presets.js 迁移键表同批登记
+    "dongya", "zhufang",
+    # 上游 v3.14.0 星运「时主轮转」：presets.js 迁移键表同批登记（新键老用户无存档，迁移对其为 no-op）
+    "timelords",
+]
+MODULE_SNAPSHOT_PREFIX = "horosa.ai.snapshot.module.v1."
+AI_EXPORT_PLANET_INFO_DEFAULT = {"showHouse": 1, "showRuler": 1}
+AI_EXPORT_ASTRO_MEANING_DEFAULT = {"enabled": 0}
+
+# 逐键镜像上游 AI_EXPORT_PLANET_INFO_TECHNIQUES（v3.14.0 / aiExport v65）：「星曜后天信息」（落宫 / 主宰宫括注）两项开关只列给
+# 正文里真带这种括注的技法。[Q-307/T-303] 衍生盘拆键后六个独立导出键（skill 键 acg == 上游 locastro）在内；'prog' 随其工具入册。
+# 上游 v3.14.0 把正文不带括注的十五个键（期表类时主、推运图类、七政…）挪去下面的「只进释义表」——此前它们列在这里，
+# 开关勾了正文没有任何变化。守卫：tests/test_sync314_predictive_exports.py 对上游 presets.js 逐键比。
+AI_EXPORT_PLANET_INFO_TECHNIQUES = {
+    "astrochart",
+    "indiachart",
+    "astrochart_like",
+    "hellenastro",
+    "dwadasamsa",
+    "harmonic",
+    "draconic",
+    "relocation",
+    "acg",
+    "transformchart",
+    "relative",
+    "primarydirect",
+    "primarydirchart",
+    "firdaria",
+    "profection",
+    "solararc",
+    "solarreturn",
+    "lunarreturn",
+    "givenyear",
+    "prog",
+    "vedicprog",
+    "jaynesprog",
+    "planetaryarc",
+    "jieqi",
+    "jieqi_meta",
+    "jieqi_chunfen",
+    "jieqi_xiazhi",
+    "jieqi_qiufen",
+    "jieqi_dongzhi",
+    "sanshiunited",
+    "germany",
+}
+
+# 上游 AI_EXPORT_MEANING_ONLY_TECHNIQUES（v3.14.0 新表）：正文不带后天括注、但有星 / 座 / 宫名可加释义的技法（只进释义表）。
+AI_EXPORT_MEANING_ONLY_TECHNIQUES = [
+    "zodialrelease",
+    "decennials",
+    "planetaryages",
+    "persiandirected",
+    "yearsystem129",
+    "balbillus",
+    "triplicityrulers",
+    "keypoints",
+    "lunationphase",
+    "extrareturns",
+    "neroman",
+    "bezzafigure",
+    "jayprofection",
+    "michon",
+    "timelords",
+    "guolao",
+]
+
+AI_EXPORT_ASTRO_MEANING_TECHNIQUES = {
+    *AI_EXPORT_PLANET_INFO_TECHNIQUES,
+    *AI_EXPORT_MEANING_ONLY_TECHNIQUES,
+    "otherbu",
+    "qimen",
+    "liureng",
+}
+
+AI_EXPORT_HOVER_MEANING_TECHNIQUES = {"qimen", "liureng", "sanshiunited"}
+
+JIEQI_SETTING_PRESETS = {
+    "jieqi_meta": ["节气盘参数"],
+    "jieqi_chunfen": ["春分星盘", "春分宿盘", "春分3D盘"],
+    "jieqi_xiazhi": ["夏至星盘", "夏至宿盘", "夏至3D盘"],
+    "jieqi_qiufen": ["秋分星盘", "秋分宿盘", "秋分3D盘"],
+    "jieqi_dongzhi": ["冬至星盘", "冬至宿盘", "冬至3D盘"],
+}
+
+AI_EXPORT_TECHNIQUES = [
+    {"key": "astrochart", "label": "星盘"},
+    {"key": "indiachart", "label": "印度律盘"},
+    {"key": "astrochart_like", "label": "希腊/星体地图"},
+    {"key": "hellenastro", "label": "希腊占星盘"},
+    {"key": "harmonic", "label": "调波盘"},
+    {"key": "babylon", "label": "巴比伦占星"},
+    {"key": "huangli", "label": "老黄历日课"},
+    {"key": "tongshu", "label": "通书择日"},
+    {"key": "dwadasamsa", "label": "十二分盘"},
+    {"key": "draconic", "label": "龙盘"},
+    {"key": "transformchart", "label": "变换盘"},
+    {"key": "zodiacsystems", "label": "黄道制"},
+    {"key": "relocation", "label": "重置盘"},
+    {"key": "relative", "label": "关系盘"},
+    {"key": "primarydirect", "label": "推运盘-主/界限法"},
+    {"key": "primarydirchart", "label": "推运盘-主限法盘"},
+    {"key": "zodialrelease", "label": "推运盘-黄道星释"},
+    {"key": "firdaria", "label": "推运盘-法达星限"},
+    {"key": "profection", "label": "推运盘-小限法"},
+    {"key": "solararc", "label": "推运盘-太阳弧"},
+    {"key": "solarreturn", "label": "推运盘-太阳返照"},
+    {"key": "lunarreturn", "label": "推运盘-月亮返照"},
+    {"key": "givenyear", "label": "推运盘-流年法"},
+    {"key": "decennials", "label": "推运盘-十年大运"},
+    {"key": "bazi", "label": "八字"},
+    {"key": "ziwei", "label": "紫微斗数"},
+    {"key": "suzhan", "label": "宿占"},
+    {"key": "sixyao", "label": "易卦"},
+    {"key": "tongshefa", "label": "统摄法"},
+    {"key": "liureng", "label": "六壬"},
+    {"key": "jinkou", "label": "金口诀"},
+    {"key": "qimen", "label": "奇门遁甲"},
+    {"key": "sanshiunited", "label": "三式合一"},
+    {"key": "taiyi", "label": "太乙"},
+    {"key": "guolao", "label": "七政四余"},
+    {"key": "germany", "label": "量化盘"},
+    {"key": "agepoint", "label": "星运-年龄推进点"},
+    {"key": "ephemeris", "label": "星运-星历"},
+    {"key": "returntimeline", "label": "星运-回归轴"},
+    {"key": "prenatalsyzygy", "label": "星运-产前朔望"},
+    {"key": "distributions", "label": "星运-界推运"},
+    {"key": "jaynesprog", "label": "星运-赤纬推运"},
+    {"key": "prog", "label": "星运-二次推运"},
+    {"key": "vedicprog", "label": "星运-恒星推运"},
+    {"key": "planetaryarc", "label": "星运-行星弧"},
+    {"key": "planetaryages", "label": "星运-行星年龄"},
+    {"key": "balbillus", "label": "星运-Balbillus"},
+    {"key": "yearsystem129", "label": "星运-129年系统"},
+    {"key": "persiandirected", "label": "星运-波斯向运"},
+    {"key": "triplicityrulers", "label": "星运-三分主星"},
+    {"key": "keypoints", "label": "星运-数字相位"},
+    {"key": "lunationphase", "label": "星运-月相"},
+    {"key": "extrareturns", "label": "星运-多重回归"},
+    {"key": "neroman", "label": "星运-演进推运"},
+    {"key": "bezzafigure", "label": "星运-推运图"},
+    {"key": "jayprofection", "label": "星运-周日小限"},
+    {"key": "michon", "label": "星运-双黄道"},
+    {"key": "timelords", "label": "星运-时主轮转"},
+    {"key": "horary", "label": "卜卦盘"},
+    {"key": "election", "label": "择日盘"},
+    {"key": "tianxing", "label": "天星择日"},
+    {"key": "qimenzeri", "label": "奇门择日"},
+    # 择日十技法（上游 v3.10.0，aiExport.js:531 起同名同序）。有 preset 却不入这张表 →
+    # 在导出设置里隐身、且不被自检矩阵覆盖，parse_export_content 更会直接抛 Unknown technique。
+    {"key": "huanglizeri", "label": "黄历择吉"},
+    {"key": "bazizeri", "label": "八字择日"},
+    {"key": "taiyizeri", "label": "太乙择日"},
+    {"key": "ziweizeri", "label": "紫微择日"},
+    {"key": "liurengzeri", "label": "六壬择日"},
+    {"key": "sanshizeri", "label": "三式择日"},
+    {"key": "qizhengzeri", "label": "七政择日"},
+    {"key": "indiazeri", "label": "印度择日"},
+    {"key": "wangji", "label": "皇极经世"},
+    {"key": "wuzhao", "label": "五兆"},
+    {"key": "taixuan", "label": "太玄"},
+    {"key": "jingjue", "label": "荆诀"},
+    {"key": "shenyishu", "label": "神易数"},
+    {"key": "shaozi", "label": "邵子神数"},
+    {"key": "tieban", "label": "铁板神数"},
+    {"key": "fendjing", "label": "鬼谷分定经"},
+    {"key": "beiji", "label": "北极神数"},
+    {"key": "nanji", "label": "南极神数"},
+    {"key": "chunzi", "label": "蠢子数"},
+    {"key": "xianqin", "label": "演禽"},
+    {"key": "cetian", "label": "策天飞星"},
+    {"key": "qizhengkin", "label": "七政四余·张果"},
+    {"key": "mundane", "label": "世俗盘"},
+    {"key": "jieqi", "label": "节气盘"},
+    {"key": "calendar", "label": "黄历"},
+    {"key": "jieqi_meta", "label": "节气盘-通用参数"},
+    {"key": "jieqi_chunfen", "label": "节气盘-春分"},
+    {"key": "jieqi_xiazhi", "label": "节气盘-夏至"},
+    {"key": "jieqi_qiufen", "label": "节气盘-秋分"},
+    {"key": "jieqi_dongzhi", "label": "节气盘-冬至"},
+    {"key": "otherbu", "label": "西洋游戏"},
+    {"key": "geomancy", "label": "天文地占"},
+    {"key": "tarot", "label": "塔罗"},
+    {"key": "lingqi", "label": "灵棋经"},
+    {"key": "fengshui", "label": "风水"},
+    {"key": "canping", "label": "邵子参评数"},
+    {"key": "heluo", "label": "河洛理数"},
+    {"key": "yizhangjing", "label": "一掌经"},
+    {"key": "dongya", "label": "东亚诸术"},
+    {"key": "zhufang", "label": "诸方杂术"},
+    {"key": "xiaoliuren", "label": "小六壬"},
+    {"key": "feigong", "label": "飞宫小奇门"},
+    {"key": "xiaochengtu", "label": "小成图"},
+    {"key": "guice", "label": "皇极轨策"},
+    {"key": "zhengchuan", "label": "神数正传"},
+    {"key": "acg", "label": "占星地图"},
+    {"key": "astrodata", "label": "名人星盘库"},
+    {"key": "bazi_inverse", "label": "八字反查"},
+    {"key": "xuanshi", "label": "玄史知识库"},
+    {"key": "ziwei_rules", "label": "紫微规则库"},
+    {"key": "qizhengelection", "label": "七政择日动盘"},
+    {"key": "india_rectify", "label": "印度生时校正"},
+    {"key": "planet_cycles", "label": "行星周期"},
+    {"key": "jieqi_birth", "label": "出生节气窗"},
+    {"key": "generic", "label": "其他页面"},
+]
+
+AI_EXPORT_PRESET_SECTIONS = {
+    # v14（上游 v3.9.2）：古典衍化四段插在 古典 与 古典格局 之间。上游 opt-in（仅本命 astro 快照
+    # 路径传 classicalDerived）→ 条件段双登记；世界范式盘上游还是 default-off（∩DEFAULT_OFF 纪律）。
+    "astrochart": ["起盘信息", "宫位宫头", "星与虚点", "信息", "相位", "行星", "月宿", "希腊点", "12分度", "主宰星链", "分宫制宫神星表", "古典", "古典·派生宫转宫", "古典·气候带", "古典·显赫计分", "盘面细节", "古典·世界范式盘", "古典格局", "埃及历", "寿命格局", "可能性"],
+    # v16：末尾 [未能计算] 是 skill 侧补登（上游 preset 无此段）：上游 buildIndiaSnapshotDataSections（IndiaChart.js:1315-1331）
+    # 在回包 partialErrors 非空时产它，上游缺省导出不按 preset 过滤（无默认关集 → 只剥禁段）故它随快照出去；skill 缺省按
+    # preset 过滤，不登记就会把「哪些段没算出来」这句关键说明静默剥掉。条件段双登记（optional）。
+    # 上游 v3.14.0（导出 v62 / v65）：「副星 Upagraha」之后加 Yoga 判定表 / 印占补充表 / 穿界时刻（presets.js:680）。
+    "indiachart": ["星盘信息", "起盘信息", "信息", "相位", "行星", "希腊点", "古典", "可能性", "大运Dasha", "附加分盘", "Panchanga 五要素", "卡拉卡（8 Chara Karakas）", "节点主照（Rasi Drishti）", "星曜状态", "分盘吉位 Vaiśeṣikāṁśa", "八分点 SAV", "Sodhya Pinda 凝量", "Shadbala 六力", "Ishta/Kashta 吉凶果", "Vimśopaka 分盘 20 分力", "Hora 行星时", "Choghadia 民用择时", "择时 Panchaka/Abhijit", "Mūla 大运", "Sudarśana Chakra 大运", "Naisargika 自然大运", "补充上升（Supplementary Lagnas）", "Nāḍī · Bhrigu Bindu 福点", "Nāḍī · D150 纳地盘", "Āyurdāya 寿命基础", "特殊上升 Special Lagnas", "D60 六十分盘吉凶", "分盘变体对照", "功能吉凶（Functional Nature）", "宫位力（Bhava Bala）", "星曜战（Graha Yuddha）", "扩展大运（Conditional / Chara）", "Kartari 夹击格局", "Sudarshana 三盘（命/日/月起）", "KP 宫头次主星 CSL", "KP 意义者 Significators", "KP 六级细分 / 当令星", "敌友（复合五分）", "行运 Gochara（从月·八分点）", "化解（信息·非处方）", "Jaimini Argala 干涉", "Tajika Harsha Bala", "Tajika Pancha-Vargeeya", "Tajika Mudda 年运", "行运 Gochara（从命）", "座运·X", "瑜伽格局 Yogas", "副星 Upagraha", "Yoga 判定表", "印占补充表", "穿界时刻", "敏感点 Sphuta", "全吉盘 SBC", "问事 Praśna", "Nāḍī · 行星组合(同座合)", "Nāḍī · 星座交换", "Nāḍī · 木星推进时间轴", "Jaimini 三对法寿命", "Tripataki 宿距三旗", "Tripataki 三旗盘逐月净分", "寿命判读", "行运 Gochara（从日）", "过运×大运联动", "Tajika 年主", "Tajika 年 Yoginī", "Tajika Patyāyinī 年运", "未能计算"],
+    # `占星地图` 是本仓第一次登记它：verify_export_section_baseline 的 SKILL_ONLY_KEYS 曾把整个
+    # astrochart_like 跳过（而上游确有该 preset），于是这条缺失从未被任何一版欠账计入。
+    # skill 侧该段由独立的 `acg` 工具产出、不进 chart 族快照，故 preset + optional 双登记。
+    # `月宿` 是 skill-extra（上游此键无此段），保留。
+    # v15（上游 v57）：段序改为逐字镜像上游 preset（此前 12分度/主宰星链/寿命格局 被排在 可能性 之后——
+    # selected_sections 决定 export_text 出段顺序），并在 主宰星链 后补 [分宫制宫神星表]。
+    "astrochart_like": ["起盘信息", "宫位宫头", "星与虚点", "信息", "相位", "行星", "月宿", "希腊点", "12分度", "主宰星链", "分宫制宫神星表", "古典", "古典格局", "盘面细节", "埃及历", "寿命格局", "可能性", "占星地图"],
+    # 上游把 astrochart_like 这一族按「哪个页面出的盘」再拆成独立导出键（aiExport.js 的
+    # ASTRO_LIKE_EXPORT_KEYS）。段单与 astrochart_like 同构，差别只在改黄道读数框架的四键（hellenastro / dwadasamsa /
+    # harmonic / draconic）无 [古典格局]：上游 pipeline.js CLASSICAL_SKIP_KEYS 不给它们挂本命口径的派生分析
+    # （「本命结论冒充派生盘结论」），skill 同（engine.registry.CLASSICAL_ANALYSIS_TOOLS，v0.50.0 起；此前 skill 把本命分析
+    # 逐字节挂上这几张盘，并在这里把段登记成「按实产」的 extra）。
+    # 「月宿」是 skill 相对上游的既有 extra（恒星黄道盘才有），不因拆键而消失。
+    "hellenastro": ["起盘信息", "宫位宫头", "星与虚点", "信息", "相位", "行星", "月宿", "希腊点", "12分度", "主宰星链", "分宫制宫神星表", "古典", "埃及历", "寿命格局", "可能性"],
+    # 调波盘另出两段本技法专属内容（上游该键无——上游是整页导出，调波表在页面别处），按实产登记。
+    # 同族的另外三个键（上游 ASTRO_LIKE_EXPORT_KEYS）：十二分盘 /chart12、龙盘 /astroextra/draconic、
+    # 重置盘 /astroextra/relocation。段单与 astrochart_like 同构（月宿是 skill 相对上游的既有 extra）。
+    # 上游 v50 全新键。微黄道**必须居末**（上游 aiExportSectionSemantics 测试断言了段序）。
+    # 上游把黄历页拆成三键：calendar（页面聚合四子并出）/ huangli（老黄历日课）/ tongshu（通书择日）。
+    "huangli": ["起盘信息", "今日宜忌", "值神值宿", "彭祖百忌", "吉神凶煞", "冲煞·胎神·方位", "时辰吉凶", "物候·六曜·数九三伏", "流年年神方位", "年度吉日榜", "方法说明"],
+    "tongshu": ["通书择日", "本月逐日表", "方法说明"],
+    "babylon": ["起盘信息", "七曜按宫", "分至天狼星", "位三法", "行星神性", "数理星历", "吉日历", "年历预测", "天象实算", "微黄道"],
+    "dwadasamsa": ["起盘信息", "宫位宫头", "星与虚点", "信息", "相位", "行星", "月宿", "希腊点", "12分度", "主宰星链", "分宫制宫神星表", "古典", "埃及历", "寿命格局", "可能性"],
+    "draconic": ["起盘信息", "宫位宫头", "星与虚点", "信息", "相位", "行星", "月宿", "希腊点", "12分度", "主宰星链", "分宫制宫神星表", "古典", "埃及历", "寿命格局", "可能性", "龙盘"],
+    # 上游 v3.14.0 辅盘两键（presets.js:699-702）。变换盘 = 变换后的整盘 + [变换盘] 专属段，不产「可能性」（星落星座断语随变换后的
+    # 位置而变，后端变换不跑推断）、不挂 [古典格局]（pipeline.js CLASSICAL_SKIP_KEYS：本命口径的分析不冒充变换盘结论）；「月宿」同族
+    # skill 既有 extra（恒星黄道盘才有，后端按变换后的黄经算）。黄道制没有盘体，只有 [黄道制] 一段。
+    "transformchart": ["起盘信息", "宫位宫头", "星与虚点", "信息", "相位", "行星", "月宿", "希腊点", "12分度", "主宰星链", "分宫制宫神星表", "古典", "埃及历", "寿命格局", "变换盘"],
+    "zodiacsystems": ["黄道制"],
+    "relocation": ["起盘信息", "宫位宫头", "星与虚点", "信息", "相位", "行星", "月宿", "希腊点", "12分度", "主宰星链", "分宫制宫神星表", "古典", "古典格局", "盘面细节", "埃及历", "寿命格局", "可能性", "重置盘"],
+    "harmonic": ["起盘信息", "宫位宫头", "星与虚点", "信息", "相位", "行星", "月宿", "希腊点", "12分度", "主宰星链", "分宫制宫神星表", "古典", "埃及历", "寿命格局", "可能性", "调波位置", "同频合相", "调波盘"],
+    # 八个盘面段是**盘型互斥**的：relative=0 出 [比较盘-星盘A/B]（上游 v3.11 Q-441/T-404，比较盘页签
+    # inner/outer 两盘无头整盘）、1 出 [合成图盘]、3 出 [时空中点·合成图盘]、2 出 [影响图盘-星盘A/B]、
+    # 4 出 [马克斯·影响图盘-星盘A/B]。任一次调用只产其中一组 → 八段全列 preset、全列 optional，缺席不误报。
+    # 上游 v3.14.0（导出 v62）：「八重合」居首（presets.js:709）。
+    "relative": ["八重合", "关系起盘信息", "A对B相位", "B对A相位", "A对B中点相位", "B对A中点相位", "A对B映点", "A对B反映点", "B对A映点", "B对A反映点", "比较盘-星盘A", "比较盘-星盘B", "合成图盘", "时空中点·合成图盘", "影响图盘-星盘A", "影响图盘-星盘B", "马克斯·影响图盘-星盘A", "马克斯·影响图盘-星盘B", "关系量化", "顺畅连接", "张力连接"],
+    # 上游 v48 段名对齐：主/界限法设置|表格 → 主限法设置|表格（旧名走 map_legacy_section_title）。UI-only
+    # 新段「主限天球·当前动画所指」(3D 动画所指)headless 不产，故意不进 preset。
+    "primarydirect": ["出生时间", "星盘信息", "本命盘星与虚点", "主限法设置", "主限法表格", "当前时点", "方法说明"],
+    "primarydirchart": ["出生时间", "星盘信息", "本命盘星与虚点", "主限法盘设置", "本命盘配置", "主限法盘配置", "主限法盘星体表格", "主限法盘相位", "主限法盘说明"],
+    # 逐字镜像上游 aiExport.js:639（AstroZR.js buildZRAISnapshot 段构成；旧的 skill 自拟段 [本命盘星与虚点] 已撤）。
+    "zodialrelease": ["起盘信息", "星盘信息", "基于X点推运", "当前时点", "方法说明"],
+    "firdaria": ["出生时间", "星盘信息", "法达星限表格", "当前时点", "方法说明"],
+    # 目标时刻型 5 法逐字镜像上游 aiExport.js:641-645：无 [当前时点]（buildPredictiveSnapshotText 只出 [方法说明]）；
+    # profection 在 [起盘信息] 后插 [小限摘要]（[Q-105]，恒出：算不出时正文为「无」）。
+    "profection": ["本命盘配置", "起盘信息", "小限摘要", "时段盘配置", "相位", "方法说明"],
+    "solararc": ["本命盘配置", "起盘信息", "时段盘配置", "相位", "方法说明"],
+    "solarreturn": ["本命盘配置", "起盘信息", "时段盘配置", "相位", "方法说明"],
+    "lunarreturn": ["本命盘配置", "起盘信息", "时段盘配置", "相位", "方法说明"],
+    "givenyear": ["本命盘配置", "起盘信息", "时段盘配置", "相位", "方法说明"],
+    "decennials": ["起盘信息", "星盘信息", "十年大运设置", "基于X起运", "当前时点", "方法说明"],
+    # [多运限·指定时段] 未登记：上游该段由用户在界面勾选具体的流年/流月/流日/流时组合驱动
+    # （无勾选则 body 为空、整段不产），headless 侧要驱动它需要新增一组显式的时段选择入参 ——
+    # 属功能缺口而非段名/取数问题，登记成 preset 只会变成死条目。
+    # v14（上游 v3.9.2）：+干支合冲（后端字段纯排版，恒出）；段序对齐上游 v56（分野→合冲→大运）。
+    "bazi": ["起盘信息", "四柱与三元", "神煞（四柱与三元）", "五行力量", "格局·用神", "盲派结构", "月令司令（分野）", "干支合冲", "大运", "流年行运概略", "多运限·指定时段"],
+    # [运限] 与 [流派叠层] 未登记：前者由用户勾选的大运/流年/流月组合驱动（无勾选整段不产，
+    # 同 bazi 多运限）；后者由紫微流派开关（ZWEngineOptions 的太岁入卦等）驱动，本仓尚未开放
+    # 这组开关。两者都属需新增显式入参的功能缺口，登记成 preset 会变死条目。
+    # v14（上游 v3.9.2）：+身宫（house.isBody 恒有则出）/八字大运（chart.bazi.direct 缺省不产）；
+    # 段序对齐上游 v56。两段皆条件段（引擎字段缺省整段不产）→ 双登记。
+    "ziwei": ["起盘信息", "宫位总览", "身宫", "来因宫", "八字大运", "命中格局", "运限概览", "运限", "流派叠层"],
+    "suzhan": ["起盘信息", "宿盘宫位与二十八宿星曜"],
+    # 段序 = 上游 aiExport.js:665 preset 序（快照正文序另由 buildGuaSnapshotText 定：卦辞与断语在断诀两段之前）。
+    "sixyao": ["起盘信息", "卦象", "六爻与动爻", "断卦结构", "断诀命中", "占类断语", "卦辞与断语", "判语库·参考诀表"],
+    # 上游 v50 的 9 段。此前本仓这支是自建端口、只产前 4 段，计算分析层整层没搬。
+    "tongshefa": ["本卦", "六爻", "潜藏", "亲和", "爻位", "三十二观", "世应", "五行关系", "五友", "大局与动变"],
+    "liureng": ["起盘信息", "十二盘式", "十二地盘/十二天盘/十二贵神对应", "四课", "三传", "行年", "旬日", "旺衰", "基础神煞", "干煞", "月煞", "支煞", "岁煞", "十二长生", "大格", "小局", "参考", "概览", "常用神煞", "年月神煞", "课体结构", "三传旺衰", "空亡真假", "旬空落点", "陷空", "遁干特殊", "年命上神", "毕法（已命中）", "占断向导", "七政", "取象"],
+    # 上游 v50 的 32 段。此前 vendored 的 JinKouCalc/JinKouDoc 是严重截断的旧快照（1690/2850 行、
+    # 226/556 行），解读层大半没搬进来，快照构建器只能出 20 段。
+    "jinkou": ["起盘信息", "金口诀速览", "金口诀四位", "金口诀三盘", "四位神煞", "用神强弱", "发用·五动三动", "格局", "四位生克", "应期", "太岁月建", "地支关系", "相关神煞", "四象所属", "四象五行", "方位神煞", "合占扣题与内外", "二遁与次客", "阴盘·六亲六神旺衰", "专题起式", "贵神月将象意", "分类用神", "行年", "旬日", "旺衰", "基础神煞", "干煞", "月煞", "支煞", "岁煞", "十二长生", "数理"],
+    "taiyi": ["起盘信息", "太乙盘", "太乙诸神", "风游", "主客定算", "十二神", "八门与宿曜", "断法", "七大兵法", "博弈", "命法", "命宫行限", "十六宫标记", "起盘"],
+    # v13：+`日家占方（古籍金函系）`（vendored DunJiaCalc.js:2783）。**条件段**——它是独立体系，
+    # `buildDunJiaSnapshotText` 在 `pan.isJinhan` 时提前返回、快照里**只有**这一段，常规 17 段全不出；
+    # 故进 preset（出现时不算 unknown）+ optional（缺席时不算 missing）。
+    "qimen": ["起盘信息", "盘型", "全局速览", "盘面要素", "奇门演卦", "八宫详解", "八宫克应", "九宫方盘", "旺相休囚死·月令能量", "六害总览", "化解方案", "八门化气大阵", "用神分论", "财富七要", "事业七要", "恋爱姻缘", "孤辰寡宿", "日家占方（古籍金函系）"],
+    # 三式合一对齐独立页：在原有聚合段后，复用三独立技法富化段——太乙 pan.sections（加「太乙」前缀）、
+    # 六壬断卦层 12 段（原名）、奇门派生 10 段（加「奇门」前缀）。缺段降级为简短占位仍算命中，故非 optional。
+    # v13：+`奇门遁甲`（上游 v3.8.0 三式全量同步补的奇门腿汇总段；本仓 vendored 实例未观察到恒出，
+    # 按条件段双登记）。
+    "sanshiunited": ["起盘信息", "概览", "太乙", "奇门遁甲", "太乙十六宫", "神煞", "大六壬", "六壬大格", "六壬小局", "六壬参考", "六壬概览", "七政", "八宫详解", "正北坎宫", "东北艮宫", "正东震宫", "东南巽宫", "正南离宫", "西南坤宫", "正西兑宫", "西北乾宫", "太乙主客定算", "太乙八门与宿曜", "太乙断法", "太乙七大兵法", "太乙博弈", "太乙命法", "太乙命宫行限", "十二盘式", "常用神煞", "年月神煞", "课体结构", "三传旺衰", "空亡真假", "旬空落点", "陷空", "遁干特殊", "年命上神", "毕法（已命中）", "占断向导", "奇门九宫方盘", "奇门旺相休囚死·月令能量", "奇门六害总览", "奇门化解方案", "奇门八门化气大阵", "奇门用神分论", "奇门财富七要", "奇门事业七要", "奇门恋爱姻缘", "奇门孤辰寡宿", "紫微四化"],
+    # 上游同批还有 [虚实]/[本命化曜]/[流年流曜]，读 moiraRules.weakSolid / .yearStars —— 二者只来自
+    # 后端 /qizheng/moira，开源 astropy 无该路由（vendored 实例实测 500），本地回退 buildLocalMoiraRules
+    # 也只产 houses/patterns/godHits。故那三段在开源栈上不可得，属带理由的欠账，不登记为 preset。
+    # v15（上游 v3.11 [Q-442/T-405]，aiExport.js:857）：+六宫框落宫（后端 houseFrames 缺省即带）/ 校时预览
+    # （仅给了 rectifyEvents 才产）——两段都是上游 builder 的条件段（段内容为空不产段）→ 双登记。
+    "guolao": ["起盘信息", "七政四余宫位与二十八宿星曜", "星曜庙旺与星点动态（殿垣庙旺乐喜怒 · 顺逆留伏迟速）", "神煞", "大限", "三主与化曜", "限法实算", "虚实", "本命化曜", "流年流曜", "政余格局", "相位"],
+    "germany": ["起盘信息", "宫位宫头", "行星", "中点", "TNP星体", "中点相位", "90°中点盘", "行星图", "映点", "中点列表", "六宫框落宫", "赤纬接触", "校时预览", "中点坐标", "公式求解", "汉堡学派要素", "组合盘", "戴维森盘", "虚星参考"],
+    "agepoint": ["起盘信息", "年龄推进点（Age Point / Huber）", "当前时点", "方法说明"],
+    # 上游 v3.11 [Q-106/T-10] 星运三页（aiExport.js:635-637 逐字）。全段恒出：builder 在后端无数据时
+    # 整体返回空（skill 侧改抛结构化错误），不存在「部分段缺席」的形态 → 无 optional。
+    "ephemeris": ["起盘信息", "星历事件（入座 · 留逆 · 朔望弦 · 食相）", "行运触发本命", "当前时点", "方法说明"],
+    "returntimeline": ["起盘信息", "太阳/月亮返照时间轴", "当前时点", "方法说明"],
+    "prenatalsyzygy": ["起盘信息", "产前朔望", "产前朔望盘·星体位置", "当前时点", "方法说明"],
+    "distributions": ["起盘信息", "界推运（分配法 / Distributions）", "伙伴星期", "当前时点", "方法说明"],
+    # [#80] 回归黄道二次推运（aiExport.js:648 逐字；与 vedicprog 同一 builder 的 'prog' 支，无 [起盘信息] ——
+    # 生辰行并入 [本命盘配置] 段头部）。
+    "prog": ["二次推运（回归黄道）", "本命盘配置", "时段盘配置 二次推运位置", "当前时点", "方法说明"],
+    "jaynesprog": ["赤纬推运（Declination）", "本命盘配置", "时段盘 赤纬平行/反平行", "当前时点", "方法说明"],
+    # 逐字镜像上游 aiExport.js:649（无 [起盘信息]：生辰行并在 [本命盘配置] 段头，astroProgSnapshot.js:88-96）。
+    "vedicprog": ["恒星推运（Vedic Sidereal）", "本命盘配置", "时段盘配置 二次推运位置", "当前时点", "方法说明"],
+    "planetaryarc": ["行星弧（Planetary Arc）", "本命盘配置", "时段盘配置", "相位", "当前时点", "方法说明"],
+    "planetaryages": ["起盘信息", "行星年龄（Ages of Man）", "当前时点", "方法说明"],
+    "balbillus": ["起盘信息", "Balbillus", "当前时点", "方法说明"],
+    "yearsystem129": ["起盘信息", "129年系统表格", "当前时点", "方法说明"],
+    # v0.33.0 批 I-2：+指定日期向运盘（datetime 时 /predict/persianchart 整铸；条件段双登记）。
+    "persiandirected": ["起盘信息", "波斯向运（Persian Directed）", "当前时点", "方法说明", "指定日期向运盘"],
+    "triplicityrulers": ["起盘信息", "三分主星推运", "当前时点", "方法说明"],
+    "keypoints": ["起盘信息", "数字相位推运", "当前时点", "方法说明"],
+    "lunationphase": ["起盘信息", "月相推运", "当前时点", "方法说明"],
+    # v0.33.0 批 I-3：+日月返照年表（timelineStartYear/Count 时产；条件段双登记）。
+    "extrareturns": ["起盘信息", "多重回归", "当前时点", "方法说明", "日月返照年表"],
+    # 推运图族四法（上游 presets.js，219d8a67）：正文段由 vendored buildDirectedFigureText 恒出（无数据整段报错），
+    # [起盘信息]/[当前时点]/[方法说明] 由 Python 公共段出——无条件段。
+    "neroman": ["起盘信息", "演进推运", "演进位置", "演进对本命相位", "天顶与上升过本命点", "当前时点", "方法说明"],
+    "bezzafigure": ["起盘信息", "推运图", "推运图位置", "推运图接触", "当前时点", "方法说明"],
+    "jayprofection": ["起盘信息", "周日小限", "当前小限", "逐年小限", "当前时点", "方法说明"],
+    "michon": ["起盘信息", "双黄道", "叠合", "互动", "当前时点", "方法说明"],
+    # 时主轮转（上游 v3.14.0 presets.js）：正文由 vendored buildTimeLordText 出。月亮日一法只有 [时主轮转] 一段（三个时刻逐行列），
+    # 没有 [当前时段] / [后续]——这两段双登记 optional；其余十一法两段恒出（tests/test_sync314_predictive_timelords.py 逐法守）。
+    "timelords": ["起盘信息", "时主轮转", "当前时段", "后续", "当前时点", "方法说明"],
+    # 上游 v50 的 19 段。此前 vendored 的 divination/ 闭包缺 27 个文件、另有 33 个内容陈旧，
+    # 解读层的 9 段整体缺席（其中 2 段还需 renaissance 档口径才产）。
+    # 上游 v3.9.5「卜卦盘全面改进」：19 → 28 段（+9），版本常量未 bump 仍是 56 —— 段序照抄上游，
+    # skill-extra 段（若有）缀后。四个条件段（同主一星/自然象征/盗窃研判/应期修正链）双登记 optional。
+    "horary": ["起卦信息", "根本性", "征象星指派", "完成分析", "月亮的故事", "相位全览", "裁决", "应期方位", "描述", "专题深化·X", "古典接纳", "征象力量", "定盘考量", "Almuten", "映点对映点", "行星时", "尊贵明细", "偶然尊贵满分表", "阿拉伯点全集", "围攻详断", "月亮实测相位", "断法要点", "六类问法", "恒星会合", "同主一星", "自然象征", "盗窃研判", "应期修正链"],
+    # 上游 v50 的 14 段。危象日参照/本命合参/时势合参 需额外入参（病始时刻 / 本命出生资料 /
+    # 四张世运附加盘），当前工具尚未提供 → 列 optional，缺席不误报。
+    # 🔒 段头与 vendor/divination/zeri/tianxingSnapshot.js 逐字成对（四同步铁律）。
+    # v14（上游 v3.9.2）：+选中时刻星盘（有命中才补铸 /chart 并入；条件段双登记）。
+    # v0.33.0：+单时判读（explainAt 时 /electionscan/explain 逐叶判读；条件段双登记）。
+    "tianxing": ["起盘信息", "征象搜索配置", "征象条件", "命中区间", "选中时刻星盘", "单时判读"],
+    # 上游 v3.11 [Q-445]（aiExport.js:590）：+回归与主限（页面按需拉取物：日/月返 + 择日日期前后主限命中，
+    # electionSnapshot 只在 extra 有料时成段）。skill 在给了 natal（本命出生资料）时由 Python 求根/取数后经
+    # extra 传入；缺 natal 不产 → 条件段双登记。
+    "election": ["起盘信息", "流派口径", "总评", "红线", "分项", "尊贵强弱", "阿拉伯点", "择前考量", "用事专属", "危象日参照", "应期", "本命合参", "回归与主限", "时势合参", "建议"],
+    # 上游 huangji preset 逐字逐序（aiExport.js:669）。sync311 F15：撤 skill 自造的 [心易起卦]——所选心易法的
+    # 卦面按上游 buildHuangJiSnapshotForFields 进 [心易发微]（xinyiMethod=none 时该段不出 → 条件段双登记）。
+    "wangji": ["起盘", "元会运世", "天道卦", "人事卦", "心易发微", "经典原文", "历史年表"],
+    # v13（上游 v3.9.0 五兆依古籍全量补齐）：+6 段，由新 vendored 的 websrv/wuzhao_{classics,duanci,
+    # leizhan}.py 产出，vendored 实例实测恒出（非条件段）。
+    "wuzhao": ["起盘", "揲筮", "兆", "木乡", "火乡", "土乡", "金乡", "水乡", "特殊标记", "断辞", "君子小人", "纳甲", "神煞", "行神", "类占"],
+    "taixuan": ["起盘", "玄首", "方州部家", "表", "太玄经全文"],
+    "jingjue": ["起课", "卦辞", "三分", "十六卦"],
+    "shenyishu": ["起盘", "干支与五行", "神卦", "五行法则", "兵占", "主客判断", "神煞", "长生", "吉凶"],
+    "shaozi": ["起盘", "四柱", "四位起数", "河洛纳音", "完整结构", "64钥匙", "元会运世", "条文"],
+    "tieban": ["起盘", "四柱", "算盘定部", "条文", "计算摘要", "命身刻分", "神数号码", "十二宫", "十二宫条文", "紫微安星", "条文库", "大运", "六亲佐证", "框架·流派刻制", "框架·考刻六亲", "框架·八卦滚", "框架·批断顺序", "框架·借用子系统"],
+    "fendjing": ["起盘", "四柱", "两头钳", "命格", "判断", "六段断语"],
+    "beiji": ["起盘", "年时", "条文索引", "完整条文", "条文检索", "家亲", "财官性情", "大运"],
+    "nanji": ["起盘", "四柱", "宫部条文", "条文查询", "大运", "密码", "星图推演"],
+    "chunzi": ["起盘", "四柱", "代码来源", "结构解析", "候选条文", "代码查询", "批量代码查询", "关键词检索", "多标签检索", "宿名检索", "时辰检索"],
+    "xianqin": ["起盘", "三宫", "衍生星", "十二宫", "吞啖合战", "情性与格局", "二十八宿禽", "十二宫顺序", "三元起宿", "合宿表", "科名月宿", "四季得时", "情性赋全表", "二十八宿正像", "吞啖合战规则", "贵贱赋摘要", "三星·元辰", "大限", "流年小限", "神煞·待校", "演法·流派", "演法·起禽", "演法·择日", "演法·占卜", "演法·投胎"],
+    # 策天飞星渲染十二宫用古制宫名（男女/奴僕/妻妾/相貌），preset 与引擎实产对齐（今制宫名 子女/交友/夫妻/父母
+    # 不出现于快照，会误报 missing+unknown）。四化/飞星/格局/宫干四化表/飞化规则/古法格局规则 见 optional 说明。
+    # 策天飞星宫名两制：skill 引擎产古制（男女/奴僕/妻妾/相貌），另登记今制 4 宫（夫妻/子女/交友/父母）
+    # 供解析外部今制导出识别；今制 4 宫列 optional，故 skill 古制输出不误报 missing。
+    # v13（上游 v3.9.1 策天飞星大补）：+28 段，逐字按上游顺序镜像。其中 19 段（运限…星解与运限歌）
+    # 由 vendored 引擎 cetian_yiyu*.py 恒出；9 个僧道宫（衣鉢…相品）只在该宫制下出，进 optional。
+    "cetian": ["起盘", "农历与命身", "四化", "飞星", "格局", "命宮", "兄弟宮", "夫妻宮", "子女宮", "財帛宮", "疾厄宮", "遷移宮", "交友宮", "官祿宮", "田宅宮", "福德宮", "父母宮", "男女宮", "奴僕宮", "妻妾宮", "相貌宮", "衣鉢宮", "徒弟宮", "本師宮", "小師宮", "人刀宮", "僧道宮", "遊行宮", "師號宮", "相品宮", "运限", "童限", "凶限提示", "会照", "流年飞星", "流年七煞", "十七飞星", "神煞·岁前", "神煞·岁后", "神煞·年干", "神煞·月煞", "三日宫", "廿八宿分野", "十干变曜", "杂曜", "断诀", "星曜别名", "阴阳宫", "星解与运限歌", "星曜属性", "正曜副曜", "宫干四化表", "飞化规则", "古法格局规则", "三合组", "判词原文"],
+    "qizhengkin": ["起盘", "四柱", "星曜", "十二宫", "神煞", "年限", "流时", "择日", "今制宿度", "古制宿度", "张果断语", "命宫解读"],
+    # 世俗盘：入宫盘 + 子盘群（新月/满月/日月食/地区盘/行星周期 + 世俗宫义/定局/入境骨架/地理分野/
+    # 地区盘推运，均由后端精算端点无头编排，缺数据降级为说明仍算命中）+ 入宫盘标准段。
+    # 上游 v3.11 [Q-444/T-407]（aiExport.js:621-623）：+25 张右栏卡（年盘概要…Barbault 聚散指数），产段函数
+    # buildMundaneCardSections 逐字 vendored（vendor/mundane/MundaneMain.js），Python 取页面按需物料后经
+    # tools/mundaneCards.js 喂入；+分宫制宫神星表（chart 族共享段，归星盘族产段）。段序逐字照抄上游。
+    "mundane": ["世俗入宫", "新月图", "满月图", "日食图", "月食图", "地区盘", "行星周期", "世运周期表", "恒星派入境", "吠陀世运", "世运卜卦", "世俗宫义", "定局·年主/盘主", "入境骨架", "地理分野", "地区盘推运", "角化", "年之九主", "世运问判",
+                "年盘概要", "四季入境盘", "新月图判读", "满月图判读", "日食图判读", "月食图判读", "食族 Saros", "天象占参考", "地区盘·12世俗宫", "时刻校正", "天气占星", "四轴特殊点", "会合指示星", "盘型格局", "世运恒星命中", "赤纬平行", "恒星派入境·概览", "吠陀世运·年度盘", "世运大运", "KP 副主链", "天气与农业", "世运问判·得力明细", "木土纪元", "大年时代", "Barbault 聚散指数",
+                "起盘信息", "宫位宫头", "星与虚点", "信息", "相位", "行星", "希腊点", "12分度", "主宰星链", "分宫制宫神星表", "古典", "埃及历", "寿命格局", "可能性"],
+    # [X3D盘] 与 [X星盘] 是上游同一盘数据的两个页签出口：v3.11 起 [X星盘] 是全口径无头整盘、[X3D盘] 是一行指引。
+    # v15（上游 [Q-224/T-180]，aiExport.js:859）：+二十四节气（全年交节时刻+四柱，种子行取 Java /jieqi/year；
+    # Java 不可用时整段不出并进 warnings → 条件段双登记）。
+    "jieqi": ["节气盘参数", "二十四节气", "春分星盘", "春分宿盘", "春分3D盘", "夏至星盘", "夏至宿盘", "夏至3D盘", "秋分星盘", "秋分宿盘", "秋分3D盘", "冬至星盘", "冬至宿盘", "冬至3D盘"],
+    # 上游 calendar 是**页面聚合快照**（NongLi + HuangLi + Tongshu + Rizi 四子并出），
+    # 不是单技法导出——单技法各自还有 huangli / tongshu 两个独立键。
+    # v14（上游 v3.9.2 [E-6]）：前三段=聚合导出**子源标签**（整行【X】，非内容段，是来源分界）——
+    # 必须登记进 preset，否则用户自定义段时标签行被过滤删除、同名段无法分辨来源（上游原话）。
+    # 【通书择日】标签与既有内容段同名，共用后者登记（不重复列）。
+    "calendar": ["农历", "老黄历", "日子馆", "起盘信息", "当月月历", "选中日详情", "今日宜忌", "值神值宿", "彭祖百忌", "吉神凶煞", "冲煞·胎神·方位", "时辰吉凶", "物候·六曜·数九三伏", "流年年神方位", "通书择日", "本月逐日表", "日子馆·个性化择日", "当事人八字", "个性化吉日榜", "所选吉日·完整日课", "年度吉日榜", "方法说明"],
+    **JIEQI_SETTING_PRESETS,
+    # v15（上游 [Q-455/T-418]，aiExport.js:861）：+骰子盘相位 / 天象盘相位（有相位数据才产段）→ 条件段双登记。
+    "otherbu": ["起盘信息", "骰子结果", "骰子盘宫位与星体", "天象盘宫位与星体", "骰子盘相位", "天象盘相位"],
+    # 天文地占（上游 v3.5.1 地占大改版；builder 段序照 GeomancyMain.buildGeomancySnapshotText）+ 起卦信息
+    # (问题/问类/上升图形)，与 skill 惯例一致。判定/入宫/十六图形每盘必出；解读技法随 technique、转宫派生随
+    # turnTo、定局落星随 house_projection、边界声明随 structuralOnly 条件出 → 见 optional。图形释义为上游默认关
+    # doctrine 段，skill 不产出，仅在 preset 保留作 export_parse 识别面（同 fengshui 策略）。
+    # v13（上游 v3.9.1「时地真正参与计算」）：+7 段。全部是**条件段**——引擎注释写死
+    # 「真实星历落星…只在真用时出键，未选此档者响应字节零变」（geomancy/chart.py:350），
+    # 故同时进 AI_EXPORT_OPTIONAL_SECTIONS（§5 条件段双登记：只进 optional 不够，parser 的 unknown
+    # 只对照 preset）。`起卦信息` 是 skill-extra，保持在段首。
+    "geomancy": ["起卦信息", "判定", "法庭三角", "有效性判断", "解读技法", "盾面得地", "元素与寻源", "成败与福灵点", "转宫派生", "定局落星·甲", "定局落星·乙", "定局落星·真实星历", "行星地占盘", "十二宫·图形入宫", "十六图形", "图形释义", "边界声明", "十六卦目录"],
+    # 塔罗：reportText 直接产出独占段头 —— 牌阵综览(牌组/牌阵/种子/设置/所问/指示牌) / 逐牌详解(逐位
+    # 占象·含义·尊位) / 综合断语(花色元素合读) / 定局(Yes-No+精华牌) / 生命牌(人格·灵魂·流年，需生日)。
+    # 综合断语随 summary、生命牌随 birth 条件产出 → 见 optional。
+    # v13（上游 v3.9.1 塔罗两轨补满）：+`对读`（engine/pairReading.js，本轮首次 vendor）。
+    # 本仓 vendored 引擎实测恒出，非条件段。
+    "tarot": ["牌阵综览", "逐牌详解", "综合断语", "定局", "对读", "开钥", "生命牌", "组合读法"],
+    # v13 新技法（上游 v3.9.0）：七段**恒出**，注家开关只影响段内行、不改段集
+    # （上游 lingqiSnapshot 的 parityAll 双向哨兵口径）——故无条件段，optional 保持空。
+    "lingqi": ["起盘信息", "棋势", "卦象", "繇辞", "诸家注", "课断", "断诗"],
+    # 风水无可调用 tool（交互 canvas/点位标注不可无头，既有排除项）；本段表仅作契约识别面 ——
+    # export_parse 解析外部粘贴的风水导出文本时按十三派全段识别（理气六派 + 辅星水法/净阴净阳/
+    # 玄空大卦/形势峦头/择日选择 五新派），不再对新段误报 unknown。
+    "fengshui": [
+        "起盘信息", "标记判定", "冲突清单", "未定位标注", "破局危害", "龙虎灶台", "移动盘",
+        "吉凶评分", "缓解建议", "使用要点", "建议汇总", "纳气建议", "八卦定位", "成员卦象",
+        "四类象格局", "应期成格", "改运建议", "风水·纳气盘", "风水·八卦阳宅", "风水·八宅大游年",
+        "风水·玄空飞星", "风水·三合水法", "风水·金锁玉关", "风水·乾坤国宝", "风水·紫白飞星",
+        "风水·辅星水法", "风水·净阴净阳", "风水·玄空大卦", "风水·形势峦头", "风水·择日选择",
+    ],
+    # 邵子参评数：起盘/本命/大运·歲運 + 全生涯流年表（liunianSeries 逐岁行喂入 buildSnapshotText
+    # 的 liunianRows → [流年·歲運]，即星阙 aiExport 宣称的完整四段；歲運后缀段名归一见下方映射）。
+    "canping": ["起盘", "本命", "大运·歲運", "流年·歲運"],
+    # 河洛理数：快照段 起命/先天卦·元堂爻辞/后天卦·元堂爻辞/命运篇/大限·岁运/流年·岁运/断验（十吉）。
+    # 元堂爻辞与岁运段名（含老版动态卦名段）legacy-map 到 先天卦/后天卦/大限/流年，见下方映射。
+    "heluo": ["起命", "先天卦·元堂爻辞", "后天卦·元堂爻辞", "命运篇", "起卦详情", "大限·岁运", "流年·岁运", "断验"],
+    # 一掌经：十二支十二星（六道四柱四宫）+ 命宫/人事十二宫 + 格局 + 大限/小限流年十二神；
+    # 重犯/交互格/职业适性/流年总论随盘面条件产出、神煞合参随开关（默认开）产出 → 见 optional。
+    "yizhangjing": ["起盘信息", "四柱四宫断语", "命宫与人事十二宫", "四世与权重", "人事十二宫寓意", "格局判定", "九品定格", "年上运程", "位置速断", "各柱逢星速断", "六道分布", "主星象义与星性", "重犯", "交互格", "职业适性", "大限", "童限", "小限与流年十二神", "流月流日流时", "流年总论", "叠断", "神煞合参", "诗文", "逐日值星", "时辰细断", "四柱文献"],
+    # 东亚诸术 / 诸方杂术（上游 v3.14.0，aiExport v64）：段名与 vendored eastAsiaSnapshot.EAST_ASIA_SNAPSHOT_SECTIONS /
+    # zhufangArts.ZHUFANG_SNAPSHOT_SECTIONS 逐字一致（上游有合同测试；本仓 tests/test_sync314_mingother_contract.py 同锁）。
+    # 每段无条件恒出：缺本命盘 / 后端没算出 / 公元前不排历时，段内如实写明（「未出」「未算出」「不排」）→ 严格技法，空 optional。
+    "dongya": ["藏历", "藏占", "蒙古 Zurkhai", "算命学", "九星气学", "洛书流年", "易卦星盘"],
+    "zhufang": ["玛雅历", "十三月亮历", "人类图", "灵名字母"],
+    # 小六壬（上游 v3.5.0）：三数起三传，6 段无条件恒出（主流六宫无五行生克，[生克] 段如实标注）→ 严格技法，空 optional。
+    "xiaoliuren": ["问事", "起课", "三传", "生克", "九神", "化解"],
+    # 飞宫小奇门（上游 v3.5.0）：时上起青龙飞九宫，7 段无条件恒出（缺项段内如实标注）→ 严格技法，空 optional。
+    "feigong": ["问事", "起局", "干支", "命宫", "宫位", "运气", "应期"],
+    # 小成图（上游 v3.5.0）：洛书九宫佈局，6 段恒出 + [股市] 仅 stock 模式出（条件段，见 optional）。
+    "xiaochengtu": ["问事", "起卦", "佈局", "推导", "四象", "应期", "股市"],
+    # 皇极轨策（上游 v3.5.0）：占事直断/演数/四位 恒出；起卦/卦变/断法/时方/三要十应/元会运世/大定起数
+    # 随盘面·十开关·四柱条件出（时方默认关，大定需九畴数或大定流派）→ 条件段全列 optional（照 liureng 先例）。
+    "guice": ["占事直断", "起卦", "演数", "四位", "卦变", "断法", "时方", "三要十应", "元会运世", "大定起数"],
+    # 神数正传（上游 v3.5.0）：五流派各产 17 段之子集，唯一恒出段 = 起盘信息。preset 全 17 段、其余 16 段全列
+    # optional（tieban 起数/本命条文/流年条文；shaozi 五基础数据/装卦/断本命；dading 策数/起数/死月；
+    # liuqin 十二宫与六亲宫/六亲属相/妻室姓氏/玄机卦动爻/古籍未载之格；xinyi 八刻分命/条文秘数查询/性情项查询）。
+    "zhengchuan": ["起盘信息", "起数", "本命条文", "流年总纲", "流年条文", "五基础数据", "装卦", "断本命", "策数", "死月", "死月扫描", "十二宫与六亲宫", "六亲属相", "妻室姓氏", "玄机卦动爻", "八刻分命", "条文秘数查询", "性情项查询", "古籍未载之格"],
+    # 占星地图（AstroCartoGraphy）：行星地理投影线表；偕升/交点随数据条件产出 → optional。
+    # 上游 locastro 是辅盘 tab：导出 = astrochart 同一套本命盘段 + 尾部地图段（aiExport.js 的
+    # ASTRO_LIKE_EXPORT_KEYS 含 locastro）。偕升纬度带/线交点是本仓比上游多出的明细段。
+    # v0.33.0 批 I-4：+落点分析/事件时刻（clickLat+clickLon / eventKind 时产；条件段双登记）。
+    "acg": ["起盘信息", "宫位宫头", "星与虚点", "信息", "相位", "行星", "月宿", "希腊点", "12分度", "主宰星链", "分宫制宫神星表", "古典", "古典格局", "盘面细节", "埃及历", "寿命格局", "可能性", "占星地图", "偕升纬度带", "线交点", "落点分析", "事件时刻"],
+    # 名人星盘库（离线只读检索）：列表态出 检索条件/命中列表；单人态出 检索条件/名人详情/
+    # 维基摘要/数据来源 → 两态互斥，非「检索条件」外全列 optional。
+    "astrodata": ["检索条件", "命中列表", "名人详情", "维基摘要", "数据来源"],
+    # 八字反查（skill 侧 Java /common/inversebazi 反查 tool，上游 aiExport 无对应导出技法——与 astrodata 同类）。
+    "bazi_inverse": ["反查条件", "候选时刻", "口径说明"],
+    # 玄史知识库（skill 侧检索 tool，上游 aiExport 无对应导出技法——与 astrodata 同类，进 mirror 白名单）。
+    # 段按 action 的响应形状条件产出：列表响应出 总览+列表、详情响应出 详情，引证有则聚合。
+    "xuanshi": ["检索条件", "结果总览", "条目列表", "条目详情", "相关条目", "出处引证"],
+    # 紫微规则库（skill 侧参考工具，审计 O-02）：以前借紫微命盘的段表，缺省阅读视图给的是一张空命盘骨架、规则本身一个字不在。
+    # 段 = Java /ziwei/rules 回包的各张表（四化义 / 宫位 / 星曜 / 化象），上游 aiExport 无对应导出技法——与 xuanshi 同类。
+    "ziwei_rules": ["四化义", "宫位义", "宫位分类", "主星序", "星曜义", "双化", "多象", "化入各宫"],
+    # 七政择日动盘（v0.33.0 批 I-1b，skill 侧工具）：起盘信息恒出；其余按 action 出（条件段双登记）。
+    "qizhengelection": ["起盘信息", "择日动盘", "天象要素", "日月食搜索", "方位搜索"],
+    # 印度生时校正（v0.33.0 批 I-2，/india/rectify）：五段恒出（语汇照上游校时器抽屉 §17）。
+    "india_rectify": ["起盘信息", "校时扫描", "Lagna 子主区段", "候选榜", "声明"],
+    # 行星周期 / 出生节气窗（v0.33.0 批 I-3，skill 侧工具）：段恒出。
+    "planet_cycles": ["周期配置", "会合事件"],
+    "jieqi_birth": ["起盘信息", "出生节气窗"],
+    "generic": ["起盘信息"],
+}
+# 奇门择日 = 奇门 17 段全量 + 择日三段（单一真值源：qimen 段表改动自动跟随，与上游 aiExport.js:735 同构）。
+# 🔒 三个追加段头与 vendor/divination/zeri/qimenZeriSnapshot.js 逐字成对（四同步铁律）。
+AI_EXPORT_PRESET_SECTIONS["qimenzeri"] = [
+    *AI_EXPORT_PRESET_SECTIONS["qimen"], "择日搜索配置", "择日条件", "命中时辰",
+]
+
+# 择日十技法（上游 v3.10.0，aiExport.js:832-847）：每个 <x>zeri = 基底技法段表 + 择时三段。
+# 同样是**单一真值源**——基底段表一改自动跟随。🔒 三个追加段头与各自的 <x>ZeriSnapshot.js builder
+# 逐字成对（四同步铁律）；黄历那支是日粒度，故段头是「择吉…/命中日段」而非「择时…/命中时段」。
+AI_EXPORT_PRESET_SECTIONS["huanglizeri"] = [
+    *AI_EXPORT_PRESET_SECTIONS["huangli"], "择吉搜索配置", "择吉条件", "命中日段",
+]
+# 派生键 → 基底键。段表与 optional 集**都**从基底继承（见 AI_EXPORT_OPTIONAL_SECTIONS 之后的循环）。
+ZERI_DERIVED_KEYS = (
+    ("bazizeri", "bazi"),
+    ("taiyizeri", "taiyi"),
+    ("ziweizeri", "ziwei"),
+    ("liurengzeri", "liureng"),
+    ("sanshizeri", "sanshiunited"),
+    ("qizhengzeri", "guolao"),
+    # 上游 v3.14.0（presets.js:993）：印度择日 = 印占快照段 + 择时三段（此前三段自足）。择日页内嵌的印占盘按宿主槽写
+    # 「印占全文 + 择时三段」；optional 集随下面的循环一起继承（[古典] / [问事 Praśna] / [穿界时刻] 这些条件段不会被升格成必出段）。
+    ("indiazeri", "indiachart"),
+)
+for _zeri_key, _base_key in ZERI_DERIVED_KEYS:
+    AI_EXPORT_PRESET_SECTIONS[_zeri_key] = [
+        *AI_EXPORT_PRESET_SECTIONS[_base_key], "择时搜索配置", "择时条件", "命中时段",
+    ]
+
+AI_EXPORT_FORBIDDEN_SECTIONS = {
+    "liureng": ["右侧栏目"],
+    "qimen": ["右侧栏目"],
+    "qimenzeri": ["右侧栏目"],
+    "sanshiunited": ["右侧栏目"],
+}
+
+# Sections that a preset lists (mirrored verbatim from 星阙's aiExport.js) but that the HEADLESS snapshot
+# does not reliably emit — either 星阙-UI-only interactive panels (检索/查询 search boxes) or mode/data-
+# conditional sections. They are still valid export targets when present, but their ABSENCE must not mark
+# the export "dirty" (i.e. they are excluded from `missing_selected_sections`).
+# 默认关段（上游 AI_EXPORT_DEFAULT_OFF_SECTIONS，v50）：判语库 / 象意 / 古籍全文这类 **doctrine 型**
+# 段——体量大、且不是逐盘事实。上游的语义是「登记进 preset（设置面可勾、勾了就永久尊重），但用户
+# 未自定义时默认不纳入导出」。
+#
+# 这是 preset / optional 之外的**第三态**：preset 说「这个技法有这个段」，optional 说「缺席不算漏」，
+# 默认关说「除非明确要，否则不默认给」。skill 侧把它当作 optional 的超集使用——段照常登记、缺席不
+# 报 missing，同时在导出契约里如实标注 default_off，供调用方决定是否请求。
+AI_EXPORT_DEFAULT_OFF_SECTIONS = {
+    "sixyao": ["判语库·参考诀表"],
+    "taixuan": ["太玄经全文"],
+    "wangji": ["经典原文", "历史年表"],   # skill 键 wangji ↔ 上游键 huangji
+    "geomancy": ["图形释义"],
+    "yizhangjing": ["诗文", "四柱文献", "逐日值星", "时辰细断", "叠断"],
+    "qimen": ["八宫克应"],
+    "qimenzeri": ["八宫克应"],
+    "liureng": ["取象"],
+    # v58 追加（上游 aiExport.js:3459-3471）：体量大 / 非逐盘事实 / 教义型的候选段。
+    "tongshefa": ["爻位"],                     # [Q-449/T-412] 逐爻判语
+    "astrochart": ["古典·世界范式盘"],          # 恒定教义（逐盘不变）
+    "calendar": ["所选吉日·完整日课", "年度吉日榜", "本月逐日表"],   # [Q-457/458/459]
+    "huangli": ["年度吉日榜"],                  # [Q-458/T-421] 全年 Top 榜
+    "huanglizeri": ["年度吉日榜"],              # 派生键随基底（同 qimenzeri ← qimen）
+    "tongshu": ["本月逐日表"],                  # [Q-459/T-422] 整月逐日
+    "babylon": ["数理星历", "吉日历", "年历预测"],   # [Q-443/T-406] 三页签体系教义
+}
+
+# 按设计**永不产出**的预设段（技法工具 → {段: 理由}）——第四态（v0.50.0 深审余项）。这些工具与别的工具共用一个导出键（段表照上游），
+# 但这个工具本身从来算不出那几段：缺席不是「本次没算出来」，导出里不占位、不算缺，`export_snapshot.not_requested_sections` 列名、
+# `not_requested_reasons` 给理由（与节气盘「这次没要的分至盘」同一机制，service/export._sections_not_requested）。
+# 默认关段（上表）缺席时同样归入「这次没要」。守卫 tests/test_sections_not_produced.py（live：照样例跑，断言它们真的从不出现）。
+SECTIONS_NOT_PRODUCED_BY_DESIGN: dict[str, dict[str, str]] = {
+    "chart13": {
+        "古典格局": "13 宫盘是派生盘：本命口径的 /astroextra/analysis 只挂本命盘与重置盘（engine.registry.CLASSICAL_ANALYSIS_TOOLS；"
+                "上游 pipeline.js CLASSICAL_SKIP_KEYS 同理：不让本命结论冒充派生盘结论）",
+        "占星地图": "占星地图（行星地理投影线）由独立工具 horosa_astro_acg 产出，不进本盘快照",
+        "盘面细节": "13 宫盘是派生盘：/astroextra/chartdetails 按本命参数、回归黄道算，只挂本命盘 / 重置盘 / 占星地图"
+                "（engine.registry.CHART_DETAILS_TOOLS；上游 pipeline.js 的跳过表与 [古典格局] 同一张）",
+    },
+    **{tool: {
+        "断卦结构": "卦义查询只查卦辞、不起卦：没有六爻盘就没有断卦结构（要完整断卦请用 sixyao）",
+        "断诀命中": "同上：没有六爻盘就没有断诀命中",
+        "占类断语": "同上：没有六爻盘就没有占类断语",
+    } for tool in ("gua_desc", "gua_meiyi")},
+}
+
+# 阅读视图超预算时先放的段（审计 O-07）：以前按文档顺序贪心放，星盘族一段 2 万字的「相位」整段给，后面的「行星」「古典格局」
+# 「寿命格局」整段不给。只决定「一次给哪些」，输出仍按文档顺序；不在表里的段按文档顺序排在表内段之后。没进表的技法只受单段封顶约束。
+_CHART_READING_PRIORITY = ("起盘信息", "宫位宫头", "星与虚点", "行星", "古典格局", "寿命格局", "信息")
+READING_PRIORITY: dict[str, tuple[str, ...]] = {
+    **{key: _CHART_READING_PRIORITY for key in (
+        "astrochart", "astrochart_like", "hellenastro", "dwadasamsa", "draconic", "harmonic", "relocation", "transformchart",
+        "chart13", "germany")},
+    "sanshiunited": ("起盘信息", "概览", "占断向导", "奇门遁甲", "大六壬", "太乙", "课体结构", "奇门用神分论"),
+    "cetian": ("起盘", "农历与命身", "格局", "运限", "断诀"),
+    "mundane": ("起盘信息", "年盘概要", "世运问判", "盘型格局", "四季入境盘", "宫位宫头", "星与虚点", "行星"),
+    "relative": ("关系起盘信息", "八重合", "关系量化", "顺畅连接", "张力连接", "A对B相位", "B对A相位"),
+    "indiachart": ("星盘信息", "起盘信息", "行星", "大运Dasha", "瑜伽格局 Yogas", "Panchanga 五要素", "星曜状态"),
+}
+
+AI_EXPORT_OPTIONAL_SECTIONS = {
+    # 月宿 (星阙 v2.6.4 西洋月宿)：仅恒星黄道(zodiacal=1)盘的 perchart 响应带 nakshatras，
+    # 回归黄道盘不产出 → 列为可选段，避免 tropical 盘误报 missing。
+    # 古典占星 (星阙 v2.6.7): [古典](逐曜状态/围攻/围绕) 仅本盘有 besiegement/古典字段时出;
+    # [古典格局] 仅 /astroextra/analysis 成功(astrochart/astrochart_like)时出 → 列可选段, 优雅降级不误报 missing。
+    # [埃及历] 与 [古典格局] 同源同命：都挂在 /astroextra/analysis 成功之后（天狼偕日升由后端算），
+    # 该 fetch 失败即整段不出 → 同列可选段。
+    # [盘面细节]（上游 v3.14.0 / aiExport v61）：/astroextra/chartdetails 成功才出（上游「失败不影响主体快照」）→ 四个键同列可选段。
+    "astrochart": ["月宿", "古典", "古典格局", "盘面细节", "埃及历", "可能性", "古典·派生宫转宫", "古典·气候带", "古典·显赫计分", "古典·世界范式盘"],
+    # `占星地图`：上游把它挂在 astrochart_like preset 上，skill 侧该内容由独立的 `acg` 工具产出、
+    # 不进 chart 族快照 → 登记但不强求（这正是 v13 之前从未被任何一版欠账计入的那一段）。
+    "astrochart_like": ["月宿", "古典", "古典格局", "盘面细节", "埃及历", "可能性", "占星地图"],
+    "hellenastro": ["月宿", "古典", "埃及历", "可能性"],
+    # 微黄道缺月/日点位时整段不产（上游同）。
+    # 这三段在 builder 里条件产出（无时辰/无物候数据/无年神表时不出）。
+    "huangli": ["时辰吉凶", "物候·六曜·数九三伏", "流年年神方位"],
+    "babylon": ["微黄道"],
+    # heluo 起卦详情（上游 v58）：heluoLocal 只在「起卦」类流派下产段 → 条件段。
+    "heluo": ["起卦详情"],
+    # calendar 个性化吉日榜：只在给了 rizi.persons 时出（段头带动态计数，经 map_legacy_section_title 折叠）。
+    "dwadasamsa": ["月宿", "古典", "埃及历", "可能性"],
+    "draconic": ["月宿", "古典", "埃及历", "可能性", "龙盘"],
+    # 变换盘：[变换盘] 由 runner 保证必出（空了直接报错），不列可选；其余同族条件段照旧。
+    "transformchart": ["月宿", "古典", "埃及历"],
+    "relocation": ["月宿", "古典", "古典格局", "盘面细节", "埃及历", "可能性", "重置盘"],
+    "harmonic": ["月宿", "古典", "埃及历", "可能性", "调波盘"],
+    # [附加分盘]（v3.11.0 #80）只在给了 indiaExtraVargas 时产；[Tripataki 三旗盘逐月净分]（[Q-127/T-35]）只在
+    # indiaTripataki=true（后端 opt-in 多建 12 盘）时产 —— 两段均缺省不产 → 条件段双登记。
+    # [古典]：上游 buildIndiaSnapshotText 从不产该段（aiExport.js:596 [MU] 注「死复选框」），skill 同形 → 恒缺席、只登记。
+    # [星盘信息]/[可能性] 经 ensureSection 恒产（空段写「无数据」），不再可选。
+    # v3.14.0：[穿界时刻] 是另一条请求（/astroextra/transitevents）取来的，取不到就不出 → 条件段；[Yoga 判定表] / [印占补充表]
+    # 随 jyotish.yogaTable / extraTables 两个引擎子块，子块失败（落 partialErrors，[未能计算] 会点名）或极端年份缺星时不出 → 条件段。
+    "indiachart": ["古典", "大运Dasha", "星曜战（Graha Yuddha）", "Kartari 夹击格局", "Tajika Mudda 年运", "问事 Praśna", "Nāḍī · 星座交换", "附加分盘", "Tripataki 三旗盘逐月净分", "未能计算", "Yoga 判定表", "印占补充表", "穿界时刻",
+                   # [过运×大运联动]：过运日落在出生之前（没有在行的大运）时后端不出 dashaLink（builder 判 `dl && dl.mahaLord`）——
+                   # 印度择日的展示盘是「命中时刻」那一盘、过运日缺省今天，命中时刻在未来时恒如此。
+                   "过运×大运联动"],
+    # 世俗盘为非推运入宫盘（predictive=0），[可能性] 依赖 predict.PlanetSign 故恒不产出 → 可选段。
+    # 世运卜卦两段仅 mundaneType=mundanehorary 时产（盘型互斥）。
+    # v3.11 右栏卡（buildMundaneCardSections）：入宫底盘恒产 年盘概要/四季入境盘/天气占星/四轴特殊点/盘型格局
+    # （必出段，缺席即 missing 告警）；下列为条件段——会合指示星（木土角距 ≤12°）、世运恒星命中（有星命中）、
+    # 赤纬平行（有平行组）按盘面数据；新月图判读…Barbault 聚散指数 按 mundaneType 盘型；地区盘·12世俗宫/
+    # 时刻校正（须 region 盘型 = UI 选建置盘）与天气与农业（须页面手填受孕日）headless 无输入 → 恒不产，
+    # 登记只为识别外部导出。分宫制宫神星表 = chart 族共享段（由星盘族产段逻辑决定），此处不作必出要求。
+    # 盘型互斥段（上游 buildAiSnapshot 按 mundaneType 只出一个盘型头 + 该盘型的分析段）：skill 的入宫底盘流程恒产
+    # 世俗入宫/新月图/满月图/日食图/月食图/行星周期/入境骨架/年盘概要/四季入境盘，地区盘（mundaneType=region）底盘是建置盘、不求入宫
+    # → 这些段缺席 → 条件段双登记（preset 里照留，出现时不算 unknown）。
+    # [天气占星] 卡只在 ingress/newmoon/fullmoon 盘型产（buildMundaneCardSections :352-357），地区盘无 → 同为条件段。
+    "mundane": ["世俗入宫", "新月图", "满月图", "日食图", "月食图", "行星周期", "入境骨架", "年盘概要", "四季入境盘", "天气占星",
+                "古典", "埃及历", "可能性", "世运卜卦", "世运问判", "恒星派入境", "吠陀世运", "角化", "年之九主",
+                "新月图判读", "满月图判读", "日食图判读", "月食图判读", "食族 Saros", "天象占参考", "地区盘·12世俗宫", "时刻校正", "会合指示星", "世运恒星命中", "赤纬平行", "恒星派入境·概览", "吠陀世运·年度盘", "世运大运", "KP 副主链", "天气与农业", "世运问判·得力明细", "木土纪元", "大年时代", "Barbault 聚散指数", "分宫制宫神星表",
+                # v3.14.0（上游 aiExport v61）[世运周期表]：只在 mundaneType=cycles 且周期表算得出时成段 → 条件段双登记。
+                "世运周期表"],
+    # 六壬 Phase4 (星阙 v2.5.x)：毕法（已命中）只在 refContext 成功且有命中时出；占断向导只在指定占类
+    # (zhanCategory ≠ general) 时出。断卦层（年月神煞/课体结构/三传旺衰/空亡真假/旬空落点/陷空/遁干特殊/年命上神）
+    # 各段按盘面数据条件产出（每盘几乎必出但非保证；如三传不空则无空亡段）→ 全列可选段，避免误报 missing。
+    # 七政（日月五星临支合参）依赖随盘星历对象；chart 上下文获取失败时优雅缺段 → 可选。
+    # 阴盘·六亲六神旺衰 仅 panShi='yin' 出；专题起式 仅传 topicKey/shiJianKind/birthGanZi+age 时出；
+    # 数理 依赖 taixuan 非空 → 三段列可选，缺席不误报。
+    "jinkou": ["阴盘·六亲六神旺衰", "专题起式", "数理"],
+    # 紫微四化仅在给了 ziweiSihua 入参时产；奇门遁甲（v13/上游 v3.8.0 的三式奇门腿汇总段）是挂载重算链
+    # （aiAnalysisContext regenerateSanshiUnifiedSnapshot）的顶段，live builder 不产 → 同列可选段。
+    # 快照由 vendored 上游 buildSanShiUnitedSnapshotText 产出后，太乙派生段与六壬断卦段都是**挑段**：
+    # appendPickedSections「仅在该段存在且有正文时输出」（SanShiUnitedMain.js:1298-1307）——太乙段随 ken 的
+    # pan.sections（同 taiyi 的可选集），断卦段随六壬断卦层（同 liureng 的可选集）。此前 skill 自拼快照时给缺段填
+    # 「（本盘未产出「X」）」占位，故无需登记；占位不是上游形态，已去掉 → 条件段双登记。
+    "sanshiunited": ["紫微四化", "奇门遁甲",
+                     "太乙主客定算", "太乙八门与宿曜", "太乙断法", "太乙七大兵法", "太乙博弈", "太乙命法", "太乙命宫行限",
+                     "毕法（已命中）", "占断向导", "年月神煞", "课体结构", "三传旺衰", "空亡真假", "旬空落点", "陷空",
+                     "遁干特殊", "年命上神", "七政"],
+    # 日家占方（古籍金函系）是**独立体系**：vendored DunJiaCalc.js 在 pan.isJinhan 时提前返回、
+    # 快照只含该段；常规盘完全不出 → preset + optional 双登记（§5 条件段双登记）。
+    "qimen": ["日家占方（古籍金函系）"],
+    "qimenzeri": ["日家占方（古籍金函系）"],
+    "liureng": ["毕法（已命中）", "占断向导", "年月神煞", "课体结构", "三传旺衰", "空亡真假", "旬空落点", "陷空", "遁干特殊", "年命上神", "七政"],
+    # 紫微 P2 (星阙 v2.6.x)：命中格局随 jar 返回的 patterns；本盘未命中所收录格局时为空 → 可选段。
+    # [运限概览]（上游 v3.11.0 #80）上游是无条件段，但 skill 侧它由 core-js ziweiSnapshotLayers 从盘面大限派生：
+    # ziwei_rules（规则库、无盘）与 JS 引擎失败时缺席（后者进 warnings）→ 条件段双登记。
+    "ziwei": ["命中格局", "来因宫", "运限概览", "运限", "流派叠层", "身宫", "八字大运"],
+    # 六爻 [断卦结构] / [断诀命中] / [占类断语] 由 core-js tools/liuyao.js 调 vendored 上游
+    # liuyaoStructLines / liuyaoSnapshotEx 产出，需 node 运行时；手动摇卦时引擎失败则三段优雅缺席（降级进
+    # warnings）→ 列可选段，缺失不误报（以时起卦时引擎失败即结构化报错，不出盘）。
+    "sixyao": ["断卦结构", "断诀命中", "占类断语"],
+    # 合盘关系量化（v3.3.1）：/astroextra/relative 打分成功才出；顺畅/张力连接随命中相位条件产出。
+    # 上游 buildRelativeSnapshotText（AstroRelative.js:160-226）按页签出段、空列表不产段：互摄相位/中点/映点八段只属比较盘
+    # 且各自空则缺（pushAspectArray 等 `if(!list || list.length === 0) return;`），盘体段各属其页签 → 全部条件段。
+    # v3.14.0 [八重合]：另一条请求（/astroextra/ashtakoota）取来的，取不到就不出 → 条件段。
+    "relative": [
+        "八重合", "A对B相位", "B对A相位", "A对B中点相位", "B对A中点相位", "A对B映点", "A对B反映点", "B对A映点", "B对A反映点",
+        "比较盘-星盘A", "比较盘-星盘B", "合成图盘", "时空中点·合成图盘", "影响图盘-星盘A", "影响图盘-星盘B",
+        "马克斯·影响图盘-星盘A", "马克斯·影响图盘-星盘B", "关系量化", "顺畅连接", "张力连接",
+    ],
+    # 塔罗条件段：综合断语（有 summary 才出）/定局（try 内，罕见异常才缺）/生命牌（仅传 birth 时出）。
+    "tarot": ["综合断语", "定局", "生命牌", "开钥", "组合读法"],
+    # 天星择日条件段（v14）：[选中时刻星盘] 仅有命中时补铸 /chart 并入——零命中/铸盘失败不产段。
+    # [单时判读]（v0.33.0）仅显式给 explainAt 时产。
+    # ⚠ 搜索/命中四段（起盘信息/征象搜索配置/征象条件/命中区间）零命中时仍出，绝不进本表。
+    "tianxing": ["选中时刻星盘", "单时判读"],
+    # 小成图条件段：[股市] 仅 qiguaFa='stock' 起卦时出（研判开收盘涨跌/幅度/K线），其余模式不出 → 缺失不误报。
+    "xiaochengtu": ["股市"],
+    # 皇极轨策条件段：起卦（有 steps）/卦变（有互卦）/断法（有 duan）/时方（settings.shiFang 且非梅花，默认关）/
+    # 三要十应（有 ying）/元会运世（有 ctx.year+monthZhi）/大定起数（九畴数或大定流派+四柱齐）→ 随式缺席不误报。
+    "guice": ["起卦", "卦变", "断法", "时方", "三要十应", "元会运世", "大定起数"],
+    # 神数正传条件段：五流派各产 17 段之子集，唯一恒出段=起盘信息，其余 16 段随流派缺席不误报 missing。
+    "zhengchuan": ["起数", "本命条文", "流年条文", "五基础数据", "装卦", "断本命", "策数", "死月", "十二宫与六亲宫", "六亲属相", "妻室姓氏", "玄机卦动爻", "八刻分命", "条文秘数查询", "性情项查询", "古籍未载之格", "流年总纲", "死月扫描"],
+    # 天文地占条件段：解读技法（随后端 technique）/转宫派生（turnTo）/定局落星·甲乙（house_projection=占星法）/
+    # 图形释义（上游默认关 doctrine 段，skill 不产，仅识别面）/边界声明（结构对照模式，skill 挡 ifa 故不产）。
+    # 判定/十二宫·图形入宫/十六图形每盘必出、起卦信息恒出，保持严格。
+    # v13（上游 v3.9.1）新增七段全部条件出：真实星历/行星地占盘只在选了该档时出键
+    # （geomancy/chart.py:350「未选此档者响应字节零变」），其余四段随传本对齐补齐的开关出。
+    "geomancy": ["解读技法", "转宫派生", "定局落星·甲", "定局落星·乙", "图形释义", "边界声明", "法庭三角", "有效性判断", "盾面得地", "元素与寻源", "成败与福灵点", "定局落星·真实星历", "行星地占盘", "十六卦目录"],
+    # 一掌经条件段：重犯（有星重现才出）/交互格（日×时有断语才出）/职业适性（月柱星有断语才出）/
+    # 流年总论（主星有断语才出）/神煞合参（开关开且有落宫才出）→ 缺失不误报 missing。
+    "yizhangjing": ["重犯", "交互格", "职业适性", "流年总论", "神煞合参", "童限", "各柱逢星速断"],
+    # 占星地图：偕升/交点仅在计算产出非空时入快照。
+    # 盘面富化失败时这批段优雅缺席（同 astrochart 口径）；偕升纬度带/线交点按后端有无数据条件产出。
+    "acg": ["月宿", "古典", "古典格局", "盘面细节", "埃及历", "可能性", "偕升纬度带", "线交点", "落点分析", "事件时刻"],
+    # 名人星盘库：列表态/单人态互斥，各态专属段全列可选（检索条件恒出）。
+    "astrodata": ["命中列表", "名人详情", "维基摘要", "数据来源"],
+    "bazi_inverse": ["候选时刻"],
+    "xuanshi": ["结果总览", "条目列表", "条目详情", "相关条目", "出处引证"],
+    # 七政择日动盘条件段：pan 出 [择日动盘]+[天象要素]；eclipses 出 [日月食搜索]；azimuthsearch 出 [方位搜索]。
+    "qizhengelection": ["择日动盘", "天象要素", "日月食搜索", "方位搜索"],
+    # 波斯向运条件段：[指定日期向运盘] 仅给 datetime 时产（/predict/persianchart 整铸）。
+    "persiandirected": ["指定日期向运盘"],
+    # 时主轮转条件段：月亮日一法的正文只有 [时主轮转]（buildTimeLordText 的 moonDays 分支不出这两段）。
+    "timelords": ["当前时段", "后续"],
+    # 皇极经世条件段：[心易发微] 缺省（datetime）恒出，xinyiMethod=none 不出（上游挂载「不算心易」档）。
+    "wangji": ["心易发微"],
+    # 卜卦专题深化（诉讼/买房/怀孕）：仅在起卦命中 3 类专题之一时产出 [专题深化·<title>]（归一为专题深化·X）。
+    # 专题深化·X 仅特定 category 出；后两段仅 renaissance/medieval 档（accidentalMode=lilly /
+    # lotsSet=core15）出 —— 默认 classical 档不产，属口径差异不是缺陷。
+    # v3.9.5 的 9 个新段**全部数据门控**（上游 horarySnapshot 逐段 if 守卫）：围攻详断=besiegement
+    # 有命中、月亮实测相位=immediate/moonFinal 有料、断法要点/六类问法=该题型有词条、恒星会合=有
+    # 星命中、同主一星=sharedRuler、自然象征=该 category 有词条、盗窃研判=theft 专属、应期修正链=
+    # timing 有料 —— 全数双登记 optional，缺席不误报（2026-06-02 命例实测 围攻详断 可缺）。
+    "horary": ["专题深化·X", "偶然尊贵满分表", "阿拉伯点全集", "同主一星", "自然象征", "盗窃研判", "应期修正链", "围攻详断", "月亮实测相位", "断法要点", "六类问法", "恒星会合"],
+    # 黄历: 选中日详情仅在请求指定 day（选中某日）时产出 → 可选段。
+    # 选中日详情需 payload.day；老黄历/通书三段按数据条件产出；日子馆两段只在给了 rizi.persons 时出。
+    "calendar": ["选中日详情", "时辰吉凶", "物候·六曜·数九三伏", "流年年神方位", "通书择日", "日子馆·个性化择日", "当事人八字", "老黄历", "日子馆", "个性化吉日榜"],
+    # 择日: 用事专属 only when the topic rule-pack produced items; 应期 is never emitted by 星阙's builder.
+    # 回归与主限（v3.11 [Q-445]）：只在给了 natal 且日/月返或主限命中至少一项有料时成段。
+    "election": ["用事专属", "应期", "危象日参照", "本命合参", "回归与主限", "时势合参"],
+    # 七政四余: 政余格局 = Moira 格局 DSL 本地评估（失败 → '无'）；虚实/本命化曜/流年流曜 = Java /qizheng/moira
+    # 规则层（v0.36.0 C1 接活）——Java 不可用（chart-only 降级）时三段缺席并进 warnings → 可选段。
+    # [三主与化曜]/[限法实算]（上游 v3.11.0 [Q-435]）上游「有数据才产段」；skill 侧由 core-js 段 builder 从命度/四柱派生，
+    # JS 失败时缺席（进 warnings）→ 条件段双登记。
+    "guolao": ["政余格局", "虚实", "本命化曜", "流年流曜", "三主与化曜", "限法实算"],
+    # 多重回归: 单段技法；某体若无返照数据则该体行不出，三体皆空时整段不出 → 列为可选段，避免误报 missing。
+    # v0.33.0 批 I-3：+日月返照年表（timelineStartYear/Count 时才产）。⚠ 本字典禁止重复键——
+    # 曾把同键写两处，后写者静默覆盖前者（test_registry_dicts_have_no_duplicate_keys 现在守着）。
+    "extrareturns": ["多重回归", "日月返照年表"],
+    # 赤纬推运 (jaynesprog): [本命盘配置] 现由 runner 补拉本命盘恒出（生辰行降级到载荷时也出）；
+    # 保留可选登记只为防御本命盘与载荷同时缺失的畸形请求，缺失不误报。
+    "jaynesprog": ["本命盘配置"],
+    # 量化盘 (germany): [汉堡学派要素]（流派/六宫框/差值表/医学四液/赤纬）是门控 opt-in 段——仅用户介入
+    # 非默认汉堡功能（非 classic 流派/差值表/赤纬等）时附加；headless 默认 classic 零回归不产 → 列可选段。
+    # v15：六宫框落宫（houseFrames 缺席=老 runtime/后端 houseFramesError 时不产）/ 校时预览（只在给了 rectifyEvents 时产）。
+    # v16（上游 v59/v60）：[赤纬接触] 缺省产（自 [汉堡学派要素] 拆出），但 declination:false 或后端无 declination 时不产 → 双登记；
+    # [中点坐标] 只在 mpCoord ∈ {ra, decl} 且后端回 coordMidpoints 时产；[公式求解] 只读 90° 盘右栏手填公式（disp.formula），
+    # 挂载齿轮无此项、无头恒空 → 永不产，照上游 preset 留名只为识别外部导出。
+    # v16：[伙伴星期] 只在后端回 distPartners 非空时产（AstroDistributions.buildDistributionsSnapshotFromResult）→ 条件段。
+    "distributions": ["伙伴星期"],
+    "germany": ["六宫框落宫", "赤纬接触", "校时预览", "中点坐标", "公式求解", "汉堡学派要素", "组合盘", "戴维森盘"],
+    # 骰子盘/天象盘相位：上游 DiceMain.buildChartAspectLines 有 normalAsp 才产段（Q-455）。
+    "otherbu": ["骰子盘相位", "天象盘相位"],
+    # 二十四节气：种子行来自 Java /jieqi/year（上游页面种子请求同路）；Java 不可用时不产 + warnings。
+    "jieqi": ["二十四节气"],
+    # 八字（v0.40 F9 起与上游页面同源：本地 lunar.js 引擎 + vendored buildBaziSnapshotText，BaZi.js:267-610）：
+    # builder 自身就是条件段 —— [五行力量]/[格局·用神]/[盲派结构]/[月令司令（分野）] 只有本地引擎结果带
+    # （公元前等回退 Java /bazi/* 时缺席，上游同）；[干支合冲] heCongLines 全空不产；[大运]/[流年行运概略]
+    # 要 mainDirection/smallDirection/direction（Java /bazi/birth 回退不带 direction）；[多运限·指定时段] 只在给了 period 时产。
+    "bazi": ["大运", "多运限·指定时段", "五行力量", "格局·用神", "盲派结构", "月令司令（分野）", "干支合冲", "流年行运概略"],
+    # 太乙 (星阙 v2.6.x): kintaiyi 后端返回的 太乙解读段（起盘信息/太乙盘/十六宫标记为 builder 恒出，
+    # 进 preset）。其余按起局式/选项条件出（命法/博弈/某些式不出）→ 列为可选段，避免随式误报 missing。
+    "taiyi": ["太乙诸神", "风游", "主客定算", "八门与宿曜", "十二神", "断法", "七大兵法", "博弈", "命法", "命宫行限"],
+    # 神数 kinastro-* — UI search panels + mode/data-conditional sections.
+    "tieban": ["算盘定部", "计算摘要", "六亲佐证"],
+    "beiji": ["条文检索"],
+    "chunzi": ["代码查询", "批量代码查询", "关键词检索", "多标签检索"],
+    "qizhengkin": ["流时", "命宫解读"],
+    # 策天飞星 顶层分析段：四化/飞星/格局/宫干四化表/飞化规则/古法格局规则。快照按「逐宫重排盘」嵌套输出，
+    # 这些段头夹在各宫 re-dump 之间，段解析按首个连续块计数 → 检测不到（内容仍在导出文本内）→ 列可选段，缺失不误报。
+    # 末九项（衣鉢…相品，上游 v3.9.1）是僧道宫制专属段：常规命盘走十二宫，缺席不算漏。
+    "cetian": ["四化", "飞星", "格局", "宫干四化表", "飞化规则", "古法格局规则", "夫妻宮", "子女宮", "交友宮", "父母宮", "衣鉢宮", "徒弟宮", "本師宮", "小師宮", "人刀宮", "僧道宮", "遊行宮", "師號宮", "相品宮", "判词原文"],
+}
+
+# 择日派生键继承基底的 optional 集。段表按 spread 从基底继承了，optional 集此前没有——于是基底里
+# 本就「有条件才出」的段（bazi 大运 / taiyi 博弈·命法·命宫行限 / ziwei 运限 / liureng 年命上神 /
+# sanshiunited 奇门遁甲·紫微四化）对派生键成了**必出段**，v0.34.0 Windows live 验证时 5 个择日键
+# `missing_selected_sections` 非空（离线 FakeJsClient 发全集所以照绿，只有真 runtime 能抓）。
+# 择时盘是「时刻盘」没有出生信息，这些段在各 <x>ZeriSnapshot.js 里根本没有发射点（静态检索为零），
+# 所以是结构性缺席，不是接线错——按 §5.5「条件段双登记」进 optional，preset 保留供 parse 识别。
+_ZERI_MOMENT_CHART_DEAD = {
+    # 六壬 `取象` 在基底是必出段，但 liurengZeriSnapshot.js 不发射它（时刻盘无年命/课体取象）。
+    "liurengzeri": ["取象"],
+}
+# 黄历择吉的段表派生自 huangli（上方 spread），optional 也要跟着派生：v58 huangli 的 [年度吉日榜] 只在
+# opts.yearTop 时出，不继承的话每次 huanglizeri 都会误报它 missing（上游 huanglizeri 不在默认关表里）。
+AI_EXPORT_OPTIONAL_SECTIONS["huanglizeri"] = list(dict.fromkeys([
+    *AI_EXPORT_OPTIONAL_SECTIONS.get("huanglizeri", []),
+    *AI_EXPORT_OPTIONAL_SECTIONS.get("huangli", []),
+    *AI_EXPORT_DEFAULT_OFF_SECTIONS.get("huangli", []),
+]))
+for _zeri_key, _base_key in ZERI_DERIVED_KEYS:
+    AI_EXPORT_OPTIONAL_SECTIONS[_zeri_key] = list(dict.fromkeys([
+        *AI_EXPORT_OPTIONAL_SECTIONS.get(_zeri_key, []),
+        *AI_EXPORT_OPTIONAL_SECTIONS.get(_base_key, []),
+        *_ZERI_MOMENT_CHART_DEAD.get(_zeri_key, []),
+    ]))
+
+
+def normalize_planet_info_setting(raw: dict[str, Any] | None) -> dict[str, int]:
+    value = raw or {}
+    return {
+        "showHouse": 1 if value.get("showHouse") in {1, True} else 0,
+        "showRuler": 1 if value.get("showRuler") in {1, True} else 0,
+    }
+
+
+def normalize_astro_meaning_setting(raw: dict[str, Any] | None) -> dict[str, int]:
+    value = raw or {}
+    return {"enabled": 1 if value.get("enabled") in {1, True} else 0}
+
+
+def normalize_section_title(title: str | None) -> str:
+    text = f"{title or ''}".strip()
+    if not text:
+        return ""
+    if text.startswith("基于") and text.endswith("推运"):
+        return "基于X点推运"
+    if text.startswith("基于") and text.endswith("起运"):
+        return "基于X起运"
+    return text
+
+
+def map_legacy_section_title(key: str, title: str | None) -> str:
+    normalized = normalize_section_title(title)
+    if key == "calendar" and (normalized == "个性化吉日榜" or normalized.startswith(("个性化吉日榜 ", "个性化吉日榜／"))):
+        # 日子馆吉日榜段头带动态计数 `[个性化吉日榜 Top N／全年候选 M]`（riziSnapshot.js）→ 折叠成静态名
+        # （上游 aiExport.js [Q-271/ZC-17] 同式）；否则按段过滤会把整张榜单丢掉。
+        return "个性化吉日榜"
+    if key == "horary":
+        # 卜卦专题深化：诉讼/买房/怀孕 3 变体段头 [专题深化·<title>] 折叠为单占位 [专题深化·X]
+        # （与 preset 两侧归一，一个纳入开关控 3 类专题）。
+        if normalized.startswith("专题深化·"):
+            return "专题深化·X"
+    if key == "xianqin":
+        # 上游 v50 把 三星 改名为 三星·元辰（元辰 = 该星的元辰位）；旧导出/旧 skill 输出仍要能解析。
+        if normalized == "三星":
+            return "三星·元辰"
+    # v3.13.0 两处内容段改名（上游 sectionFilter.js:51 LEGACY_CONTENT_SECTION_TITLES / :91-93 / :244）：老用户存的、
+    # 外部旧导出里的旧名迁到现名。
+    # indiazeri（v3.14.0 起 = 印占段 + 择时三段）与 indiachart 同一套段头归一。
+    if key in ("indiachart", "indiazeri") and normalized == "分盘吉位 Vimśopaka":
+        return "分盘吉位 Vaiśeṣikāṁśa"
+    if key == "fengshui" and normalized == "成員卦象":
+        return "成员卦象"
+    if key in ("indiachart", "indiazeri"):
+        # 座运（Rāśi daśā）有 11 个变体（Narayana/Sudasa/Drig/Kalachakra…），上游 preset 以单个占位
+        # 段名 `座运·X` 登记整族（同 horary 专题深化·X 的做法），实际段头是 [座运·<变体>]。
+        if normalized.startswith("座运·"):
+            return "座运·X"
+    if key == "primarydirect":
+        # 上游 v48 段名对齐：旧名 主/界限法设置|表格 → 新 canonical 主限法设置|表格（外部旧导出/旧 skill 输出兼容）。
+        if normalized == "主/界限法设置":
+            return "主限法设置"
+        if normalized == "主/界限法表格":
+            return "主限法表格"
+    # acg：本仓旧段名 行星线经度 已并入上游的单段 占星地图（口径 + 线表同段）。老用户自定义勾选里
+    # 的旧名要能映射过来，否则会被当成 unknown 段静默丢弃。独立 if：下面 tongshefa 起是一条 elif 链。
+    # jinkou：本仓旧版 JinKouDoc 的 JINKOU_CATEGORY_RULES 只有「求财」一条，段头被写死成
+    # 分类用神·求财；重 vendor 后是上游的 13 类，段名回归 分类用神。
+    # 推运族 5 键：上游 v50 的段结构是 [本命盘配置]/[起盘信息]/[时段盘配置]/[相位]，本仓旧名带
+    # 「本命盘/推运盘/返照盘/流年盘」前缀。严格限定这 5 键——primarydirect / primarydirchart /
+    # zodialrelease 的 preset 也含「本命盘星与虚点」，它们各有独立欠账，不能被误映射。
+    if key in {"profection", "solararc", "solarreturn", "lunarreturn", "givenyear"}:
+        _PREDICTIVE_LEGACY = {
+            "本命盘起盘信息": "本命盘配置",
+            "本命盘星与虚点": "本命盘配置",
+            "推运盘起盘信息": "起盘信息",
+            "返照盘起盘信息": "起盘信息",
+            "流年盘起盘信息": "起盘信息",
+            "推运盘星与虚点": "时段盘配置",
+            "返照盘星与虚点": "时段盘配置",
+            "流年盘星与虚点": "时段盘配置",
+            "推运盘相位": "相位",
+            "返照盘相位": "相位",
+            "流年盘相位": "相位",
+            # 上游 v24（sectionFilter.js:83-87）：旧 [星盘信息] 拆成 [本命盘配置]+[时段盘配置]，存档旧名迁到时段盘配置。
+            "星盘信息": "时段盘配置",
+        }
+        if title in _PREDICTIVE_LEGACY:
+            return _PREDICTIVE_LEGACY[title]
+    if key == "jaynesprog" and normalized == "赤纬推运（Jayne Declination）":
+        # 上游 v31（sectionFilter.js:98-101）：首段名对齐 builder 实产「赤纬推运（Declination）」。
+        return "赤纬推运（Declination）"
+    if key == "jinkou" and title == "分类用神·求财":
+        return "分类用神"
+    if key == "acg" and title == "行星线经度":
+        return "占星地图"
+    if key == "tongshefa":
+        if normalized == "互潜":
+            return "潜藏"
+        if normalized == "错亲":
+            return "亲和"
+        if normalized == "统摄法起盘":
+            return "本卦"
+    elif key == "qimen":
+        if normalized == "八宫":
+            return "八宫详解"
+        if normalized == "演卦":
+            return "奇门演卦"
+        if normalized == "九宫":
+            return "九宫方盘"
+        if normalized in {"右侧栏目", "概览"}:
+            return "盘面要素"
+    elif key == "liureng":
+        if normalized.startswith("三传("):
+            return "三传"
+    elif key == "sanshiunited":
+        if normalized == "状态":
+            return "概览"
+        if normalized == "八宫":
+            return "八宫详解"
+        if normalized == "大格":
+            return "六壬大格"
+        if normalized == "小局":
+            return "六壬小局"
+        if normalized == "参考":
+            return "六壬参考"
+        if normalized == "六壬格局概览":
+            return "六壬概览"
+    elif key == "sixyao":
+        if normalized == "起卦方式":
+            return "卦象"
+        if normalized == "卦辞":
+            return "卦辞与断语"
+    elif key == "canping":
+        # canonical 名 = 上游 aiExport 现在声明的、也是 canpingLocal.buildSnapshotText 实际吐出的
+        # 歲運 后缀名。skill 早期把它们折叠成短名 大运/流年，方向反了——现在以上游为准，短名保留
+        # 为向后兼容（旧 skill 版本导出的文本仍能解析）。
+        if normalized == "大运":
+            return "大运·歲運"
+        if normalized == "流年":
+            return "流年·歲運"
+    elif key == "heluo":
+        # 同上：canonical = 上游长名。老版动态卦名段 [先天·<卦> 元堂爻辞] 与 skill 早期短名一并归一。
+        if normalized.startswith("先天·") or normalized == "先天卦":
+            return "先天卦·元堂爻辞"
+        if normalized.startswith("后天·") or normalized == "后天卦":
+            return "后天卦·元堂爻辞"
+        if normalized == "大限":
+            return "大限·岁运"
+        if normalized == "流年":
+            return "流年·岁运"
+    return normalized
+
+
+def unique_list(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for item in items:
+        value = f"{item or ''}".strip()
+        if value and value not in seen:
+            seen.add(value)
+            output.append(value)
+    return output
+
+
+def get_meaning_setting_meta(key: str) -> dict[str, str]:
+    if key in AI_EXPORT_HOVER_MEANING_TECHNIQUES:
+        return {
+            "title": "悬浮注释（仅AI导出）：",
+            "checkbox": "在对应分段输出六壬/遁甲/占星悬浮注释",
+        }
+    if key in AI_EXPORT_ASTRO_MEANING_TECHNIQUES:
+        return {
+            "title": "占星注释（仅AI导出）：",
+            "checkbox": "在对应分段输出星/宫/座/相/希腊点释义",
+        }
+    return {"title": "", "checkbox": ""}
+
+
+def get_technique_info(key: str) -> dict[str, Any] | None:
+    base = next((item for item in AI_EXPORT_TECHNIQUES if item["key"] == key), None)
+    if base is None:
+        return None
+    meaning_meta = get_meaning_setting_meta(key)
+    supports_planet_info = key in AI_EXPORT_PLANET_INFO_TECHNIQUES
+    supports_astro_meaning = key in AI_EXPORT_ASTRO_MEANING_TECHNIQUES
+    supports_hover_meaning = key in AI_EXPORT_HOVER_MEANING_TECHNIQUES
+    return {
+        "key": base["key"],
+        "label": base["label"],
+        "preset_sections": deepcopy(AI_EXPORT_PRESET_SECTIONS.get(key, [])),
+        "forbidden_sections": deepcopy(AI_EXPORT_FORBIDDEN_SECTIONS.get(key, [])),
+        # 默认关段并入 optional：二者对解析器的意思相同（缺席不算漏）；default_off_sections 单列，
+        # 让调用方能区分「本盘没这段」与「这段体量大、默认不给，要就明说」。
+        "optional_sections": deepcopy(
+            unique_list(
+                list(AI_EXPORT_OPTIONAL_SECTIONS.get(key, []))
+                + list(AI_EXPORT_DEFAULT_OFF_SECTIONS.get(key, []))
+            )
+        ),
+        "default_off_sections": deepcopy(AI_EXPORT_DEFAULT_OFF_SECTIONS.get(key, [])),
+        "supports_planet_info": supports_planet_info,
+        "planet_info_default": deepcopy(AI_EXPORT_PLANET_INFO_DEFAULT) if supports_planet_info else None,
+        "supports_astro_meaning": supports_astro_meaning,
+        "supports_hover_meaning": supports_hover_meaning,
+        "astro_meaning_default": deepcopy(AI_EXPORT_ASTRO_MEANING_DEFAULT) if (supports_astro_meaning or supports_hover_meaning) else None,
+        "astro_meaning_title": meaning_meta["title"],
+        "astro_meaning_checkbox": meaning_meta["checkbox"],
+        "settings_template": {
+            "sections": deepcopy(AI_EXPORT_PRESET_SECTIONS.get(key, [])),
+            "planetInfo": deepcopy(AI_EXPORT_PLANET_INFO_DEFAULT) if supports_planet_info else None,
+            "astroMeaning": deepcopy(AI_EXPORT_ASTRO_MEANING_DEFAULT) if (supports_astro_meaning or supports_hover_meaning) else None,
+        },
+    }
+
+
+def build_export_registry(*, technique: str | None = None) -> dict[str, Any]:
+    """星阙 AI 导出注册表。给了 `technique` 就**只返回那一条**（v0.37.0 C9）。
+
+    🔴 `technique=` 此前只多加一个 `selected_technique`，103 条全量 techniques 照发 —— 一次
+    「我只想看奇门的导出分段」要付 70 KB，而 agent 真正读的是其中 1 条。参数在 schema 里写着
+    「聚焦某个 technique」，行为上却什么也没收窄，属于文档化了却不做事的旋钮。
+    认不出来的 key 不静默返回空表：保留全量并附 `technique_not_found`，让调用方能就地改名字。
+    """
+    techniques = [get_technique_info(item["key"]) for item in AI_EXPORT_TECHNIQUES]
+    techniques = [item for item in techniques if item is not None]
+    total = len(techniques)
+    selected = get_technique_info(technique) if technique else None
+    not_found: str | None = None
+    if technique:
+        if selected is None:
+            not_found = technique
+        else:
+            techniques = [item for item in techniques if item.get("key") == selected.get("key")]
+    return {
+        "techniques_total": total,
+        "technique_filter": technique or None,
+        "technique_not_found": not_found,
+        "source_of_truth": "Horosa-Web/astrostudyui/src/utils/aiExport.js",
+        "settings_key": AI_EXPORT_SETTINGS_KEY,
+        "settings_version": AI_EXPORT_SETTINGS_VERSION,
+        "section_migration_version": AI_EXPORT_SECTION_MIGRATION_VERSION,
+        "section_migration_keys": deepcopy(AI_EXPORT_SECTION_MIGRATION_KEYS),
+        "module_snapshot_prefix": MODULE_SNAPSHOT_PREFIX,
+        "jieqi_split_keys": list(JIEQI_SETTING_PRESETS.keys()),
+        "planet_info_default": deepcopy(AI_EXPORT_PLANET_INFO_DEFAULT),
+        "astro_meaning_default": deepcopy(AI_EXPORT_ASTRO_MEANING_DEFAULT),
+        "default_normalized_settings": {
+            "version": AI_EXPORT_SETTINGS_VERSION,
+            "sections": {},
+            "planetInfo": {},
+            "astroMeaning": {},
+        },
+        "techniques": techniques,
+        "selected_technique": selected,
+    }

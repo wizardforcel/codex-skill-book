@@ -1,0 +1,222 @@
+"""Regression tests for verified vault filesystem I/O."""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from lib.vault_index.vault_files import read_vault_file, resolve_vault_file, write_vault_file
+
+ROOT = Path(__file__).parents[1]
+
+
+def test_cli_write_and_read_preserve_literal_markdown(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    content = "# Durable note\n\n`identifier` stays literal; so do `$()` and [[links]].\n"
+
+    written = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "lib.vault_index.cli",
+            "write",
+            "wiki/note.md",
+            "--vault",
+            str(vault),
+        ],
+        cwd=ROOT,
+        input=content,
+        capture_output=True,
+        text=True,
+    )
+    read = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "lib.vault_index.cli",
+            "read",
+            "wiki/note.md",
+            "--vault",
+            str(vault),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert written.returncode == 0, written.stderr
+    assert "Wrote and verified" in written.stdout
+    assert (vault / "wiki" / "note.md").read_text() == content
+    assert read.returncode == 0, read.stderr
+    assert read.stdout == content
+
+
+def test_vault_file_path_rejects_absolute_and_escaping_paths(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+
+    with pytest.raises(ValueError, match="vault-relative"):
+        resolve_vault_file(vault, tmp_path / "outside.md")
+    with pytest.raises(ValueError, match="outside the vault"):
+        resolve_vault_file(vault, Path("../outside.md"))
+
+
+def test_vault_file_path_rejects_missing_or_non_directory_vault(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="vault does not exist"):
+        resolve_vault_file(tmp_path / "missing", Path("note.md"))
+
+    file_root = tmp_path / "file"
+    file_root.write_text("not a directory")
+    with pytest.raises(ValueError, match="vault is not a directory"):
+        resolve_vault_file(file_root, Path("note.md"))
+
+
+def test_vault_file_path_must_name_child_file(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    with pytest.raises(ValueError, match="file inside the vault"):
+        resolve_vault_file(vault, Path("."))
+
+
+def test_read_rejects_missing_file(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    with pytest.raises(FileNotFoundError, match="vault file does not exist"):
+        read_vault_file(vault, Path("missing.md"))
+
+
+def test_vault_file_path_rejects_symlink_escape(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    outside = tmp_path / "outside"
+    vault.mkdir()
+    outside.mkdir()
+    (vault / "escape").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="outside the vault"):
+        resolve_vault_file(vault, Path("escape/note.md"))
+
+
+def test_write_refuses_empty_content_and_unintended_overwrite(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+
+    with pytest.raises(ValueError, match="empty"):
+        write_vault_file(vault, Path("wiki/empty.md"), b"")
+
+    target = write_vault_file(vault, Path("wiki/note.md"), b"first\n")
+    with pytest.raises(FileExistsError):
+        write_vault_file(vault, Path("wiki/note.md"), b"second\n")
+
+    write_vault_file(vault, Path("wiki/note.md"), b"second\n", replace=True)
+    assert target.read_bytes() == b"second\n"
+    assert read_vault_file(vault, Path("wiki/note.md")) == b"second\n"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "wiki/Utility",
+        "wiki/Utility/obsidian-knowledge/changelog/session.md",
+        "wiki/topic/../Utility/obsidian-knowledge/state.md",
+    ],
+)
+def test_write_rejects_misplaced_utility_before_creating_directories(tmp_path: Path, path: str) -> None:
+    with pytest.raises(ValueError, match="Utility paths must be vault-relative"):
+        write_vault_file(tmp_path, Path(path), b"changelog\n")
+    assert not (tmp_path / "wiki").exists()
+
+
+def test_utility_write_is_anchored_to_vault_from_wiki_cwd(tmp_path: Path, monkeypatch) -> None:
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    monkeypatch.chdir(wiki)
+
+    target = write_vault_file(tmp_path, Path("Utility/obsidian-knowledge/changelog/session.md"), b"entry\n")
+
+    assert target == tmp_path / "Utility" / "obsidian-knowledge" / "changelog" / "session.md"
+    assert target.read_bytes() == b"entry\n"
+    assert not (wiki / "Utility").exists()
+
+
+def test_misplaced_utility_remains_readable_for_recovery(tmp_path: Path) -> None:
+    old = tmp_path / "wiki" / "Utility" / "obsidian-knowledge" / "old.md"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"preserved\n")
+
+    assert read_vault_file(tmp_path, Path("wiki/Utility/obsidian-knowledge/old.md")) == b"preserved\n"
+
+
+def test_write_fails_if_final_filesystem_bytes_do_not_match(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    target = (vault / "wiki" / "note.md").resolve()
+    real_read_bytes = Path.read_bytes
+
+    def read_bytes(path: Path) -> bytes:
+        if path == target and path.exists():
+            return b"corrupt"
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+    with pytest.raises(OSError, match="verification failed"):
+        write_vault_file(vault, Path("wiki/note.md"), b"expected\n")
+
+
+def test_write_fails_if_temporary_bytes_do_not_match(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    real_read_bytes = Path.read_bytes
+
+    def read_bytes(path: Path) -> bytes:
+        if path.suffix == ".tmp":
+            return b"corrupt"
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+    with pytest.raises(OSError, match="temporary write verification failed"):
+        write_vault_file(vault, Path("wiki/note.md"), b"expected\n")
+    assert not (vault / "wiki" / "note.md").exists()
+    assert list((vault / "wiki").iterdir()) == []
+
+
+def test_write_closes_descriptor_and_removes_temporary_file_when_open_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+
+    def fail_open(*args, **kwargs):
+        raise OSError("synthetic fdopen failure")
+
+    monkeypatch.setattr("lib.vault_index.vault_files.os.fdopen", fail_open)
+    with pytest.raises(OSError, match="synthetic fdopen failure"):
+        write_vault_file(vault, Path("wiki/note.md"), b"content\n")
+    assert list((vault / "wiki").iterdir()) == []
+
+
+def test_bounded_read_accepts_limit_and_rejects_overflow(tmp_path):
+    target = tmp_path / "file.bin"
+    target.write_bytes(b"\x00\xff\x80")
+    assert read_vault_file(tmp_path, Path("file.bin"), max_bytes=3) == b"\x00\xff\x80"
+    with pytest.raises(ValueError, match="exceeds"):
+        read_vault_file(tmp_path, Path("file.bin"), max_bytes=2)
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_bounded_read_rejects_invalid_limit(tmp_path, limit):
+    (tmp_path / "file.bin").touch()
+    with pytest.raises(ValueError, match="positive"):
+        read_vault_file(tmp_path, Path("file.bin"), max_bytes=limit)

@@ -1,0 +1,329 @@
+name: release-runtime
+
+# v0.38.0 A5: the hosted release pipeline. The maintainer's Mac builds only the darwin-arm64 seed (plus wheel /
+# .mcpb / SBOM) and puts it on a DRAFT release (`publish_release.sh --draft`). This workflow then:
+#   resolve        — the draft (or, for dry runs, the public release) carries the seed
+#   build-windows  — windows-latest derives the win32-x64 payload from the seed (build_runtime_release_windows.py --seed)
+#   assemble       — dual-platform manifest (tag-pinned URLs + size) + the `core_js` entry for the platform-independent JS
+#                    engine asset publish_release.sh put on the draft (v0.50.0-dev E-02), SHA256SUMS, SBOM, release verifier,
+#                    provenance attestation; uploads to the draft — the manifest reaches the release only with BOTH halves
+#   matrix         — runtime-matrix.yml installs the assembled assets on three real machines and runs the runtime
+#   publish        — sync_windows_release.py --check on the draft must say [OK]; only then `gh release edit --draft=false --latest`
+#   mcp-registry   — publish-mcp-registry.yml lists the now-public release on the official MCP Registry (v0.41.0)
+# This closes the "half a release" window for good: nothing public ever lacks its Windows half or its manifest.
+#
+# Dispatch-only. `dry_run=true` seeds from the PUBLIC assets of <version> and never uploads or publishes — the
+# acceptance run for this pipeline itself (AGENTS.md §7).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version X.Y.Z (tag v<version>); must equal pyproject unless dry_run"
+        required: true
+        type: string
+      publish:
+        description: "Flip the draft to a public latest release after the checks (never with dry_run)"
+        type: boolean
+        default: false
+      run_matrix:
+        description: "Run the real-machine runtime matrix on the assembled assets"
+        type: boolean
+        default: true
+      arm_nonblocking:
+        description: "Make the Windows-on-ARM lane advisory for this run (default: it blocks like the others)"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Seed from the public release assets of <version>; build + verify + matrix only, no upload, no publish"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: release-runtime-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  resolve:
+    if: github.repository_owner == 'Horace-Maxwell'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.info.outputs.tag }}
+      seed: ${{ steps.info.outputs.seed }}
+      windows_zip: ${{ steps.info.outputs.windows_zip }}
+      core_js: ${{ steps.info.outputs.core_js }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+      - name: Resolve tag, seed asset, and the release's draft state
+        id: info
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.version }}"
+          TAG="v${VERSION}"
+          # v0.38.1 R5: nothing goes public without the three-machine proof on the SAME bytes.
+          if [ "${{ inputs.publish }}" = "true" ] && [ "${{ inputs.run_matrix }}" != "true" ]; then
+            echo "::error::publish=true requires run_matrix=true — a release is never flipped public without the runtime matrix"; exit 1
+          fi
+          PYPROJECT_VERSION="$(python3 -c 'import tomllib,pathlib; print(tomllib.loads(pathlib.Path("horosa-skill/pyproject.toml").read_text())["project"]["version"])')"
+          if [ "${{ inputs.dry_run }}" != "true" ] && [ "${PYPROJECT_VERSION}" != "${VERSION}" ]; then
+            echo "::error::pyproject is ${PYPROJECT_VERSION} but the pipeline was asked to release ${VERSION}"; exit 1
+          fi
+          SEED="horosa-runtime-darwin-arm64-${TAG}.tar.gz"
+          INFO="$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft,assets)"
+          IS_DRAFT="$(echo "${INFO}" | python3 -c 'import json,sys; print(str(json.load(sys.stdin)["isDraft"]).lower())')"
+          HAS_SEED="$(echo "${INFO}" | python3 -c "import json,sys; print(any(a['name']=='${SEED}' for a in json.load(sys.stdin)['assets']))")"
+          echo "tag=${TAG} draft=${IS_DRAFT} seed_present=${HAS_SEED}"
+          if [ "${HAS_SEED}" != "True" ]; then
+            echo "::error::${TAG} has no ${SEED} — run publish_release.sh --draft on the maintainer Mac first"; exit 1
+          fi
+          # v0.50.0-dev E-02: the JS engine asset rides on the draft with the seed (publish_release.sh [2/9]); from the contract's
+          # core_js.since on, assemble writes it into the manifest, so a draft without it stops here, not 40 minutes later.
+          CORE_JS="horosa-core-js-${TAG}.tar.gz"
+          CORE_JS_REQUIRED="$(python3 -c 'import json,re,sys; s=json.load(open("horosa-skill/contracts/release_platforms.json"))["core_js"]["since"]; v=lambda x: tuple(int(p) for p in re.findall(r"\d+", x)[:3]); print(str(v(s) <= v(sys.argv[1])).lower())' "${VERSION}")"
+          HAS_CORE_JS="$(echo "${INFO}" | python3 -c "import json,sys; print(any(a['name']=='${CORE_JS}' for a in json.load(sys.stdin)['assets']))")"
+          echo "core_js=${CORE_JS} required=${CORE_JS_REQUIRED} present=${HAS_CORE_JS}"
+          if [ "${CORE_JS_REQUIRED}" = "true" ] && [ "${HAS_CORE_JS}" != "True" ]; then
+            echo "::error::${TAG} has no ${CORE_JS} — publish_release.sh --draft uploads it with the seed (step [2/9])"; exit 1
+          fi
+          if [ "${{ inputs.dry_run }}" != "true" ] && [ "${IS_DRAFT}" != "true" ]; then
+            echo "::error::${TAG} is already public; the pipeline only fills DRAFT releases (use dry_run=true to exercise it)"; exit 1
+          fi
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "seed=${SEED}" >> "${GITHUB_OUTPUT}"
+          echo "windows_zip=horosa-runtime-win32-x64-${TAG}.zip" >> "${GITHUB_OUTPUT}"
+          echo "core_js=${CORE_JS}" >> "${GITHUB_OUTPUT}"
+
+  build-windows:
+    needs: resolve
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      PYTHONIOENCODING: utf-8
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.12"
+      - name: Cache pinned toolchain downloads (JDK / Node / embedded CPython)
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
+        with:
+          path: horosa-skill/build/downloads
+          key: runtime-toolchain-${{ hashFiles('horosa-skill/contracts/runtime_toolchain.json') }}
+      - name: Install dependencies
+        working-directory: ./horosa-skill
+        run: uv sync --dev
+      - name: Download the darwin seed from the release
+        working-directory: ./horosa-skill
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          New-Item -ItemType Directory -Force -Path dist\runtime | Out-Null
+          gh release download "${{ needs.resolve.outputs.tag }}" --repo "$env:GITHUB_REPOSITORY" -p "${{ needs.resolve.outputs.seed }}" -D dist\runtime --clobber
+          Get-ChildItem dist\runtime
+      - name: Derive the win32-x64 payload from the seed (pinned JDK jlink / Node / embedded CPython 3.12; sdists built here)
+        working-directory: ./horosa-skill
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          # --python: the setup-python interpreter carries pip; the uv venv's does not (dry run #1 died on "No module named pip")
+          uv run python scripts/build_runtime_release_windows.py --seed "dist\runtime\${{ needs.resolve.outputs.seed }}" --out-dir dist\runtime --python "$env:pythonLocation\python.exe"
+          if (-not (Test-Path -LiteralPath "dist\runtime\${{ needs.resolve.outputs.windows_zip }}")) { throw "derived archive missing: ${{ needs.resolve.outputs.windows_zip }}" }
+      - name: Upload the derived Windows payload
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
+        with:
+          name: windows-payload
+          path: horosa-skill/dist/runtime/${{ needs.resolve.outputs.windows_zip }}
+          if-no-files-found: error
+          compression-level: 0
+
+  assemble:
+    needs: [resolve, build-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        working-directory: ./horosa-skill
+        run: uv sync --dev
+      - name: Collect both halves (seed from the release, Windows payload from build-windows)
+        working-directory: ./horosa-skill
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/runtime
+          gh release download "${{ needs.resolve.outputs.tag }}" --repo "${GITHUB_REPOSITORY}" -D dist/runtime --clobber \
+            -p "${{ needs.resolve.outputs.seed }}" -p "${{ needs.resolve.outputs.core_js }}" -p '*.mcpb' -p '*.whl' || true
+          test -f "dist/runtime/${{ needs.resolve.outputs.seed }}"
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7
+        with:
+          name: windows-payload
+          path: horosa-skill/dist/runtime
+      - name: Verify the seed-derived Python lock against the seed
+        working-directory: ./horosa-skill
+        run: uv run python scripts/verify_runtime_python_lock.py --seed "dist/runtime/${{ needs.resolve.outputs.seed }}"
+      - name: Dual-platform manifest (tag-pinned URLs + size), SHA256SUMS, SBOM
+        working-directory: ./horosa-skill
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.resolve.outputs.tag }}"
+          VERSION="${TAG#v}"
+          CORE_JS="${{ needs.resolve.outputs.core_js }}"
+          # The JS engine asset the draft carries (same bytes publish_release.sh built; never rebuilt here). A dry run of a
+          # release older than core_js.since has none — verify_runtime_release.py decides from the contract whether that is allowed.
+          CORE_JS_ARGS=()
+          if [ -f "dist/runtime/${CORE_JS}" ]; then CORE_JS_ARGS=(--core-js-archive "dist/runtime/${CORE_JS}"); fi
+          uv run python scripts/generate_release_manifest.py \
+            --version "${VERSION}" \
+            --darwin-archive "dist/runtime/${{ needs.resolve.outputs.seed }}" \
+            --windows-archive "dist/runtime/${{ needs.resolve.outputs.windows_zip }}" \
+            "${CORE_JS_ARGS[@]}" \
+            --url-base "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}" \
+            --output dist/runtime/runtime-manifest.json
+          ( cd dist/runtime && sha256sum "${{ needs.resolve.outputs.seed }}" "${{ needs.resolve.outputs.windows_zip }}" $(ls horosa-core-js-*.tar.gz *.mcpb *.whl 2>/dev/null || true) > SHA256SUMS.txt && cat SHA256SUMS.txt )
+          uv run python scripts/generate_sbom.py --project-root . --runtime-manifest dist/runtime/runtime-manifest.json --output dist/runtime/horosa-skill-sbom.json
+      - name: Verify the release set (entries, embedded manifests, native arch, size, exact platform set, JS engine asset)
+        working-directory: ./horosa-skill
+        shell: bash
+        run: |
+          set -euo pipefail
+          CORE_JS="dist/runtime/${{ needs.resolve.outputs.core_js }}"
+          CORE_JS_ARGS=()
+          if [ -f "${CORE_JS}" ]; then CORE_JS_ARGS=(--core-js-archive "${CORE_JS}"); fi
+          uv run python scripts/verify_runtime_release.py \
+            --darwin-archive "dist/runtime/${{ needs.resolve.outputs.seed }}" \
+            --windows-archive "dist/runtime/${{ needs.resolve.outputs.windows_zip }}" \
+            "${CORE_JS_ARGS[@]}" \
+            --manifest dist/runtime/runtime-manifest.json \
+            --expect-platforms darwin-arm64,win32-x64
+      - name: Upload the assembled release set (the matrix installs from this)
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
+        with:
+          name: runtime-release-assets
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            horosa-skill/dist/runtime/${{ needs.resolve.outputs.seed }}
+            horosa-skill/dist/runtime/${{ needs.resolve.outputs.windows_zip }}
+            horosa-skill/dist/runtime/${{ needs.resolve.outputs.core_js }}
+            horosa-skill/dist/runtime/runtime-manifest.json
+            horosa-skill/dist/runtime/SHA256SUMS.txt
+            horosa-skill/dist/runtime/horosa-skill-sbom.json
+      - name: Upload the Windows half, manifest, SHA256SUMS and SBOM to the draft (not on dry runs)
+        if: ${{ !inputs.dry_run }}
+        working-directory: ./horosa-skill
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "${{ needs.resolve.outputs.tag }}" --repo "${GITHUB_REPOSITORY}" --clobber \
+            "dist/runtime/${{ needs.resolve.outputs.windows_zip }}" \
+            dist/runtime/runtime-manifest.json dist/runtime/SHA256SUMS.txt dist/runtime/horosa-skill-sbom.json
+      - name: Attest build provenance (archives + manifest; the step release.yml never got to run)
+        if: ${{ !inputs.dry_run }}
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a  # v3
+        with:
+          subject-path: |
+            horosa-skill/dist/runtime/${{ needs.resolve.outputs.seed }}
+            horosa-skill/dist/runtime/${{ needs.resolve.outputs.windows_zip }}
+            horosa-skill/dist/runtime/${{ needs.resolve.outputs.core_js }}
+            horosa-skill/dist/runtime/runtime-manifest.json
+            horosa-skill/dist/runtime/SHA256SUMS.txt
+
+  matrix:
+    needs: [resolve, assemble]
+    if: ${{ inputs.run_matrix }}
+    uses: ./.github/workflows/runtime-matrix.yml
+    with:
+      source: artifact
+      artifact_name: runtime-release-assets
+      arm_nonblocking: ${{ inputs.arm_nonblocking }}
+    secrets: inherit
+
+  publish:
+    needs: [resolve, assemble, matrix]
+    # runs only when asked, never on dry runs, and only after assemble succeeded AND the matrix passed (v0.38.1 R5: a
+    # skipped matrix no longer publishes — resolve already refuses publish=true without run_matrix=true)
+    if: ${{ !cancelled() && inputs.publish && !inputs.dry_run && needs.assemble.result == 'success' && needs.matrix.result == 'success' }}
+    # 🔴 job-level permissions replace the workflow-level set: `gh release edit` needs contents: write, and the two
+    # `gh workflow run` steps after the flip need actions: write (without it GITHUB_TOKEN gets 403 — those steps were added
+    # after v0.38.0's publish and had never executed).
+    permissions:
+      contents: write
+      actions: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        working-directory: ./horosa-skill
+        run: uv sync --dev
+      # v0.38.1 R5: the bytes the three lanes installed must be the bytes on the draft. Each lane records the sha256 of the
+      # archive it installed (lane-report.json → installed_archive_sha256); the draft's assets expose GitHub's own
+      # `digest` (sha256:…), with SHA256SUMS.txt as the fallback. Any mismatch or missing lane evidence blocks the flip.
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7
+        with:
+          pattern: runtime-matrix-*
+          path: ${{ runner.temp }}/lanes
+      - name: Assert the archives the matrix installed are byte-identical to the draft assets
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+          LANES: ${{ runner.temp }}/lanes
+        run: |
+          set -euo pipefail
+          # 🔴 not `releases/tags/<tag>`: that endpoint only returns PUBLISHED releases (404 for a draft — this job runs before
+          # the flip). The list endpoint includes drafts for an authorised token.
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"${TAG}\") | .assets[] | \"\(.name) \(.digest // \"\")\"" > "${RUNNER_TEMP}/digests.txt"
+          test -s "${RUNNER_TEMP}/digests.txt" || { echo "::error::no assets found for draft ${TAG}"; exit 1; }
+          gh release download "${TAG}" --repo "${GITHUB_REPOSITORY}" -p SHA256SUMS.txt -D "${RUNNER_TEMP}" --clobber || : > "${RUNNER_TEMP}/SHA256SUMS.txt"
+          python3 horosa-skill/scripts/verify_matrix_digests.py --lanes "${LANES}" --digests "${RUNNER_TEMP}/digests.txt" --sums "${RUNNER_TEMP}/SHA256SUMS.txt" --expect-lanes 3
+      - name: The draft must be complete before it goes public (the [GAP]/[OK] verdict is authoritative)
+        working-directory: ./horosa-skill
+        run: uv run python scripts/sync_windows_release.py --check --tag "${{ needs.resolve.outputs.tag }}" --draft
+      - name: Publish the draft as latest
+        run: gh release edit "${{ needs.resolve.outputs.tag }}" --repo "${GITHUB_REPOSITORY}" --draft=false --latest
+      # A `release: published` event raised with GITHUB_TOKEN does NOT start other workflows (GitHub's anti-recursion
+      # rule) — v0.38.0's publish fired neither release-completeness nor publish-pypi. workflow_dispatch is the
+      # documented exception, so the completeness guard is dispatched explicitly here.
+      - name: Dispatch the completeness guard (release events from GITHUB_TOKEN start no workflows)
+        run: gh workflow run release-completeness.yml --repo "${GITHUB_REPOSITORY}"
+      - name: Re-check the public latest
+        working-directory: ./horosa-skill
+        run: uv run python scripts/sync_windows_release.py --check
+      # v0.38.1 R1/R5: once public, run the matrix once more in release mode — the lanes now install through the public
+      # manifest URL, i.e. a real https download of what users will fetch (the artifact-mode run above installed from file://).
+      - name: Dispatch the release-mode matrix (real https download of the public assets)
+        run: gh workflow run runtime-matrix.yml --repo "${GITHUB_REPOSITORY}" -f tag="${{ needs.resolve.outputs.tag }}"
+
+  # v0.41.0: list the now-public release on the official MCP Registry (MCPB-only entry). After `publish`, never before:
+  # the registry HEADs the .mcpb at publish time and a draft asset 404s. Versions there are immutable, so the called
+  # workflow skips a version that is already listed. Dispatch it alone for a release that is already public.
+  mcp-registry:
+    needs: [resolve, publish]
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/publish-mcp-registry.yml
+    with:
+      tag: ${{ needs.resolve.outputs.tag }}

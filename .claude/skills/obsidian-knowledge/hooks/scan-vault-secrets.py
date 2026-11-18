@@ -1,0 +1,594 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["detect-secrets", "pydantic>=2"]
+# ///
+"""Stop hook: scan the vault for leaked secrets and surface findings.
+
+Vault detection: cwd must be inside a configured vault root from
+~/.config/obsidian-knowledge/vaults.yaml. Cooldown: at most one scan
+per session per 5 minutes, tracked via a /tmp marker's mtime.
+
+First run (or missing baseline) scans Markdown notes across the vault.
+Subsequent runs hash eligible content and rescan only changed file versions.
+Host-local completion state is independent of baseline audit/alert writes. Findings merge into the baseline at
+<vault>/.secrets.baseline, preserving audit decisions on findings that
+still exist after the rescan.
+
+Implementation
+--------------
+
+Uses the detect-secrets Python API (`SecretsCollection`) directly,
+not the `detect-secrets scan` CLI. The CLI applies a heavier filter
+chain tuned for code repositories — `is_likely_id_string` and
+`is_indirect_reference` in particular drop high-entropy values that
+look like `token = "..."`, which is exactly the pattern leaked
+secrets take in prose notes. The Python API path lets us pick a
+filter set tuned for vault content.
+
+Filter set
+----------
+
+Kept (filter out non-content noise):
+- is_line_allowlisted     — sentinel support (see below)
+- is_invalid_file         — unreadable / nonexistent
+- is_non_text_file        — binary content
+- is_lock_file            — package-lock.json, etc.
+- is_swagger_file         — OpenAPI spec example values
+- is_not_alphanumeric_string
+- is_sequential_string    — "abcdef..." padding
+- hookslib.secret_filters — explicit placeholders, typed metadata and MIME images;
+  generic token assignments and weak example passwords remain auditable
+
+Dropped (would suppress prose-note leaks):
+- is_likely_id_string     — drops 'token = "..."' as "looks like an ID"
+- is_indirect_reference   — drops anything resembling a variable ref
+- is_potential_uuid
+- is_templated_secret
+- is_prefixed_with_dollar_sign
+
+Allowlist sentinel
+------------------
+
+To mark a finding as not-a-secret without auditing the baseline,
+append a comment to the line:
+
+    token = "fake-example"  <!-- pragma: allowlist secret -->     (markdown / xml)
+    token = "fake-example"  # pragma: allowlist secret            (yaml / sh / py)
+    token = "fake-example"  // pragma: allowlist secret           (js / go / java)
+    -- pragma: allowlist secret                                   (sql)
+
+`is_line_allowlisted` recognises the sentinel for the comment style
+matching the file extension, plus all comment styles for unknown
+extensions.
+
+Marking false positives in the baseline (alternative)
+-----------------------------------------------------
+
+For findings already in the baseline, run in the vault root with the active
+plugin hooks directory on PYTHONPATH (needed to import the custom filters):
+
+    detect-secrets audit .secrets.baseline
+
+This walks each finding and lets you mark it real / false-positive
+once, persisting the decision so future scans don't re-surface it.
+
+Known-leaked literal blacklist
+------------------------------
+
+detect-secrets misses low-entropy passwords mentioned in narrative
+text (no `password=value` keyword pattern, dictionary words below the
+entropy threshold). To catch those, this hook also greps for literal
+strings listed one-per-line in `<vault>/.secrets.known-leaked`:
+
+    # Comments and blank lines ignored.
+    legacy-password-1
+    some-other-leaked-string
+
+Each match becomes a separate finding in the surfaced reminder. The
+file itself is excluded from scanning. Add a string here once you've
+discovered a real password leaked into vault narrative — future
+re-introductions of the same string will be flagged immediately.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+from types import ModuleType
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from detect_secrets.core.secrets_collection import SecretsCollection
+
+from pydantic import BaseModel
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from hookslib.secret_alerts import ALERTED_KEY, baseline_lock, record_alerts, sync_needs_attention
+from hookslib.secret_progress import (
+    ScanProgress,
+    content_version,
+    finding_versions,
+    fingerprint_findings,
+    scan_completed,
+)
+from hookslib.stop_hook import emit_block, in_cooldown, read_input
+from hookslib.vault_config import is_in_vault, load_vault_roots, matching_vault_root
+
+# detect_secrets is imported lazily inside run_scan() so this module
+# can be imported in environments that don't have it installed (e.g.
+# unit tests that exercise only load_known_leaked / scan_known_leaked).
+# At runtime the script is launched via `uv run --script`, which
+# resolves the inline PEP 723 dep block at the top of the file.
+
+# Hidden dirs (anything starting with '.') are tooling/state, not user
+# content — skipping them avoids torrents of false positives in
+# `.foam/`, etc. _sources/ holds read-only
+# originals (tax, legal); not scannable by hook policy anyway.
+SKIP_NAMED_DIRS = {"_sources", "node_modules"}
+
+SCANNED_EXT = ".md"
+SCAN_BATCH_SIZE = 200
+
+KNOWN_LEAKED_FILENAME = ".secrets.known-leaked"
+BASELINE_FILENAME = ".secrets.baseline"
+# Increment when detector/filter semantics change so unchanged files are rechecked.
+SCAN_POLICY_VERSION = 4
+
+
+class BaselineScanPolicy(BaseModel):
+    vault_filter_revision: int = 0
+
+
+def scan_policy_is_current(baseline_path: Path) -> bool:
+    try:
+        state = BaselineScanPolicy.model_validate_json(baseline_path.read_text())
+    except (OSError, ValueError):
+        return False
+    return state.vault_filter_revision == SCAN_POLICY_VERSION
+
+
+# Cap reported known-leaked matches per scan to keep the reminder
+# readable. Once one literal hits dozens of files, the agent has
+# enough signal — listing each occurrence drowns the reminder.
+KNOWN_LEAKED_SAMPLE_LIMIT = 10
+UNAUDITED_SAMPLE_LIMIT = 10
+
+PLUGINS = [
+    "AWSKeyDetector",
+    "ArtifactoryDetector",
+    "AzureStorageKeyDetector",
+    "Base64HighEntropyString",
+    "BasicAuthDetector",
+    "CloudantDetector",
+    "DiscordBotTokenDetector",
+    "GitHubTokenDetector",
+    "GitLabTokenDetector",
+    "HexHighEntropyString",
+    "IbmCloudIamDetector",
+    "IbmCosHmacDetector",
+    "JwtTokenDetector",
+    "KeywordDetector",
+    "MailchimpDetector",
+    "NpmDetector",
+    "OpenAIDetector",
+    "PrivateKeyDetector",
+    "PypiTokenDetector",
+    "SendGridDetector",
+    "SlackDetector",
+    "SoftlayerDetector",
+    "SquareOAuthDetector",
+    "StripeDetector",
+    "TelegramBotTokenDetector",
+    "TwilioKeyDetector",
+]
+
+DETECT_SECRETS_CFG = {
+    "plugins_used": [{"name": p} for p in PLUGINS],
+    "filters_used": [
+        {"path": "detect_secrets.filters.allowlist.is_line_allowlisted"},
+        {"path": "hookslib.secret_filters.is_vault_noncredential"},
+        {"path": "hookslib.secret_filters.is_android_ui_boolean"},
+        {"path": "detect_secrets.filters.common.is_invalid_file"},
+        {"path": "detect_secrets.filters.heuristic.is_non_text_file"},
+        {"path": "detect_secrets.filters.heuristic.is_lock_file"},
+        {"path": "detect_secrets.filters.heuristic.is_swagger_file"},
+        {"path": "detect_secrets.filters.heuristic.is_not_alphanumeric_string"},
+        {"path": "detect_secrets.filters.heuristic.is_sequential_string"},
+    ],
+}
+
+
+def find_files(root: str) -> list[str]:
+    """Enumerate Markdown files completely; failed discovery cannot mean deletion."""
+
+    def abort(error: OSError) -> None:
+        raise error
+
+    out: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root, onerror=abort):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".") and d not in SKIP_NAMED_DIRS]
+        for fn in filenames:
+            if os.path.splitext(fn)[1].lower() != SCANNED_EXT:
+                continue
+            absolute = os.path.join(dirpath, fn)
+            try:
+                status = os.stat(absolute)
+            except FileNotFoundError:
+                continue  # Removed after enumeration; a real deletion, unlike an unreadable path.
+            if stat.S_ISREG(status.st_mode):
+                out.append(os.path.relpath(absolute, root))
+    return out
+
+
+def run_scan(
+    baseline_path: Path,
+    vault_root: str,
+    scan_paths: list[str],
+    all_paths: list[str],
+) -> dict[str, str]:
+    """Scan `scan_paths` and merge into baseline at `baseline_path`.
+
+    All path arguments are vault-relative. `scan_paths` are files
+    we'll rescan (changed since last scan). `all_paths` is every
+    currently-existing scannable file — used to drop baseline entries
+    for files that have been deleted or renamed since the prior scan.
+
+    Audit decisions on unchanged findings are preserved. Unchanged
+    files keep their old `PotentialSecret` objects (with audit flags
+    intact). Rescanned files get fresh `PotentialSecret` objects (no
+    audit flags); `merge()` then copies audit flags forward from the
+    old baseline where the secret hash still matches.
+    """
+    from detect_secrets.core import baseline as ds_baseline
+    from detect_secrets.core.secrets_collection import SecretsCollection
+    from detect_secrets.settings import transient_settings
+
+    with transient_settings(DETECT_SECRETS_CFG):
+        # `root=vault_root` makes scans behave as-if cwd were the vault
+        # root: stored filenames are vault-relative, audit flags survive
+        # baseline reload regardless of where the hook was invoked from.
+        fresh_sc = SecretsCollection(root=vault_root)
+        # Incremental hooks must work without multiprocessing sockets, including
+        # Python 3.14 forkserver sockets denied by restricted agent sandboxes.
+        completed = [path for path in scan_paths if scan_completed(fresh_sc.scan_file, path)]
+
+        old_sc: SecretsCollection | None = None
+        if baseline_path.exists():
+            try:
+                old_data = ds_baseline.load_from_file(str(baseline_path))
+                old_sc = SecretsCollection.load_from_baseline(old_data)
+            except Exception:  # allow: exception-handling  (invalid baseline → rescan from scratch)
+                old_sc = None
+
+        result_sc = SecretsCollection(root=vault_root)
+        rescanned = set(completed)
+        if old_sc is not None:
+            # Carry forward old findings for files we did NOT rescan
+            # and that still exist. The PotentialSecret objects retain
+            # their audit flags as-is.
+            still_present = set(all_paths)
+            for fp in list(old_sc.files):
+                if fp not in rescanned and fp in still_present:
+                    result_sc.data[fp] = old_sc.data[fp]
+
+        # Add fresh scan findings (audit flags blank — populated by
+        # merge() below where old finding hash still matches).
+        for fp in fresh_sc.files:
+            if fp in rescanned:
+                result_sc.data[fp] = fresh_sc.data[fp]
+
+        if old_sc is not None:
+            result_sc.merge(old_sc)
+        _drop_same_value_duplicates(result_sc)
+
+        findings = _save_if_changed(result_sc, baseline_path, ds_baseline)
+        return {path: findings.get(path, "") for path in completed}
+
+
+def _drop_same_value_duplicates(result_sc: SecretsCollection) -> None:
+    """Keep one finding per (file, secret) when several detectors match one value.
+
+    Prefer a finding that already carries an audit decision, so one audit covers the value.
+    """
+    for filename, secrets in result_sc.data.items():
+        by_hash: dict[str, Any] = {}
+        for secret in sorted(secrets, key=lambda s: (s.is_secret is None, s.type)):
+            by_hash.setdefault(secret.secret_hash, secret)
+        result_sc.data[filename] = set(by_hash.values())
+
+
+def _save_if_changed(
+    result_sc: SecretsCollection, baseline_path: Path, ds_baseline: ModuleType
+) -> dict[str, str]:
+    """Write baseline only if findings differ from existing on disk.
+
+    detect_secrets stamps `generated_at` on every save_to_file call. With
+    multiple concurrent Claude Code sessions on the same host (and across
+    sync peers), unconditional saves produce timestamp-only diffs that
+    Syncthing flags as `.secrets.sync-conflict-*.baseline` files. Compare
+    the would-be JSON to the on-disk JSON ignoring volatile fields, and
+    skip the write when they match.
+    """
+    import tempfile
+
+    volatile_keys = {"generated_at"}
+
+    def _normalize(d: dict[str, Any]) -> dict[str, Any]:
+        return {k: v for k, v in d.items() if k not in volatile_keys}
+
+    # NOTE: docs/hooks.md, Secret scanning: keep atomic staging hidden from vault watchers.
+    with tempfile.NamedTemporaryFile(
+        mode="w", prefix=".secrets-scan-", suffix=".baseline", delete=False, dir=baseline_path.parent
+    ) as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        ds_baseline.save_to_file(result_sc, str(tmp_path))
+        new_data = json.loads(tmp_path.read_text())
+        new_data["vault_filter_revision"] = SCAN_POLICY_VERSION
+        old_data: dict[str, Any] = {}
+        if baseline_path.exists():
+            try:
+                old_data = json.loads(baseline_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                old_data = {}
+        if ALERTED_KEY in old_data:
+            new_data[ALERTED_KEY] = old_data[ALERTED_KEY]
+        if not old_data or _normalize(old_data) != _normalize(new_data):
+            tmp_path.write_text(json.dumps(new_data, indent=2) + "\n")
+            tmp_path.replace(baseline_path)
+        return fingerprint_findings(new_data["results"])
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
+def count_unaudited(baseline_path: Path) -> tuple[int, list[str]]:
+    """Return (count, sample) for unaudited (is_secret=null) findings."""
+    try:
+        data = json.loads(baseline_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return 0, []
+    results = data.get("results", {})
+    sample: list[str] = []
+    count = 0
+    for filepath, findings in results.items():
+        for f in findings:
+            if f.get("is_secret") is None:
+                count += 1
+                if len(sample) < UNAUDITED_SAMPLE_LIMIT:
+                    sample.append(f"{filepath}:{f.get('line_number', '?')} ({f.get('type', 'unknown')})")
+    return count, sample
+
+
+REMINDER_TEMPLATE = (
+    "detect-secrets found {count} unaudited finding(s) in the vault:\n"
+    "{sample}\n"
+    "Each file is tracked in Utility/obsidian-knowledge/needs-attention.md; the Stop hook "
+    "alerts once per finding.\n"
+    "Remediate each per the vault's documented secrets-management convention "
+    "(search the vault for it; if missing, ask the user). For real secrets: "
+    "store via the vault's password-manager workflow, replace inline with a "
+    "reference, then re-scan.\n"
+    "For false positives, mark inline with a sentinel comment on the same "
+    "line (works in markdown, yaml, code, etc):\n"
+    "    <!-- pragma: allowlist secret -->     # markdown / html / xml\n"
+    "    # pragma: allowlist secret             # yaml / sh / py\n"
+    "    // pragma: allowlist secret            # js / go / c\n"
+    "Or batch-audit existing findings in the baseline:\n"
+    "    detect-secrets audit .secrets.baseline\n"
+    "Include the active plugin hooks directory on PYTHONPATH so the custom "
+    "baseline filters can be imported."
+)
+
+KNOWN_LEAKED_REMINDER_TEMPLATE = (
+    "Known-leaked literal(s) from .secrets.known-leaked still present in vault "
+    "({count} occurrence(s) across {file_count} file(s); showing up to "
+    f"{KNOWN_LEAKED_SAMPLE_LIMIT}):\n"
+    "{sample}\n"
+    "Each match is a verbatim copy of a string you previously flagged as "
+    "leaked. Redact the occurrence (replace with a reference to the password "
+    "manager) or remove the literal from .secrets.known-leaked if it's no "
+    "longer sensitive."
+)
+
+
+def load_known_leaked(vault_root: str) -> list[str]:
+    """Read literal blacklist from <vault>/.secrets.known-leaked.
+
+    One literal per line. Lines that are blank or start with `#` are
+    ignored (comments). Returns [] if the file is absent or unreadable.
+    """
+    path = Path(vault_root) / KNOWN_LEAKED_FILENAME
+    try:
+        text = path.read_text()
+    except (OSError, UnicodeDecodeError):
+        return []
+    out: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        out.append(stripped)
+    return out
+
+
+def scan_known_leaked(
+    vault_root: str, rel_paths: list[str], literals: list[str]
+) -> tuple[int, int, list[str]]:
+    """Grep `rel_paths` (vault-relative) for literal occurrences in `literals`.
+
+    Returns `(total_matches, files_with_matches, sample)` where
+    `sample` is a list of `path:line_number :: literal` strings
+    (paths reported as vault-relative), capped at
+    KNOWN_LEAKED_SAMPLE_LIMIT.
+    """
+    if not rel_paths or not literals:
+        return 0, 0, []
+    total = 0
+    files_hit: set[str] = set()
+    sample: list[str] = []
+    for rel in rel_paths:
+        absolute = os.path.join(vault_root, rel)
+        try:
+            with open(absolute, encoding="utf-8", errors="replace") as f:
+                for lineno, line in enumerate(f, start=1):
+                    for index, literal in enumerate(literals, start=1):
+                        if literal in line:
+                            total += 1
+                            files_hit.add(rel)
+                            # Never echo the literal: this text lands in agent context.
+                            if len(sample) < KNOWN_LEAKED_SAMPLE_LIMIT:
+                                sample.append(f"{rel}:{lineno} :: known-leaked literal #{index}")
+        except OSError:
+            continue
+    return total, len(files_hit), sample
+
+
+def scan_and_track(
+    baseline_path: Path, vault_root: str, *, manual: bool, full: bool = False
+) -> tuple[int, list[str], list[str], int, int]:
+    """Select and complete exact file versions under the host lock, then track alerts."""
+    # NOTE: docs/hooks.md documents content progress and conservative rescan triggers.
+    with baseline_lock(vault_root, wait=manual) as lock_path:
+        progress_path = lock_path.with_suffix(".json")
+        progress = ScanProgress.load(progress_path)
+        all_paths = find_files(vault_root)
+        versions = {path: content_version(Path(vault_root) / path) for path in all_paths}
+        findings = finding_versions(baseline_path)
+        if full or progress.revision != SCAN_POLICY_VERSION or not scan_policy_is_current(baseline_path):
+            findings = None
+        completed = {
+            path: entry
+            for path, entry in progress.files.items()
+            if path in versions and findings is not None and entry[1] == findings.get(path, "")
+        }
+        scan_paths = [
+            path
+            for path, version in versions.items()
+            if version is not None and completed.get(path, ("", ""))[0] != version[0]
+        ]
+        for start in range(0, max(1, len(scan_paths)), SCAN_BATCH_SIZE):
+            batch = scan_paths[start : start + SCAN_BATCH_SIZE]
+            scanned = run_scan(baseline_path, vault_root, batch, all_paths)
+            for path in batch:
+                version = versions[path]
+                if (
+                    path in scanned
+                    and version is not None
+                    and content_version(Path(vault_root) / path) == version
+                ):
+                    completed[path] = (version[0], scanned[path])
+                else:
+                    completed.pop(path, None)
+            ScanProgress(revision=SCAN_POLICY_VERSION, files=completed).save(progress_path)
+        unaudited = count_unaudited(baseline_path)
+        new_count, new_sample, unaudited_paths = record_alerts(baseline_path, UNAUDITED_SAMPLE_LIMIT)
+        sync_needs_attention(vault_root, unaudited_paths)
+    count, sample = unaudited if manual else (new_count, new_sample)
+    return count, sample, all_paths, len(scan_paths), len(all_paths) - len(completed)
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Scan vault for leaked secrets (Stop hook by default; --manual for on-demand scans)."
+    )
+    parser.add_argument(
+        "--manual",
+        action="store_true",
+        help="Manual run: skip cooldown + stdin payload; print findings to stdout.",
+    )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Manual mode: rescan all eligible files, preserving audit decisions.",
+    )
+    parser.add_argument("--background", action="store_true", help="Report findings on the next Claude turn.")
+    return parser.parse_args(argv)
+
+
+def scan_messages(vault_root: str, all_paths: list[str], count: int, sample: list[str]) -> list[str]:
+    # Known-leaked literals: walk every file in the vault, not just
+    # changed-content ones, so a literal added to .secrets.known-leaked
+    # surfaces existing occurrences immediately.
+    literals = load_known_leaked(vault_root)
+    leaked_count, leaked_files, leaked_sample = scan_known_leaked(vault_root, all_paths, literals)
+
+    messages: list[str] = []
+    if count > 0:
+        sample_block = "\n".join(f"  {s}" for s in sample)
+        messages.append(REMINDER_TEMPLATE.format(count=count, sample=sample_block))
+    if leaked_count > 0:
+        leaked_block = "\n".join(f"  {s}" for s in leaked_sample)
+        messages.append(
+            KNOWN_LEAKED_REMINDER_TEMPLATE.format(
+                count=leaked_count,
+                file_count=leaked_files,
+                sample=leaked_block,
+            )
+        )
+
+    return messages
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv if argv is not None else sys.argv[1:])
+
+    if not is_in_vault(os.getcwd()):
+        if args.manual:
+            print(
+                "Not inside a configured vault root. Configure ~/.config/obsidian-knowledge/vaults.yaml.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        sys.exit(0)
+
+    if not args.manual:
+        payload = read_input()
+        if in_cooldown(payload, marker_basename="secrets-scan"):
+            sys.exit(0)
+
+    vault_root = matching_vault_root(os.getcwd(), load_vault_roots())
+    if not vault_root:
+        if args.manual:
+            print("cwd not inside any configured vault.", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
+
+    baseline_path = Path(vault_root) / BASELINE_FILENAME
+    try:
+        count, sample, all_paths, attempted, pending = scan_and_track(
+            baseline_path, vault_root, manual=args.manual, full=args.full
+        )
+    except BlockingIOError:
+        if args.manual:
+            raise
+        sys.exit(0)  # Another session owns this scan.
+
+    messages = scan_messages(vault_root, all_paths, count, sample)
+
+    if args.manual:
+        if pending:
+            messages.append(f"detect-secrets: {pending} file(s) remain pending; scan incomplete.")
+        if not messages:
+            messages.append(
+                f"detect-secrets: clean. Scanned {attempted} file(s) out of {len(all_paths)} in vault."
+            )
+        print("\n\n".join(messages))
+        sys.exit(0)
+
+    if not messages:
+        sys.exit(0)
+    reason = "\n\n".join(messages)
+    if args.background:
+        json.dump({"systemMessage": reason}, sys.stdout)
+    else:
+        emit_block(reason)
+
+
+if __name__ == "__main__":
+    main()

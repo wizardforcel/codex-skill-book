@@ -1,0 +1,221 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+
+# The default for every job below. A job that needs more declares it itself;
+# an explicit floor here means a new job cannot silently inherit an org
+# setting somebody widened.
+permissions:
+  contents: read
+
+jobs:
+  # THE ESTATE FLOOR, defined once in dbhq-uk/.github (dbhq-uk/.github#4):
+  # SKILL.md frontmatter parses as YAML and names its directory, plugin.json
+  # parses and carries no version, skill paths are braced, every shell script
+  # passes bash -n and shellcheck (the root installers and hooks/send-gate.sh
+  # included), ruff E9,F, which covers what the Python parse check here used
+  # to, and no em or en dashes. Pinned by SHA; Dependabot moves the pin.
+  floor:
+    uses: dbhq-uk/.github/.github/workflows/skill-floor.yml@af131df509f44eb9abfe8b37ad6299c11f496c5f
+
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # md_to_html shells out to pandoc, and the suite SKIPS its tests when pandoc
+      # is absent. The runner has no pandoc, so without this those assertions would
+      # quietly not run - and md_to_html builds the HTML body of every email the
+      # skill sends. A skipped test in a green build is the bug we are fixing here.
+      - name: Install pandoc (required by the md_to_html tests)
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends pandoc
+
+      # The suites are offline: they extract the real functions from the scripts
+      # and exercise them against a mocked api_call, so no account or network is
+      # needed. Discovered rather than listed, so a new *_test.sh is picked up.
+      - name: Run unit tests
+        run: |
+          fail=0
+          found=0
+          skipped=0
+          while IFS= read -r t; do
+            found=1
+            echo "::group::$t"
+            out=$(bash "$t" 2>&1) || fail=1
+            printf '%s\n' "$out"
+            if printf '%s\n' "$out" | grep -q '^skip - '; then skipped=1; fi
+            echo "::endgroup::"
+          done < <(find skills -name '*_test.sh' | sort)
+          if [ "$found" -eq 0 ]; then
+            echo "::error::No test suites found - the runner is not testing anything."
+            exit 1
+          fi
+          if [ "$skipped" -ne 0 ]; then
+            echo "::error::A suite skipped tests (missing dependency). CI must install it and run them."
+            fail=1
+          fi
+          exit $fail
+
+  # macOS, because the README says the skill runs there and every other job is
+  # Linux. BSD date and dd differ from GNU in ways that broke the calendar's
+  # date window and large attachments on a Mac while every Linux check passed.
+  # These suites run with the Mac's own date, dd, sed and awk, and with
+  # /bin/bash, which is bash 3.2: that is what a script's #!/bin/bash gets on a
+  # user's Mac, so a newer bash on PATH must not stand in for it. The md_to_html
+  # tests skip here (no pandoc); the Linux job runs them.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Show the tools under test
+        run: |
+          /bin/bash --version | head -1
+          jq --version
+          # BSD date: -v works and -d does not.
+          date -v+1d +%F
+          if date -d today >/dev/null 2>&1; then echo "::error::date is GNU, not BSD"; exit 1; fi
+
+      - name: Run the offline suites with /bin/bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/bash32"
+          ln -sf /bin/bash "$RUNNER_TEMP/bash32/bash"
+          export PATH="$RUNNER_TEMP/bash32:$PATH"
+          fail=0
+          for t in helpers_test calendar_test graph_test token_test; do
+            echo "::group::$t"
+            /bin/bash "skills/outlook/tests/$t.sh" || fail=1
+            echo "::endgroup::"
+          done
+          exit $fail
+
+  outlook-to-md:
+    name: outlook-to-md (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Hard 3.9 floor: parse_email_address annotates `tuple[str, str]` at
+        # runtime with no `from __future__ import annotations`, so PEP 585
+        # builtin generics must exist for the module to import at all.
+        python-version: ['3.9', '3.11', '3.13']
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test dependencies
+        working-directory: skills/outlook-to-md
+        # PyYAML is for the tests only: they parse every frontmatter block the
+        # archive writes. The tool itself does not need it.
+        run: |
+          python -m pip install --upgrade pip pytest pyyaml
+          python -m pip install -r requirements.txt
+
+      - name: Run test suite
+        working-directory: skills/outlook-to-md
+        run: python -m pytest tests/ -v -p no:cacheprovider
+
+  # A real PST, converted end to end, on the newest Python the matrix runs. The
+  # suite above stubs readpst; this job proves the whole path: readpst from
+  # pst-utils, the .eml tree it writes, and the archive that comes out.
+  #
+  # The PST is the public Enron sample that pst-extractor (MIT) ships as test
+  # data. It is fetched at a pinned commit and checked against its hash, so it
+  # cannot change under the test. readpst 0.6.76 recovers 71 messages in 5
+  # folders from it, with 70 attachments, every time.
+  #
+  # It did not always. The count used to vary between runs of the same readpst
+  # build, from 67 to 71, with "Errors: 0". The cause was readpst's parallel
+  # jobs: with -e it may split one folder's messages across jobs, and then it
+  # sometimes never writes the last few. It exits 0 and says nothing. The tool
+  # now runs readpst with -j 0, which turns the jobs off, and the same PST gave
+  # 71 in every one of 75 local runs (the default gave 68 to 71). So the floors
+  # below are the full count: a run that loses one message fails. If a new
+  # pst-utils build recovers a different number, look at why before moving
+  # them.
+  outlook-to-md-pst:
+    name: outlook-to-md (real PST, py3.13)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+
+      - name: Install readpst (pst-utils)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends pst-utils
+          readpst -V | head -1
+
+      - name: Install the documented requirements
+        working-directory: skills/outlook-to-md
+        run: |
+          python -m pip install --upgrade pip pyyaml
+          python -m pip install -r requirements.txt
+
+      - name: Fetch the sample PST
+        run: |
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/enron.pst" \
+            "https://raw.githubusercontent.com/epfromer/pst-extractor/7d08ef9bc7112c23275fa948306c76bba6e24fba/src/__tests__/testdata/enron.pst"
+          echo "6152489de3472be6f1f840935d34b6dbf5f62b025dd015929ea9cf66eb5a5b46  $RUNNER_TEMP/enron.pst" | sha256sum -c -
+
+      # The tool's own readpst command, three times. If the three file lists
+      # differ, readpst is dropping messages at random again, and the counts
+      # in the next step would be measuring luck.
+      - name: readpst writes the same files on every run
+        run: |
+          python - "$RUNNER_TEMP/enron.pst" "$RUNNER_TEMP/determinism" <<'PY'
+          import subprocess, sys
+          from pathlib import Path
+          sys.path.insert(0, "skills/outlook-to-md/scripts")
+          import outlook_to_md
+          pst, base = Path(sys.argv[1]), Path(sys.argv[2])
+          ex = outlook_to_md.EmailExtractor(pst_path=pst, output_dir=base / "unused")
+          lists = []
+          for i in range(3):
+              out = base / f"run{i}"
+              out.mkdir(parents=True)
+              cmd = ex.readpst_command(out)
+              subprocess.run(cmd, check=True, capture_output=True)
+              lists.append(sorted(str(p.relative_to(out)) for p in out.rglob("*.eml")))
+          print(" ".join(cmd[:-3]), "wrote", [len(files) for files in lists], ".eml files")
+          for i in (1, 2):
+              assert lists[i] == lists[0], (
+                  f"run {i} differs from run 0: "
+                  f"missing {sorted(set(lists[0]) - set(lists[i]))}, "
+                  f"extra {sorted(set(lists[i]) - set(lists[0]))}"
+              )
+          PY
+
+      - name: Convert it, then check the emails, folders and attachments
+        run: |
+          python skills/outlook-to-md/scripts/outlook_to_md.py "$RUNNER_TEMP/enron.pst" "$RUNNER_TEMP/archive"
+          python - "$RUNNER_TEMP/archive" <<'PY'
+          import csv, pathlib, sys
+          out = pathlib.Path(sys.argv[1])
+          with open(out / "index.csv", newline="", encoding="utf-8") as f:
+              rows = list(csv.DictReader(f))
+          folders = {r["pst_folder"] for r in rows}
+          attachments = sum(int(r["attachment_count"]) for r in rows)
+          log = (out / "extraction_log.txt").read_text()
+          print(f"{len(rows)} emails, {len(folders)} folders, {attachments} attachments")
+          assert len(rows) >= 71, f"expected 71 emails, got {len(rows)}"
+          assert len(folders) == 5, f"expected 5 folders, got {sorted(folders)}"
+          assert attachments >= 70, f"expected 70 attachments, got {attachments}"
+          assert "  Errors: 0" in log, log
+          assert len(list((out / "emails").rglob("email.md"))) == len(rows)
+          # Every frontmatter block parses as YAML, on real mail.
+          import yaml
+          for md in (out / "emails").rglob("email.md"):
+              lines = md.read_text(encoding="utf-8").split("\n")
+              meta = yaml.safe_load("\n".join(lines[1:lines.index("---", 1)]))
+              assert isinstance(meta, dict) and meta.get("message_id") is not None, md
+          PY

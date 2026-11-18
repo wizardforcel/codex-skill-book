@@ -1,0 +1,279 @@
+"""生成 contracts/technique_provenance.json —— AGENTS §4「工具算源普查」的机器可读版。
+
+新增技法后重跑本脚本（或手工加条目），verify_technique_provenance.py 会核覆盖率/ken 一致性/端点登记。
+它曾是 scratchpad 里的一次性脚本——契约可再生，生成器就必须入仓，否则下次重生成只能凭记忆重写。
+
+证据来自源码本身（AST 扫 `_run_*` runner 里的 `js_client.run` / `_call_remote` / `_require_ken_pan`），
+分类来自 §4 的七分法 + 共享 runner 的族属。生成后由 scripts/verify_technique_provenance.py 守。
+
+**输出幂等、契约 == 生成器输出**（`--check` 只比不写；`tests/test_technique_provenance_generator.py` 守）。
+AST 只看 runner 本体，经 helper 间接调用的证据与逐工具的说明写进下方 EXTRA_EVIDENCE / NOTE_OVERRIDES——
+v0.40.0 前这些只手改在契约里，重跑生成器即被抹掉（newtools 实现者撞到：生成器与契约三十处不一致）。
+"""
+from __future__ import annotations
+
+import ast
+import json
+import pathlib
+import sys
+for _stream in (sys.stdout, sys.stderr):
+    _reconfigure = getattr(_stream, "reconfigure", None)
+    if _reconfigure is not None:
+        _reconfigure(encoding="utf-8", errors="replace")
+
+REPO = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "src"))
+
+from horosa_skill.engine.registry import TOOL_DEFINITIONS  # noqa: E402
+from horosa_skill.service import TOOL_EXPORT_TECHNIQUE_MAP  # noqa: E402
+
+# service 是包（v0.41.1 起）：runner 分散在各 mixin 类里。扫包内**每个**类的方法——只扫 __init__.py 或「第一个
+# 以 Service 结尾的类」会得到空证据，生成器就把一切兜底成 local_data（与 SHARED_RUNNER 写错名同一类事故）。
+SRC = REPO / "src/horosa_skill/service"
+FUNCS: dict[str, ast.FunctionDef] = {}
+for _path in sorted(SRC.rglob("*.py")):
+    for _cls in (n for n in ast.parse(_path.read_text(encoding="utf-8")).body if isinstance(n, ast.ClassDef)):
+        for _fn in (n for n in _cls.body if isinstance(n, ast.FunctionDef)):
+            if _fn.name in FUNCS:
+                raise SystemExit(f"method {_fn.name} defined twice in the service package (mixins must be disjoint)")
+            FUNCS[_fn.name] = _fn
+if "_run_qimen_tool" not in FUNCS:
+    raise SystemExit(f"no runners found under {SRC} — the scan is pointed at the wrong place")
+
+# 共享 runner：这些工具没有自己的 `_run_<name>_tool`（或只有一行转发），证据从族级 runner 取。
+# 写错名字 = AST 扫不到任何证据 = 被兜底判成 local_data「不起盘」（v0.41.1 前 keypoints / lunationphase /
+# triplicityrulers 三个就这样从 2026-08 挂到 2026-10），所以下面对非 None 的值做存在性断言。
+SHARED_RUNNER = {
+    **{k: "_run_shenshu_tool" for k in (
+        "wangji", "wuzhao", "taixuan", "jingjue", "shenyishu", "shaozi", "tieban", "fendjing",
+        "beiji", "nanji", "chunzi", "xianqin", "cetian", "qizhengkin",
+    )},
+    "liureng_gods": "_run_liureng_tool",
+    "liureng_runyear": "_run_liureng_tool",
+    # /chart 起本命盘 + vendored 星阙前端 builder（horosa-core-js progextra）推算并出快照。
+    # balbillus 有自己的 `_run_balbillus_tool`，但只是一行转发，证据同样在 progextra runner 里。
+    **{k: "_run_progextra_js_tool" for k in ("keypoints", "lunationphase", "triplicityrulers", "balbillus")},
+    # v3.13.0：上游删了后端 yearsystem129.py（/chart 不再回 predictives.yearsystem129），改由前端 utils/yearSystem129.js 现算。
+    "yearsystem129": "_run_progextra_js_tool",
+    "export_registry": None,
+    "export_parse": None,
+    "knowledge_registry": None,
+    "knowledge_read": None,
+}
+
+CLASS = {
+    # ken 是唯一算权，JS 只格式化（§4）。
+    "ken_backed": {"qimen", "taiyi", "jinkou"},
+    # 原生·非 ken 数算：core-js 进程内经 vendored bazi 链起四柱，再自行起数/起卦 + 条文查表。
+    "native_js_numerology": {"canping", "heluo"},
+    # 纯 headless JS：无后端引擎，JS 内完成计算与排版。
+    "headless_js": {"tongshefa", "tarot", "lingqi", "huangli", "tongshu", "yizhangjing"},
+    # 复合型：多腿聚合 / 多次请求拼段（请求型 builder 一律归 Python）。
+    # 择日十技法（v3.10.0）全是复合型：区间搜索一条腿 + 展示盘另一条腿（各按基底技法的原算源），
+    # 两条腿算权不同，`compute_sources` 逐项写明。落到兜底会被判成 local_data「不起盘」——
+    # 那是**不诚实**的：它们确实铸盘，只是盘不是搜索算的。
+    "composite": {"sanshiunited", "mundane", "extrareturns", "qimenzeri", "tianxing",
+                  # progextra 族：chart 服务铸本命盘一条腿 + JS builder 在盘上推算一条腿。
+                  "keypoints", "lunationphase", "triplicityrulers", "balbillus", "yearsystem129",
+                  "huanglizeri", "bazizeri", "taiyizeri", "ziweizeri", "liurengzeri", "sanshizeri",
+                  "qizhengzeri", "indiazeri", "guolao_chart",
+                  # v0.40 mingli：八字 = 本地 lunar.js 引擎优先、域外/byLon 回退 Java（上游 BaZi.js:716-755）；
+                  # 紫微 = Java 起盘 + 传本非缺省时本地 ZiweiCalc 重排（ZiWeiMain.js:786-804）；
+                  # 宿占 = 八字公式起盘档走 Java /chart（带农历时支），ASC 档走 chart 服务。三者都是 vendored builder 出快照。
+                  "bazi_birth", "bazi_direct", "ziwei_birth", "suzhan",
+                  # 命 · 其他（上游 v3.14.0）：多子术工具，大半段 JS 进程内算，另一条腿读 chart 服务
+                  # （东亚诸术的易卦星盘读 /chart 本命盘；诸方杂术的人类图 / 灵名字母由 /astroextra/zhufang 算、JS 只排版）。
+                  "dongya", "zhufang"},
+    # Python port：星阙前端算法的 Python 移植。
+    "python_port": {"decennials"},
+    # frontend 读数型 Python 移植：读已算好的 chart 对象再排版。
+    "frontend_read_port": {"planetaryages", "persiandirected"},
+    # 神数族：kentang 引擎挂在 chart 服务上，后端直出 snapshot。
+    "chart_service_shenshu": {k for k, runner in SHARED_RUNNER.items() if runner == "_run_shenshu_tool"},
+    # 本地数据检索：不算盘，只读本地库/注册表。
+    "local_data": {"astrodata", "export_registry", "export_parse", "knowledge_registry", "knowledge_read"},
+    # 后端算、JS 只排版：runner 同时有端点与 JS 调用时启发式会误判 headless_js，这里显式点名。
+    "python_chart_backend": {"acg", "agepoint", "distributions", "neroman", "bezzafigure", "jayprofection", "michon",
+                             "transformchart", "zodiacsystems", "timelords"},
+}
+NOTES = {
+    "ken_backed": "ken 后端算、JS 只格式化；健康结果带 pan.source/jinkou.source == 引擎名，runner 必须调 _require_ken_pan",
+    "native_js_numerology": "core-js 进程内经 vendored bazi 链（lunar-javascript）起四柱后自行起数/起卦 + 条文查表，不打 chart 服务",
+    "headless_js": "纯 headless JS，无后端引擎",
+    "composite": "多腿/多请求聚合；请求型 builder 归 Python，JS 层不发 HTTP",
+    "python_port": "星阙前端算法的 Python 移植（金标对上游测试）",
+    "frontend_read_port": "读已算好的 chart 对象再排版的 Python 移植",
+    "chart_service_shenshu": "kentang 神数引擎挂在 Python chart 服务上，后端直出 snapshot（真身在 Result.snapshot）",
+    "local_data": "不起盘：读本地离线库 / 内置注册表",
+    "python_chart_backend": "Python _call_remote 打 chart 服务（/chart · /predict/* · /astroextra/* · /india/* …）+ Python snapshot builder",
+    "java_backend": "Java 聚合层（:9999）计算，Python 只转发与排版",
+}
+# 逐工具说明（覆盖族级 NOTES）。
+NOTE_OVERRIDES = {
+    "bazi_birth": "本地 vendored lunar.js 引擎优先（同星阙八字页 BaZi.js:716-755 fetchBaziCached），公元前等域外日期或 byLon 回退 Java /bazi/*（adjustJieqi 随上游 v3.13.0 恒发 0）；两路都由 vendored buildBaziSnapshotText 出快照（compute_sources.bazi = lunar-local | java）",
+    "bazi_direct": "本地 vendored lunar.js 引擎优先（同星阙八字页 BaZi.js:716-755 fetchBaziCached），公元前等域外日期或 byLon 回退 Java /bazi/*（adjustJieqi 随上游 v3.13.0 恒发 0）；两路都由 vendored buildBaziSnapshotText 出快照（compute_sources.bazi = lunar-local | java）",
+    "suzhan": "人事十二宫八字公式起盘（缺省）走 Java /chart（ChartController 附农历四柱，时支定宫序）；ASC 档或 Java 不可用走 chart 服务；vendored buildSuzhanSnapshotText 出快照（compute_sources.chart = java | chart_service）",
+    "ziwei_birth": "Java /ziwei/birth 起盘（流派非通用时附四化表）；22 个传本开关任一非缺省 → 本地 vendored ZiweiCalc 重排盘核心 + 重算格局（同星阙 buildZiweiSnapshotForParams，ZiWeiMain.js:716-822）；vendored buildZiWeiSnapshotText 出快照（compute_sources.chart = java | ZiweiCalc）",
+    "acg": "chart 服务 /location/acg*（ACGraph）算行星线、落点与世运事件；vendored JS acgSnapshot 只排 [占星地图] 段",
+    **{k: "chart 服务 /chart 铸本命盘；技法本身由 vendored 星阙前端 builder（horosa-core-js progextra）在盘上推算并直出快照"
+       for k in ("keypoints", "lunationphase", "triplicityrulers", "balbillus", "yearsystem129")},
+    # v3.13.0：两技法的快照不再是 Python 手写 builder —— 后端 /predict/* 算，vendored 上游 build*SnapshotFromResult
+    # （horosa-core-js progextra FROM_RESULT_BUILDERS）按回包排版。
+    "agepoint": "chart 服务 /predict/agepoint 算年龄点与事件；vendored 星阙前端 buildAgePointSnapshotFromResult（horosa-core-js progextra）按回包排版",
+    "distributions": "chart 服务 /predict/dist 算界推运与伙伴星；vendored 星阙前端 buildDistributionsSnapshotFromResult（horosa-core-js progextra）按回包排版",
+    **{k: f"chart 服务 /astroextra/{k}（astrostudy/directed_figures.py）按定义算；vendored 星阙前端 buildDirectedFigureText（horosa-core-js progextra）按回包排版"
+       for k in ("neroman", "bezzafigure", "jayprofection", "michon")},
+    # 上游 v3.14.0 辅盘两页：后端算，vendored 上游 transformCharts.js 只排专属段。
+    "transformchart": "chart 服务 /astroextra/transformchart（astrostudy/transform_charts.py）把本命盘换算成新盘；整盘通用段走 Python snapshot builder，"
+                      "[变换盘] 专属段由 vendored 星阙前端 transformSnapshotLines（horosa-core-js aux_labs）按回包排版",
+    "zodiacsystems": "chart 服务 /astroextra/zodiacsystems（astrostudy/zodiac_systems.py）算各黄道版本的落段、星座与换星座时刻；"
+                     "[黄道制] 段由 vendored 星阙前端 zodiacSnapshotLines（horosa-core-js aux_labs）按回包排版",
+    # 时主轮转十二法（上游 v3.14.0）：同一条 runner，后端另一份引擎、vendored 另一个排版函数。
+    "timelords": "chart 服务 /astroextra/timelords（astrostudy/timelord_tables.py）按所选方法算期表 / 事件表；vendored 星阙前端 buildTimeLordText（horosa-core-js progextra）按回包排版",
+    "bazi_inverse": "Java BaZiHelper.getBirthes 逐年回推；Python 只校验四柱干支、转发与排版",
+    "dongya": (
+        "藏历 / 藏占 / 蒙古 Zurkhai / 算命学 / 九星气学 / 洛书流年六段由 vendored 星阙前端 eastAsiaArts（horosa-core-js dongya）进程内算；"
+        "[易卦星盘] 读 chart 服务 /chart 本命盘七政的黄经与宫位后同样在 JS 内合卦（取不到本命盘时该段只出推运一行并进 warnings）；"
+        "整份快照由 vendored eastAsiaSnapshotLines 排版"
+    ),
+    "zhufang": (
+        "[玛雅历] / [十三月亮历] 由 vendored 星阙前端 zhufangArts（horosa-core-js zhufang）进程内算；[人类图] / [灵名字母] 由 chart 服务 "
+        "/astroextra/zhufang（astrostudy/zhufang_arts.py）算、vendored zhufangSnapshotLines 按回包排版（后端没算出的块写「未算出」并进 warnings）"
+    ),
+    "guolao_chart": (
+        "盘面 /chart（Python chart 服务）+ 政余格局/庙旺 headless JS + [虚实]/[本命化曜]/[流年流曜] 走 Java "
+        "/qizheng/moira 规则层（流年盘二次铸盘；Java 不可用时三段缺席进 warnings）"
+    ),
+}
+# runner 经 helper 间接调用、AST 扫 runner 本体看不到的证据。
+EXTRA_EVIDENCE: dict[str, dict[str, list[str]]] = {
+    # 神数族：_shenshu_xinyi_lines（正传心易 → /wangji/xinyi）与演禽演法 JS（yanqin_yanfa）。
+    **{k: {"engines": ["yanqin_yanfa"], "endpoints": ["/wangji/xinyi"]} for k in (
+        "wangji", "wuzhao", "taixuan", "jingjue", "shenyishu", "shaozi", "tieban", "fendjing",
+        "beiji", "nanji", "chunzi", "xianqin", "cetian", "qizhengkin",
+    )},
+    "indiazeri": {"endpoints": ["/indiaelectionscan/scan"]},
+    # 上游 v3.14.0：印占 [穿界时刻]（另取 /astroextra/transitevents）与 Jyotish 各段的排版（india_jyotish）、合盘 [八重合]
+    # （另取 /astroextra/ashtakoota，india_tables 定男方 + 排版）都在 service/enrich.py 的 _attach_*，不在 runner 本体。
+    "india_chart": {"engines": ["india_jyotish"], "endpoints": ["/astroextra/transitevents"]},
+    "relative": {"engines": ["india_tables"], "endpoints": ["/astroextra/ashtakoota", "/astroextra/relative"]},
+    "qizhengzeri": {"endpoints": ["/qizhengelectionscan/scan"]},
+    "mundane": {"engines": ["mundane_cards"]},
+    # agepoint / distributions：runner 经 _run_predict_result_tool 把 /predict/* 回包交给 progextra 的 FROM_RESULT_BUILDERS。
+    **{k: {"engines": ["progextra"]} for k in ("agepoint", "distributions")},  # 世俗盘右栏卡（tools/mundaneCards.js）
+    # 推运图族四法：各自 runner 把 /astroextra/<接口> 回包经 _run_directed_figure_tool 交给 progextra（同 agepoint）。
+    **{k: {"engines": ["progextra"]} for k in ("neroman", "bezzafigure", "jayprofection", "michon", "timelords")},
+    # ken 族里「上游同判据路由到本地引擎」的合法算源（v3.11 sanshi chunk）：qimen 按 isQimenLocalRoute（本地家/飞盘/
+    # 混合/报数/七组本地口径）走 calcDunJia、jinkou 按 schoolsAllDefault（五项流派任一非缺省）走 buildJinKouData ——
+    # 两者都不打 ken，runner 回 compute_sources = 下列名字。不声明的话依据卡会把合法路由误标「与声明不一致」；
+    # 反过来 ken 失败被静默回退本地（§4）仍然抓得到：那条路径不会带这些 compute_sources。
+    "qimen": {"engines": ["local_route_calcDunJia"]},
+    "jinkou": {"engines": ["local_route_buildJinKouData"]},
+}
+
+
+
+
+# 运行期 compute_sources 的取值全集（技法依据卡据此判 matches_declaration）：这几个 runner 按上游规则在两个算源间
+# 切换，声明必须覆盖两边 —— 只写其一，合法的回退/切换路径会被卡片误标「与声明不一致」。
+# 运行期 compute_sources 的取值集（有序：主路在前）——算源不是某个 JS 工具名而是「哪条路径」时整条覆盖证据。
+ENGINE_OVERRIDES: dict[str, list[str]] = {
+    "bazi_birth": ["lunar-local", "java"],
+    "bazi_direct": ["lunar-local", "java"],
+    "ziwei_birth": ["java", "ZiweiCalc"],
+    "suzhan": ["java", "chart_service"],
+    # 奇门择日：选中时刻的盘经 _run_qimen_tool 走 ken（kinqimen），本地口径时走 calcDunJia（local_route_calcDunJia）；
+    # 区间扫描恒为本地 calcDunJia（ken 无区间端点）。runner 回 compute_sources = {scan, pan}——只声明 JS 工具名
+    # qimenzeri 会让每张依据卡都标「与声明不一致」（2026-10 表面审计：全 110 技法里唯一一个）。
+    "qimenzeri": ["kinqimen", "local_route_calcDunJia", "local_calcDunJia"],
+}
+
+
+_missing_runners = sorted({r for r in SHARED_RUNNER.values() if r and r not in FUNCS})
+if _missing_runners:
+    raise SystemExit(f"SHARED_RUNNER names runner(s) that do not exist in the service package: {_missing_runners}")
+
+
+def evidence(fn: ast.FunctionDef | None) -> tuple[list[str], list[str], list[str]]:
+    if fn is None:
+        return [], [], []
+    js, eps, ken = set(), set(), set()
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        name = getattr(f, "attr", None)
+        if name == "run" and isinstance(f.value, ast.Attribute) and f.value.attr == "js_client":
+            if node.args and isinstance(node.args[0], ast.Constant):
+                js.add(node.args[0].value)
+        if name == "_call_remote" and node.args and isinstance(node.args[0], ast.Constant):
+            eps.add(node.args[0].value)
+        if name == "_require_ken_pan":
+            for kw in node.keywords:
+                if kw.arg == "engine" and isinstance(kw.value, ast.Constant):
+                    ken.add(kw.value.value)
+    return sorted(js), sorted(eps), sorted(ken)
+
+
+def classify(name: str, definition, js, eps) -> str:
+    for klass, members in CLASS.items():
+        if name in members:
+            return klass
+    if definition.execution == "remote":
+        # /predict/* 与 /modern/relative 走 Python chart 服务；其余远端端点是 Java 聚合层。
+        from horosa_skill.service import _PYTHON_CHART_ENDPOINTS
+        return "python_chart_backend" if definition.endpoint in _PYTHON_CHART_ENDPOINTS else "java_backend"
+    if eps and not js:
+        # 本地 runner 只打 Java 端点（如 bazi_inverse → /common/inversebazi）就是 Java 算的。
+        from horosa_skill.service import _PYTHON_CHART_ENDPOINTS
+        return "python_chart_backend" if set(eps) & _PYTHON_CHART_ENDPOINTS else "java_backend"
+    if js:
+        return "headless_js"
+    return "local_data"
+
+
+out: dict[str, dict] = {}
+for name, definition in sorted(TOOL_DEFINITIONS.items()):
+    fn = FUNCS.get(SHARED_RUNNER[name] or "") if name in SHARED_RUNNER else FUNCS.get(f"_run_{name}_tool")
+    js, eps, ken = evidence(fn)
+    if definition.endpoint:
+        eps = sorted(set(eps) | {definition.endpoint})
+    if name in CLASS["chart_service_shenshu"]:
+        eps = sorted(set(eps) | {f"/{name}/pan"})
+    klass = classify(name, definition, js, eps)
+    extra = EXTRA_EVIDENCE.get(name, {})
+    out[name] = {
+        "compute_class": klass,
+        "engines": ENGINE_OVERRIDES.get(name) or sorted(set(ken or js) | set(extra.get("engines", []))),
+        "endpoints": sorted(set(eps) | set(extra.get("endpoints", []))),
+        "export_technique": TOOL_EXPORT_TECHNIQUE_MAP.get(name),
+        "notes": NOTE_OVERRIDES.get(name, NOTES[klass]),
+    }
+
+payload = {
+    "_comment": (
+        "每个技法工具的**算源**声明（AGENTS §4「工具算源普查」的机器可读版）。"
+        "技法依据卡/报告用它说明「这一段是谁算的」；运行期实测（pan.source / compute_sources）优先于本声明，"
+        "两者不一致时如实标注分歧，不静默采信任何一边。由 scripts/verify_technique_provenance.py 守："
+        "新增技法不声明算源即红。"
+    ),
+    "_classes": {k: NOTES[k] for k in sorted(NOTES)},
+    "tools": out,
+}
+CONTRACT = REPO / "contracts/technique_provenance.json"
+rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+if "--check" in sys.argv[1:]:
+    current = CONTRACT.read_text(encoding="utf-8") if CONTRACT.is_file() else ""
+    if current != rendered:
+        committed = json.loads(current or "{}").get("tools", {})
+        stale = sorted(k for k in set(committed) | set(out) if committed.get(k) != out.get(k))
+        print(f"technique_provenance.json != generator output ({len(stale)} tool(s)): {', '.join(stale)}")
+        print("fix the generator (EXTRA_EVIDENCE / NOTE_OVERRIDES / CLASS), then rerun without --check")
+        raise SystemExit(1)
+    print(f"technique_provenance.json == generator output ({len(out)} tools)")
+    raise SystemExit(0)
+CONTRACT.write_text(rendered, encoding="utf-8", newline="\n")
+counts: dict[str, int] = {}
+for entry in out.values():
+    counts[entry["compute_class"]] = counts.get(entry["compute_class"], 0) + 1
+print(f"wrote {len(out)} tools: {json.dumps(counts, ensure_ascii=False)}")

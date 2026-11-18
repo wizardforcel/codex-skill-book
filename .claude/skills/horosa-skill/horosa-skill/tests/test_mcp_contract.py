@@ -1,0 +1,301 @@
+"""MCP wire-contract tests — assert what the CLIENT actually sees, via list_tools()/call_tool().
+
+Why this file exists: `test_mcp_server.py` exercises the helper functions directly and never goes
+through `srv.call_tool`, so an entire class of defects was invisible to CI — `horosa_tool_run` shipped
+with a `{"kwargs": {"type": "string"}}` schema (uncallable, and it is the ONLY route to every technique
+under HOROSA_MCP_COMPACT=1), four facade tools shipped with empty descriptions, and no tool had a title.
+Every assertion here maps to one of those regressions.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+
+import pytest
+
+from horosa_skill.config import Settings
+from horosa_skill.service import HorosaSkillService
+from horosa_skill.surfaces.mcp_server import _SERVER_INSTRUCTIONS, create_mcp_server
+
+
+@pytest.fixture(autouse=True)
+def _no_installed_runtime(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """线材契约测试一律在「离线 runtime 未安装」的形状下跑——包括维护机。
+
+    这些测试考的是 MCP 面（广告的 schema、归一化、逃生通道、错误信封），不是计算。维护机上装着
+    runtime，`call_tool` 会一路真算并 `ok=True`，于是「其实依赖 runtime」的断言在本地恒绿、到了
+    CI（无 runtime）才炸——v0.25.0 发布 commit 就是这么带着红 CI 上 main 的。把 runtime root 钉到
+    空目录，本地与 CI 同形，这类依赖当场暴露。
+
+    **只钉 runtime root 不够**：维护机上若默认端口（8899/9999）恰好有活服务，请求照样打通、
+    本该失败的错误路径会成功（`assert True is False`）。所以同时把两个 service root 指到一个
+    不监听的端口，让「未安装 runtime」这个形状在网络层也成立。
+    """
+    monkeypatch.setenv("HOROSA_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("HOROSA_SERVER_ROOT", "http://127.0.0.1:9")
+    monkeypatch.setenv("HOROSA_CHART_SERVER_ROOT", "http://127.0.0.1:9")
+
+
+def _server(*, compact: bool = False):
+    settings = Settings.from_env()
+    settings.mcp_compact = compact
+    return create_mcp_server(HorosaSkillService(settings), settings)
+
+
+def _payload(result) -> dict:
+    result = getattr(result, "content", result)  # mcp 2.x：CallToolResult
+    content = result[0] if not isinstance(result, tuple) else result[0][0]
+    return json.loads(content.text)
+
+
+# 在归一化之前就把调用打回去的两种拒绝：pydantic 校验 与 澄清闸。技法计算能不能成功取决于本机有没有
+# 装 runtime，但「有没有进到归一化」不取决于——这两个 code 不出现，就说明请求穿过了 MCP 面。
+_REJECTED_BEFORE_NORMALIZATION = {"tool.invalid_payload", "agent_guidance.required"}
+
+
+def _assert_passed_the_mcp_surface(body: dict) -> None:
+    code = (body.get("error") or {}).get("code")
+    assert code not in _REJECTED_BEFORE_NORMALIZATION, f"请求在归一化之前就被 MCP 面拒了: {body}"
+
+
+@pytest.mark.parametrize("compact", [False, True])
+def test_every_tool_is_discoverable_and_callable_shaped(compact: bool) -> None:
+    tools = asyncio.run(_server(compact=compact).list_tools())
+    assert tools, "server exposed zero tools"
+    missing_description = [t.name for t in tools if not (t.description or "").strip()]
+    missing_title = [t.name for t in tools if not (t.title or "").strip()]
+    assert missing_description == [], f"tools with no description (invisible to model): {missing_description}"
+    assert missing_title == [], f"tools with no title (client shows the raw id): {missing_title}"
+    for tool in tools:
+        properties = tool.input_schema.get("properties", {})
+        assert "kwargs" not in properties, (
+            f"{tool.name} advertises a raw `kwargs` param — its __signature__ is missing, so FastMCP "
+            "introspected **kwargs and the tool is effectively uncallable"
+        )
+        assert tool.annotations is not None, f"{tool.name} has no annotations"
+        assert tool.annotations.open_world_hint is False, f"{tool.name} must be local-first (openWorld=False)"
+
+
+def test_compact_mode_exposes_a_usable_universal_runner() -> None:
+    tools = asyncio.run(_server(compact=True).list_tools())
+    runner = next(t for t in tools if t.name == "horosa_tool_run")
+    properties = runner.input_schema.get("properties", {})
+    assert "tool_name" in properties and "request" in properties
+    # 公共起盘字段必须直接可填，否则每次调用都得包一层 request
+    for field in ("date", "time", "zone", "lat", "lon"):
+        assert field in properties, f"horosa_tool_run should accept {field} directly"
+
+
+def test_compact_tool_run_reaches_a_technique_through_call_tool() -> None:
+    server = _server(compact=True)
+    result = asyncio.run(
+        server.call_tool("horosa_tool_run", {"tool_name": "export_registry", "request": {"technique": "qimen"}})
+    )
+    body = _payload(result)
+    assert body.get("ok") is True, body
+    assert body.get("tool") == "export_registry"
+
+
+def test_tool_run_keeps_the_clarification_gate_and_recovery_contract() -> None:
+    server = _server(compact=True)
+    result = asyncio.run(
+        server.call_tool(
+            "horosa_tool_run",
+            {
+                "tool_name": "qimen",
+                "date": "2028-04-06",
+                "time": "09:33:00",
+                "zone": "+08:00",
+                "lat": "31n13",
+                "lon": "121e28",
+            },
+        )
+    )
+    body = _payload(result)
+    assert body["code"] == "agent_guidance.required"
+    assert body["details"]["agent_recovery"]["prompt_to_user"]
+
+
+def test_tool_run_reads_a_string_request_like_every_other_tool() -> None:
+    """`request` 是字符串时，horosa_tool_run 与其余工具一样经 `_normalize_mcp_request` 的同一套解析。
+
+    FastMCP 会先把「合法 JSON 对象」字符串解析成 dict；剩下仍是字符串到达工具体的（坏 JSON、JSON 标量）此前被
+    tool_run 静默换成 `{}`：无闸工具拿空载荷跑出 ok=True 的**别的**结果，有闸工具回一条与真实问题无关的
+    agent_guidance.required。其余工具对同样的输入回 tool.invalid_payload。
+    """
+    server = _server(compact=True)
+
+    def call(arguments: dict) -> dict:
+        return _payload(asyncio.run(server.call_tool("horosa_tool_run", arguments)))
+
+    for request in ("{not json", "5"):
+        for tool_name in ("export_registry", "qimen"):
+            body = call({"tool_name": tool_name, "request": request})
+            assert body["ok"] is False and body["code"] == "tool.invalid_payload", (tool_name, request, body)
+            assert body["tool"] == tool_name and body["details"]["agent_recovery"]["prompt_to_user"]
+    assert call({"tool_name": "export_registry", "request": ""})["ok"] is True, "空串 = 空载荷，与 _normalize_mcp_request 一致"
+    confirmed = {"date": "2028-04-06", "time": "09:33:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28",
+                 "agent_confirmed_settings": True}
+    _assert_passed_the_mcp_surface(call({"tool_name": "qimen", "request": json.dumps(confirmed)}))
+    del confirmed["agent_confirmed_settings"]
+    assert call({"tool_name": "qimen", "request": json.dumps(confirmed)})["code"] == "agent_guidance.required"
+
+
+def test_tool_run_rejects_unknown_tool_names_structurally() -> None:
+    body = _payload(asyncio.run(_server(compact=True).call_tool("horosa_tool_run", {"tool_name": "nope"})))
+    assert body["code"] == "tool.unknown"
+
+
+def test_entry_point_tools_are_marked_always_load() -> None:
+    tools = asyncio.run(_server().list_tools())
+    marked = {t.name for t in tools if (t.meta or {}).get("anthropic/alwaysLoad")}
+    assert {"horosa_dispatch", "horosa_agent_guidance"} <= marked
+
+
+def test_server_instructions_fit_the_client_budget() -> None:
+    # 客户端约 2KB 截断；超了关键的「何时来搜我」会被砍掉。
+    assert 0 < len(_SERVER_INSTRUCTIONS.encode("utf-8")) <= 2048
+
+
+def test_advertised_schema_is_faithful_but_validation_is_loose() -> None:
+    """广告保真、校验放松：字段描述/必填标记照登，但没有一个参数是 MCP 层必填。
+
+    必填留在 MCP 层会做三件坏事：`request={…}` 逃生通道永远走不到、`{"lat": 39.9}` 在归一化之前
+    就被拒、以及两者都绕过 agent_recovery 契约回一条裸 pydantic 错误。
+    """
+    tools = asyncio.run(_server().list_tools())
+    qimen = next(t for t in tools if t.name == "horosa_cn_qimen")
+    schema = qimen.input_schema
+    assert not schema.get("required"), "MCP 层不应有必填参数（必填语义走 [required] 标记 + 内层校验）"
+    assert schema["properties"]["date"]["description"].startswith("[required]")
+    # v0.37.0：广告层收窄成**恰一个** type。数组 type（["string","number"]）被 Gemini/Vertex 的
+    # FunctionDeclaration 与 OpenAI strict 拒收 —— 拒的是整张工具表，不是这一个字段。
+    # 收窄到 string 是无损的：校验层照旧宽松，`{"lat": 39.9}` 仍会被 normalize 吸收
+    # （下一条 test_numeric_coordinates_reach_normalization_instead_of_being_rejected 就是它的活证）。
+    assert schema["properties"]["lat"]["type"] == "string", "广告层每个属性必须恰一个标量 type"
+    blob = json.dumps(schema)
+    assert "$ref" not in blob, "残留 $ref 会让 pydantic 构不出 arg model"
+    assert "anyOf" not in blob, "anyOf 同样被严格客户端拒收"
+
+
+def test_numeric_coordinates_reach_normalization_instead_of_being_rejected() -> None:
+    result = asyncio.run(
+        _server().call_tool(
+            "horosa_cn_qimen",
+            {
+                "date": "2028-04-06",
+                "time": "09:33:00",
+                "zone": "+08:00",
+                "lat": 39.9,
+                "lon": 116.4,
+                "defaults_accepted": True,
+            },
+        )
+    )
+    body = _payload(result)
+    _assert_passed_the_mcp_surface(body)
+    assert body["input_normalized"]["lat"] == "39n54", "数字经纬度应被 normalize_request_payload 吸收"
+    assert body["input_normalized"]["lon"] == "116e24"
+
+
+def test_request_escape_hatch_works_over_the_wire() -> None:
+    result = asyncio.run(
+        _server().call_tool(
+            "horosa_cn_qimen",
+            {
+                "request": {
+                    "date": "2028-04-06",
+                    "time": "09:33:00",
+                    "zone": "+08:00",
+                    "lat": "31n13",
+                    "lon": "121e28",
+                    "defaults_accepted": True,
+                }
+            },
+        )
+    )
+    body = _payload(result)
+    # 逃生通道没被解包的话，内层字段一个都到不了引擎：闸门会以 agent_guidance.required 打回
+    # （被 _assert_passed_the_mcp_surface 拦下），归一化里也不会有这盘的日期与经纬度。
+    _assert_passed_the_mcp_surface(body)
+    normalized = body["input_normalized"]
+    assert normalized["date"] == "2028-04-06" and normalized["time"] == "09:33:00"
+    assert normalized["lat"] == "31n13" and normalized["lon"] == "121e28"
+
+
+def test_error_paths_return_a_conformant_envelope() -> None:
+    """错误也必须是信封：否则一旦声明 outputSchema，出参校验会把澄清闸打成协议级 ToolError。"""
+    gate = _payload(
+        asyncio.run(
+            _server().call_tool(
+                "horosa_cn_qimen",
+                {"date": "2028-04-06", "time": "09:33:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28"},
+            )
+        )
+    )
+    for key in ("ok", "tool", "version", "input_normalized", "error"):
+        assert key in gate, f"gate error missing envelope key {key}: {gate}"
+    assert gate["ok"] is False and gate["tool"] == "qimen"
+    # 顶层镜像键保持向后兼容（旧调用方按 code/message/details 读）
+    assert gate["code"] == gate["error"]["code"] == "agent_guidance.required"
+
+    # 闸门之后的失败（工具自身抛的 runtime/transport/内部错误）走的是 service.run_tool 的信封，
+    # 与上面的 MCP 面信封是两条构造路径——镜像三键曾只在 MCP 面那条上填，按顶层 `code` 读的调用方
+    # 在最常见的失败（runtime.not_installed）上读到 None。两条路径口径必须一致。
+    failed = _payload(
+        asyncio.run(
+            _server().call_tool(
+                "horosa_cn_qimen",
+                {
+                    "date": "2028-04-06",
+                    "time": "09:33:00",
+                    "zone": "+08:00",
+                    "lat": "31n13",
+                    "lon": "121e28",
+                    "defaults_accepted": True,
+                },
+            )
+        )
+    )
+    for key in ("ok", "tool", "version", "input_normalized", "error"):
+        assert key in failed, f"tool error missing envelope key {key}: {failed}"
+    # v0.37.0：本用例把 HOROSA_SERVER_ROOT 指向一个不可达地址（127.0.0.1:9），那正是**外部模式**
+    # 的定义 —— 用户明说了后端在别处。此时正确答案是 runtime.external_unreachable（去修那个地址
+    # 或取消变量），而不是 runtime.not_installed（那会把人打发去下载 730 MB 他根本不需要的 runtime，
+    # 而且外部模式下我们**绝不**在本机启动 runtime）。旧断言锁的是「显式指了地址也照样按本机没装
+    # 处理」，正是 B3 要修掉的那个行为。
+    assert failed["ok"] is False and failed["error"]["code"] == "runtime.external_unreachable"
+    assert failed["code"] == failed["error"]["code"]
+    assert failed["message"] == failed["error"]["message"]
+    # 审计 S-04：缺省视图只留一份 details（顶层）；error 只剩 code / message
+    assert isinstance(failed["details"], dict) and "details" not in failed["error"]
+
+
+def test_structured_output_is_opt_in_and_keeps_the_gate_working(monkeypatch: pytest.MonkeyPatch) -> None:
+    default_tools = asyncio.run(_server().list_tools())
+    assert all(t.output_schema is None for t in default_tools), (
+        "outputSchema 默认必须关闭——claude-code#25081（带 outputSchema 时工具列表静默消失）未确认修复"
+    )
+    monkeypatch.setenv("HOROSA_OUTPUT_SCHEMA", "1")
+    server = _server()
+    opted_in = asyncio.run(server.list_tools())
+    assert any(t.output_schema for t in opted_in)
+    gate = _payload(
+        asyncio.run(
+            server.call_tool(
+                "horosa_cn_qimen",
+                {"date": "2028-04-06", "time": "09:33:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28"},
+            )
+        )
+    )
+    assert gate["code"] == "agent_guidance.required", "开了结构化输出后澄清闸仍须原样工作"
+
+
+def test_toolsets_env_filters_technique_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    full = len(asyncio.run(_server().list_tools()))
+    monkeypatch.setenv("HOROSA_TOOLSETS", "astro")
+    filtered = asyncio.run(_server().list_tools())
+    assert 0 < len(filtered) < full
+    # 门面工具不受分组过滤影响（否则用户开了白名单就再也问不到路）
+    assert {"horosa_dispatch", "horosa_agent_guidance"} <= {t.name for t in filtered}

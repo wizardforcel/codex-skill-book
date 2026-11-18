@@ -1,0 +1,311 @@
+import { leapPrefix } from '../utils/lunarText.js';
+import {
+	TAIYI_STYLE_OPTIONS,
+	TAIYI_ACCUM_OPTIONS,
+	calcTaiyiPanFromKintaiyi,
+	buildTaiyiSnapshotLines,
+	getTaiyiStyleLabel,
+	getTaiyiAccumLabel,
+} from './core/TaiYiCore.js';
+
+import buildLocalBaziResult from '../bazi/baziLunarLocal.js';
+
+import { parseFieldsDateTime, parseDateTimeText } from '../utils/fieldsDateTime.js';
+
+export const STYLE_OPTIONS = [
+	...TAIYI_STYLE_OPTIONS.slice(),
+	{ value: 5, label: '太乙命法' },
+];
+
+export const ACCUM_OPTIONS = TAIYI_ACCUM_OPTIONS.slice();
+export const METHOD_OPTIONS = ACCUM_OPTIONS;
+export const METHOD_SOURCE_OPTIONS = [
+	{ value: 0, source: '《太乙統宗寶鑑》' },
+	{ value: 1, source: '《太乙金鏡式經》' },
+	{ value: 2, source: '《太乙淘金歌》' },
+	{ value: 3, source: '《太乙局》' },
+];
+
+export const SEX_OPTIONS = [
+	{ value: '男', label: '男' },
+	{ value: '女', label: '女' },
+];
+
+export const TIME_BASIS_OPTIONS = [
+	{ value: 'direct', label: '直接时间' },
+	{ value: 'trueSolar', label: '真太阳时' },
+];
+
+// 用户语义(拍板,字面直觉版): after23NewDay=1「23点算第二天」=日柱进位次日(壬寅)；=0「24点算第二天」=日柱守今(辛丑)。
+export const DAY_SWITCH_OPTIONS = [
+	{ value: 1, label: '23点算第二天' },
+	{ value: 0, label: '24点算第二天' },
+];
+
+
+export const GAME_THEORY_OPTIONS = [
+	{ value: 0, label: '关闭' },
+	{ value: 1, label: '开启' },
+];
+
+const PALACE_ORDER = ['巽', '巳', '午', '未', '坤', '申', '酉', '戌', '乾', '亥', '子', '丑', '艮', '寅', '卯', '辰'];
+
+function normalizePalaces(palace16){
+	const map = {};
+	PALACE_ORDER.forEach((palace)=>{
+		map[palace] = [];
+	});
+	(palace16 || []).forEach((item)=>{
+		if(!item || !item.palace || !map[item.palace]){
+			return;
+		}
+		map[item.palace] = Array.isArray(item.items) ? item.items.slice(0) : [];
+	});
+	return PALACE_ORDER.map((palace)=>({
+		palace,
+		items: map[palace],
+	}));
+}
+
+function buildOptions(opt, pan, nongli){
+	const options = opt || {};
+	const style = options.style !== undefined ? options.style : (pan ? pan.style : 3);
+	const isLifeStyle = style === 5;
+	const tn = pan && pan.tnForPan !== undefined ? pan.tnForPan : (options.tn !== undefined ? options.tn : 0);
+	const methodLabel = isLifeStyle ? '命法不适用' : getMethodLabel(tn);
+	const methodSource = isLifeStyle ? '命法不适用' : getMethodSource(tn);
+	return {
+		styleLabel: getStyleLabel(style),
+		methodLabel,
+		methodSource,
+		accumLabel: methodLabel,
+		// tenching / rotation 两键已剔除:后端全仓零读取、前端零消费者的纯标签死键
+		// (硬造默认值随请求发出;标签 tenchingLabel / rotationLabel 亦无人读)。
+		sexLabel: options.sex || (pan && pan.sex) || '男',
+		// 真太阳时档在历法服务超时(nongli 为空)时 resolveCalculationDateTime 已按直接时间立局,
+		//   标签曾恒写「真太阳时」→ 概览/快照如实标注本次按直接时间(计算路径不变,只改文案)。
+		timeBasisLabel: options.timeBasis === 'trueSolar'
+			? (nongli && nongli.birth ? '真太阳时' : '真太阳时（历法服务未回，本次按直接时间立局）')
+			: '直接时间',
+		daySwitchLabel: options.after23NewDay === 1 ? '23点算第二天' : '24点算第二天',
+		// 后端因随包运行时缺 scipy 未算博弈时回传 gameTheoryUnavailable → 如实标注「本次未算」(不撒谎);
+		// 依赖齐全或关闭时逐字不变。
+		gameTheoryLabel: options.gameTheory === 1
+			? (pan && pan.gameTheoryUnavailable ? `开启（本机计算组件不全，本次未算博弈）` : '开启')
+			: '关闭',
+	};
+}
+
+function safeText(value){
+	return value === undefined || value === null ? '' : `${value}`;
+}
+
+function formatNongliText(nongli){
+	if(!nongli){
+		return '';
+	}
+	const year = safeText(nongli.year);
+	const leap = leapPrefix(nongli);
+	const month = safeText(nongli.month);
+	const day = safeText(nongli.day);
+	return `${year ? `${year}年` : ''}${leap}${month}${day}`.trim();
+}
+
+function pickPillar(nongli, key, flatKey){
+	if(!nongli){
+		return '';
+	}
+	const flat = safeText(nongli[flatKey]);
+	if(flat){
+		return flat;
+	}
+	const four = nongli.bazi && nongli.bazi.fourColumns ? nongli.bazi.fourColumns : null;
+	const item = four && four[key] ? four[key] : null;
+	return safeText((item && (item.ganzi || item.ganZhi || item.text)) || '');
+}
+
+function pillarFromFourColumns(four, key){
+	const item = four && four[key] ? four[key] : null;
+	return safeText((item && (item.ganzi || item.ganZhi || item.text)) || '');
+}
+
+export function buildTaiyiBaziLocal(fields, options){
+	if(!fields || !fields.date || !fields.time){
+		return null;
+	}
+	try{
+		return buildLocalBaziResult({
+			date: fields.date.value.format('YYYY-MM-DD'),
+			time: fields.time.value.format('HH:mm:ss'),
+			zone: fields.zone ? fields.zone.value : undefined,
+			lon: fields.lon ? fields.lon.value : undefined,
+			lat: fields.lat ? fields.lat.value : undefined,
+			gpsLat: fields.gpsLat ? fields.gpsLat.value : undefined,
+			gpsLon: fields.gpsLon ? fields.gpsLon.value : undefined,
+			gender: fields.gender ? fields.gender.value : 1,
+			timeAlg: options && options.timeBasis === 'trueSolar' ? 0 : 1,
+			after23NewDay: options ? options.after23NewDay : undefined,
+			// v2.2.1: 太乙也要把时柱开关透传给 buildLocalBaziResult,否则 hour==23 + lateZi=0 时太乙的时柱会算错。
+			lateZiHourUseNextDay: options ? options.lateZiHourUseNextDay : undefined,
+		});
+	}catch(e){
+		return null;
+	}
+}
+
+function applyNongliDisplay(pan, nongli, baziLocal){
+	if(!pan || (!nongli && !baziLocal)){
+		return pan;
+	}
+	const baziNongli = baziLocal && baziLocal.bazi ? baziLocal.bazi.nongli : null;
+	const four = baziLocal && baziLocal.bazi && baziLocal.bazi.fourColumns ? baziLocal.bazi.fourColumns : null;
+	// 农历行与节后天数随时间基准(与四柱同一本地结果;本地按所选基准换算):此前取 /nongli/time 那份(恒按真太阳时),
+	// 选直接时间(缺省)时日界附近农历写成前一天、日柱却是当天。本地给不出(域外年份)才用历法服务那份。
+	const localLunar = baziNongli && safeText(baziNongli.month) && safeText(baziNongli.day)
+		? `${safeText(baziNongli.yearGZByLunar) ? `${safeText(baziNongli.yearGZByLunar)}年` : ''}${leapPrefix(baziNongli)}${safeText(baziNongli.month)}${safeText(baziNongli.day)}`.trim()
+		: '';
+	return {
+		...pan,
+		lunarText: localLunar || (nongli && formatNongliText(nongli)) || pan.lunarText,
+		// 真太阳时 与 直接时间 都稳定显示(与所选时间基准无关);随基准变的只是四柱/计算基准 —— 和八字一致
+		realSunTime: (baziNongli && safeText(baziNongli.solarTime)) || (nongli && safeText(nongli.birth)) || pan.realSunTime,
+		clockTime: (baziNongli && safeText(baziNongli.clockTime)) || pan.clockTime,
+		jiedelta: (baziNongli && safeText(baziNongli.jiedelta)) || (nongli && safeText(nongli.jiedelta)) || pan.jiedelta,
+		ganzhi: {
+			year: pillarFromFourColumns(four, 'year') || pickPillar(nongli, 'year', 'yearGanZi') || (pan.ganzhi && pan.ganzhi.year) || '',
+			month: pillarFromFourColumns(four, 'month') || pickPillar(nongli, 'month', 'monthGanZi') || (pan.ganzhi && pan.ganzhi.month) || '',
+			day: pillarFromFourColumns(four, 'day') || pickPillar(nongli, 'day', 'dayGanZi') || (pan.ganzhi && pan.ganzhi.day) || '',
+			time: pillarFromFourColumns(four, 'time') || pickPillar(nongli, 'time', 'timeGanZi') || (nongli && safeText(nongli.time)) || (pan.ganzhi && pan.ganzhi.time) || '',
+			minute: (pan.ganzhi && pan.ganzhi.minute) || '',
+		},
+	};
+}
+
+export function calcTaiyi(fields, nongli, options){
+	const opt = options || {};
+	const pan = calcTaiyiPanFromKintaiyi(fields, nongli, opt);
+	if(!pan){
+		return null;
+	}
+	const baziLocal = buildTaiyiBaziLocal(fields, opt);
+	// 直接时间=用户输入的钟表时,恒可自 fields 直出;极端年(lunar-js 域外 baziLocal 缺席、
+	// 后端 pan 无 clockTime)也不许显示「—」。
+	const clockFallback = (fields && fields.date && fields.date.value && fields.time && fields.time.value)
+		? `${fields.date.value.format('YYYY-MM-DD')} ${fields.time.value.format('HH:mm:ss')}`
+		: '';
+	return applyNongliDisplay({
+		...pan,
+		clockTime: pan.clockTime || clockFallback,
+		options: buildOptions(opt, pan, nongli),
+		palaces: normalizePalaces(pan.palace16),
+	}, nongli, baziLocal);
+}
+
+function resolveCalculationDateTime(fields, nongli, options){
+	const direct = parseFieldsDateTime(fields);
+	if(options && options.timeBasis === 'trueSolar'){
+		return parseDateTimeText(nongli && nongli.birth) || direct;
+	}
+	return direct;
+}
+
+export function normalizeBackendPan(pan, options, nongli, baziLocal){
+	if(!pan){
+		return null;
+	}
+	const opt = options || {};
+	return applyNongliDisplay({
+		...pan,
+		options: buildOptions(opt, pan, nongli),
+		palaces: normalizePalaces(pan.palace16),
+	}, nongli, baziLocal);
+}
+
+export function buildTaiyiSnapshotText(pan){
+	if(!pan){
+		return '';
+	}
+	const lines = [];
+	lines.push('[起盘信息]');
+	lines.push(`日期：${pan.dateStr} ${pan.timeStr}`);
+	if(pan.realSunTime){
+		lines.push(`真太阳时：${pan.realSunTime}`);
+	}
+	if(pan.lunarText){
+		lines.push(`农历：${pan.lunarText}`);
+	}
+	if(pan.jiedelta){
+		lines.push(`${pan.jiedelta}`);
+	}
+	lines.push(`干支：年${pan.ganzhi.year || ''} 月${pan.ganzhi.month || ''} 日${pan.ganzhi.day || ''} 时${pan.ganzhi.time || ''}`);
+	lines.push(`命式：${pan.zhao}`);
+	lines.push(`起盘方式：${pan.options ? pan.options.styleLabel : ''}`);
+	lines.push(`古法公式：${pan.options ? (pan.options.methodLabel || pan.options.accumLabel) : ''}`);
+	if(pan.options && pan.options.methodSource && pan.options.methodSource !== '命法不适用'){
+		lines.push(`古法出处：${pan.options.methodSource}`);
+	}
+	lines.push(`时间基准：${pan.options ? pan.options.timeBasisLabel : ''}`);
+	lines.push(`换日：${pan.options ? pan.options.daySwitchLabel : ''}`);
+	if(pan.reignYear){
+		lines.push(`历史年号：${pan.reignYear}`);
+	}
+	if(pan.calendarEra || pan.jiyuan){
+		lines.push(`太乙纪元：${pan.calendarEra || pan.jiyuan}`);
+	}
+	lines.push(`命法：${pan.options ? pan.options.sexLabel : ''}`);
+	lines.push(`博弈分析：${pan.options ? pan.options.gameTheoryLabel : ''}`);
+	lines.push('');
+	lines.push('[太乙盘]');
+	buildTaiyiSnapshotLines(pan).forEach((line)=>lines.push(line));
+	if(pan.sections && pan.sections.length){
+		pan.sections.forEach((section)=>{
+			lines.push('');
+			lines.push(`[${section.title}]`);
+			(section.rows || []).forEach((row)=>{
+				lines.push(`${row.label}：${formatSnapshotValue(row.value)}`);
+			});
+		});
+	}
+	lines.push('');
+	lines.push('[十六宫标记]');
+	(pan.palace16 || []).forEach((item)=>{
+		const txt = item.items && item.items.length > 0 ? item.items.join('、') : '—';
+		lines.push(`${item.palace}：${txt}`);
+	});
+	return lines.join('\n');
+}
+
+function formatSnapshotValue(value){
+	if(value === undefined || value === null || value === ''){
+		return '—';
+	}
+	if(Array.isArray(value)){
+		return value.map((item)=>formatSnapshotValue(item)).filter((item)=>item && item !== '—').join('、') || '—';
+	}
+	if(typeof value === 'object'){
+		return Object.keys(value).map((key)=>{
+			const item = formatSnapshotValue(value[key]);
+			if(!item || item === '—'){
+				return '';
+			}
+			return `${key}：${item}`;
+		}).filter(Boolean).join('；') || '—';
+	}
+	return `${value}`.replace(/得None/g, '未得').replace(/None/g, '未得');
+}
+
+export function getStyleLabel(value){
+	if(value === 5){
+		return '太乙命法';
+	}
+	return getTaiyiStyleLabel(value);
+}
+
+export function getMethodLabel(value){
+	return getTaiyiAccumLabel(value);
+}
+
+export function getMethodSource(value){
+	const one = METHOD_SOURCE_OPTIONS.find((item)=>item.value === value);
+	return one ? one.source : '';
+}

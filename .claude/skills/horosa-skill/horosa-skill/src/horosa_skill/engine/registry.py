@@ -1,0 +1,343 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Type
+
+from horosa_skill.schemas.tools import (
+    BaziInverseInput,
+    GuoLaoInput,
+    AgePointInput,
+    NeromanInput,
+    BezzaFigureInput,
+    JayProfectionInput,
+    MichonInput,
+    TimeLordsInput,
+    BalbillusInput,
+    TriplicityRulersInput,
+    KeypointsInput,
+    LunationPhaseInput,
+    ExtraReturnsInput,
+    BaZiBirthInput,
+    BaZiDirectInput,
+    AstroChartInput,
+    CanPingInput,
+    DecennialsInput,
+    DistributionsInput,
+    EphemerisInput,
+    ElectionInput,
+    ExportParseInput,
+    ExportRegistryInput,
+    FirdariaInput,
+    GeomancyInput,
+    GermanyInput,
+    GuaMeiyiInput,
+    GuaDescInput,
+    GuaNamesInput,
+    BabylonInput,
+    HuangliInput,
+    TongshuInput,
+    DraconicInput,
+    HarmonicInput,
+    RelocationInput,
+    HeLuoInput,
+    HoraryInput,
+    IndiaChartInput,
+    IndiaRectifyInput,
+    PlanetCyclesInput,
+    JieQiBirthInput,
+    JaynesProgInput,
+    JinKouInput,
+    JieQiYearInput,
+    KnowledgeReadInput,
+    KnowledgeRegistryInput,
+    LingqiInput,
+    LiuRengGodsInput,
+    LiuRengRunYearInput,
+    MundaneInput,
+    NatalChartInput,
+    YizhangjingInput,
+    DongyaInput,
+    ZhufangInput,
+    XiaoLiuRenInput,
+    FeiGongInput,
+    XiaoChengTuInput,
+    GuiceInput,
+    ZhengChuanInput,
+    ACGInput,
+    AstrodataInput,
+    XuanshiInput,
+    NongliTimeInput,
+    CalendarMonthInput,
+    OtherBuInput,
+    PersianDirectedInput,
+    PlanetaryAgesInput,
+    PlanetaryArcInput,
+    PredictiveInput,
+    PrenatalSyzygyInput,
+    ProgInput,
+    ProfectionInput,
+    ZodiacalReleaseInput,
+    QimenInput,
+    QimenZeriInput,
+    HuangliZeriInput,
+    BaziZeriInput,
+    TaiyiZeriInput,
+    ZiweiZeriInput,
+    LiurengZeriInput,
+    SanshiZeriInput,
+    QizhengZeriInput,
+    IndiaZeriInput,
+    RelativeInput,
+    ReturnTimelineInput,
+    ShenShuInput,
+    CetianInput,
+    QizhengKinInput,
+    WangjiInput,
+    VedicProgInput,
+    YearSystem129Input,
+    SanShiUnitedInput,
+    SixYaoInput,
+    SuZhanInput,
+    TaiyiInput,
+    TianxingInput,
+    QizhengElectionInput,
+    TarotInput,
+    TongSheFaInput,
+    TransformChartInput,
+    ZiWeiBirthInput,
+    ZiWeiRulesInput,
+    ZodiacSystemsInput,
+)
+
+
+@dataclass(frozen=True)
+class ToolDefinition:
+    name: str
+    domain: str
+    action: str
+    endpoint: str | None
+    input_model: Type
+    description: str
+    execution: str = "remote"
+
+    @property
+    def mcp_name(self) -> str:
+        return f"horosa_{self.domain}_{self.action}"
+
+
+TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
+    "export_registry": ToolDefinition("export_registry", "export", "registry", None, ExportRegistryInput, "返回完整的星阙 AI 导出设置注册表（机读 JSON）。Return the full 星阙 AI export-settings registry as machine-readable JSON.", execution="local"),
+    "export_parse": ToolDefinition("export_parse", "export", "parse", None, ExportParseInput, "把星阙 AI 导出文本快照解析为结构化 JSON 段落。Parse a 星阙 AI export text snapshot into structured JSON sections.", execution="local"),
+    "knowledge_registry": ToolDefinition("knowledge_registry", "knowledge", "registry", None, KnowledgeRegistryInput, "列出内置知识库的全部域 / 分类 / 键（悬浮知识 + 技法操作手册 + 八字断语库）。List every bundled knowledge domain (hover knowledge, technique manuals, BaZi pithy sayings) with its categories and keys.", execution="local"),
+    "knowledge_read": ToolDefinition("knowledge_read", "knowledge", "read", None, KnowledgeReadInput, "精读一条知识（带出处）：内置知识 domain+category+key；用户自备笔记 domain=\"user\"+key，长笔记用 from_line / max_lines 按原文件行号翻页。检索请用 horosa_knowledge_search。Read one cited knowledge entry: bundled by domain/category/key, or the user's own note with domain=\"user\" + key (page long notes by file line: from_line / max_lines). To search, use horosa_knowledge_search.", execution="local"),
+    "qimen": ToolDefinition("qimen", "cn", "qimen", None, QimenInput, "本地起奇门遁甲盘（与前端逐值同源）。Run the local 奇门遁甲 engine with headless frontend parity.", execution="local"),
+    "taiyi": ToolDefinition("taiyi", "cn", "taiyi", None, TaiyiInput, "本地起太乙神数盘（与前端逐值同源）。Run the local 太乙 engine with headless frontend parity.", execution="local"),
+    "jinkou": ToolDefinition("jinkou", "cn", "jinkou", None, JinKouInput, "本地起金口诀盘（与前端逐值同源）。Run the local 金口诀 engine with headless frontend parity.", execution="local"),
+    "tongshefa": ToolDefinition("tongshefa", "cn", "tongshefa", None, TongSheFaInput, "本地统摄法起卦（机读输出）。Run the local 统摄法 engine with machine-readable output.", execution="local"),
+    "sanshiunited": ToolDefinition("sanshiunited", "cn", "sanshiunited", None, SanShiUnitedInput, "三式合一：一页聚合奇门 / 太乙 / 大六壬并统一导出。Run the 三式合一 aggregator with 奇门 / 太乙 / 大六壬 parity sections.", execution="local"),
+    "suzhan": ToolDefinition("suzhan", "cn", "suzhan", None, SuZhanInput, "起宿占 / 宿盘（结构化快照段）。Generate the 宿占 / 宿盘 output with machine-readable snapshot sections.", execution="local"),
+    "sixyao": ToolDefinition("sixyao", "cn", "sixyao", None, SixYaoInput, "起六爻 / 易卦（含爻位 / 动变 / 断卦段）。Generate the 易卦 / 六爻 output with line, movement, and interpretation sections.", execution="local"),
+    "canping": ToolDefinition("canping", "cn", "canping", None, CanPingInput, "本地邵子参评数 / 金锁银匙（本命 / 大运 / 流年歲運 条文，与星阙同源）。Run the local 邵子参评数 / 金锁银匙 engine with 星阙 parity.", execution="local"),
+    "heluo": ToolDefinition("heluo", "cn", "heluo", None, HeLuoInput, "本地河洛理数（先后天卦 / 命运篇 / 大限岁运 + 元堂爻辞，与星阙同源）。Run the local 河洛理数 engine (起命/先天卦/后天卦/命运篇/大限·岁运 with 元堂爻辞) with 星阙 parity.", execution="local"),
+    "yizhangjing": ToolDefinition("yizhangjing", "cn", "yizhangjing", None, YizhangjingInput, "本地一掌经（四柱四宫 / 命宫 / 十二宫 / 格局 / 大限小限流年十二神 / 神煞合参）。Run the local 一掌经 engine (四柱四宫/命宫/人事十二宫/格局/重犯/大限/小限流年十二神/神煞合参).", execution="local"),
+    "dongya": ToolDefinition("dongya", "cn", "dongya", None, DongyaInput, "东亚诸术（七段）：藏历 / 藏占 / 蒙古 Zurkhai / 算命学 / 九星气学 / 洛书流年 / 易卦星盘。Tibetan calendar & divination, Sanmeigaku, Nine Star Ki, Lo Shu year, I Ching astrology.", execution="local"),
+    "zhufang": ToolDefinition("zhufang", "other", "zhufang", None, ZhufangInput, "诸方杂术（四段）：玛雅历 / 十三月亮历 / 人类图 / 灵名字母。Maya Long Count & Tzolk'in, 13 Moon Dreamspell, Human Design, spirit-name letters.", execution="local"),
+    "xiaoliuren": ToolDefinition("xiaoliuren", "cn", "xiaoliuren", None, XiaoLiuRenInput, "本地小六壬起课（三数起三传·主流六宫 / 道门九宫·相邻生克·九神断语·拜解化解）。Run the local 小六壬 engine (three-number 三传, 主流六宫/道门九宫, 相邻生克, 九神, 拜解).", execution="local"),
+    "feigong": ToolDefinition("feigong", "cn", "feigong", None, FeiGongInput, "本地飞宫小奇门定局（时上起青龙·甲乘龙飞九宫·主客命宫·八门九星·流年流月·应期）。Run the local 飞宫小奇门 engine (青龙 flies 九宫, 主客/命宫/八门九星/流年流月/应期).", execution="local"),
+    "xiaochengtu": ToolDefinition("xiaochengtu", "cn", "xiaochengtu", None, XiaoChengTuInput, "本地小成图排盘（洛书九宫佈局·正旁推·四象·应期·股市研判；手动/两数/股价/大衍/占时五式起卦）。Run the local 小成图 engine (洛书九宫 layout, 正旁推, 四象, 应期, 股市; manual/number/stock/大衍/占时 casting).", execution="local"),
+    "guice": ToolDefinition("guice", "cn", "guice", None, GuiceInput, "本地皇极轨策起卦（十二法起卦·演数四位·卦变断法·三要十应·元会运世·大定起数）。Run the local 皇极轨策 engine (12 casting methods, 演数四位, 卦变断法, 三要十应, 元会运世, 大定起数).", execution="local"),
+    "zhengchuan": ToolDefinition("zhengchuan", "cn", "zhengchuan", None, ZhengChuanInput, "本地神数正传（铁板 / 邵子 / 大定 / 六亲 / 铁算心易 五流派·四柱起数·装卦·条文·大运死月）。Run the local 神数正传 engine (铁板/邵子/大定/六亲/铁算心易 five schools; 四柱 casting, 装卦, 条文, 大运/死月).", execution="local"),
+    "acg": ToolDefinition("acg", "astro", "acg", None, ACGInput, "起占星地图 / AstroCartoGraphy 行星线图（MC/IC/ASC/DESC 地理线、天顶点、偕升带、线交点）。Generate the AstroCartoGraphy line map — per-planet MC/IC/ASC/DESC geographic lines, zenith points, parans, and crossings.", execution="local"),
+    "xuanshi": ToolDefinition("xuanshi", "knowledge", "xuanshi", None, XuanshiInput, "检索玄史（中国玄学史知识库）：7900+ 玄学事件（原文/白话/解读/引证）、27000+ 史书天象记录、人物图谱、朝代/术数/天象名词与时间线。Query the Chinese esoteric-history knowledge base — 7900+ sourced events (original text / modern reading / citations), 27000+ celestial records from the official histories, figure co-occurrence graph, dynasty & technique views, and timelines.", execution="local"),
+    "bazi_inverse": ToolDefinition("bazi_inverse", "cn", "bazi_inverse", "/common/inversebazi", BaziInverseInput, "八字反查：四柱干支反推候选公历出生时刻（逐年回推，最多 10 条）。Reverse-lookup candidate birth moments from four-pillar ganzhi.", execution="local"),
+    "astrodata": ToolDefinition("astrodata", "astro", "astrodata", None, AstrodataInput, "离线名人星盘库检索（全文 / 分类 / Rodden 评级，单人可直接排盘）。Query the offline celebrity birth-data catalog (FTS search / category / Rodden filter, per-person chart-ready birth data).", execution="local"),
+    "chart": ToolDefinition("chart", "astro", "chart", "/chart", NatalChartInput, "生成基础西洋星盘（含完整 AI 导出正文）。Generate a core Horosa chart."),
+    "chart13": ToolDefinition("chart13", "astro", "chart13", "/chart13", AstroChartInput, "生成 13 宫扩展盘（chart13 形态）。Generate the chart13 variant."),
+    "babylon": ToolDefinition("babylon", "astro", "babylon", None, BabylonInput, "起巴比伦占星盘（恒星黄道·毕宿锚 + 算术历日 + 七曜清单 + 「位」三法 + 行星神性 + 微黄道）。Generate the Babylonian astrology snapshot — sidereal (Aldebaran-anchored) planet list, arithmetic calendar, the bīt niṣirti triplicity scheme, planetary numina, and the 144-part microzodiac.", execution="local"),
+    "chart12": ToolDefinition("chart12", "astro", "chart12", "/chart12", AstroChartInput, "生成十二分盘 / Dwadasamsa（黄经×12 mod 360，与十三分盘同结构）。Generate the 十二分盘 / Dwadasamsa chart (lon×12 mod 360)."),
+    "draconic": ToolDefinition("draconic", "astro", "draconic", None, DraconicInput, "生成龙盘 / Draconic chart（各点黄经减北交点，交点归零的盘）。Generate the 龙盘 / Draconic chart (all longitudes measured from the North Node).", execution="local"),
+    "relocation": ToolDefinition("relocation", "astro", "relocation", None, RelocationInput, "生成重置盘 / Relocation chart（保留出生时刻，按新居住地重算宫位与角点）。Generate the 重置盘 / Relocation chart — same birth moment, houses and angles recomputed for a new location.", execution="local"),
+    "transformchart": ToolDefinition("transformchart", "astro", "transformchart", None, TransformChartInput, "生成变换盘（本命盘按 33 种变换之一换算成新盘：倒置 / 映点 / 旬盘 / 地理盘 / 日心 / 人格盘 / 受孕盘…）。Generate a 变换盘 / transformed chart (the natal chart recast by one of 33 transforms).", execution="local"),
+    "zodiacsystems": ToolDefinition("zodiacsystems", "astro", "zodiacsystems", None, ZodiacSystemsInput, "起黄道制（各点在十三 / 十四星座、不等分十二段黄道的落段，真实星座，银河黄道，换星座时刻）。黄道制 / zodiac systems: each point in 13-sign, 14-sign and unequal 12-segment zodiacs.", execution="local"),
+    "hellen_chart": ToolDefinition("hellen_chart", "astro", "hellen_chart", None, AstroChartInput, "生成希腊占星取向盘。Generate the 希腊星盘 / Hellenistic chart output.", execution="local"),
+    "guolao_chart": ToolDefinition("guolao_chart", "astro", "guolao_chart", None, GuoLaoInput, "生成七政四余 / 果老法盘。Generate the 七政四余 chart output.", execution="local"),
+    "germany": ToolDefinition("germany", "astro", "germany", None, GermanyInput, "生成量化盘 / 汉堡学派中点分析盘。Generate the 量化盘 / midpoint analysis output.", execution="local"),
+    "harmonic": ToolDefinition("harmonic", "astro", "harmonic", None, HarmonicInput, "生成调波盘（本命黄经×调波数 + 调波位置 + 同频合相）。Generate the 调波盘 / harmonic chart with 调波位置 and 同频合相.", execution="local"),
+    "agepoint": ToolDefinition("agepoint", "predict", "agepoint", None, AgePointInput, "起年龄推进点 / Age Point（Huber）时间轴——Koch 宫年龄周期 + 本命触发。Generate the 年龄推进点 / Age Point (Huber) timeline — Koch-house age cycle with natal contacts.", execution="local"),
+    "distributions": ToolDefinition("distributions", "predict", "distributions", None, DistributionsInput, "起界推运 / 分配法时间轴——上升点行经埃及界 + 分配星与参与星。Generate the 界推运 / Distributions timeline — Asc through the Egyptian bounds with distributor + participants.", execution="local"),
+    "mundane": ToolDefinition("mundane", "astro", "mundane", None, MundaneInput, "起世俗入宫盘——按某年节气（春分/夏至/秋分/冬至）入宫时刻起盘。Generate the 世俗入宫盘 / mundane ingress chart — cast at the precise solar-term ingress moment of a year.", execution="local"),
+    "jaynesprog": ToolDefinition("jaynesprog", "predict", "jaynesprog", None, JaynesProgInput, "起赤纬推运 / Jayne（二次推运 + 赤纬平行 / 反平行）。Generate the 赤纬推运 / Jayne Declination progression (secondary progression + declination parallels).", execution="local"),
+    # 推运图族四法（上游 v3.13.0 之后 219d8a67）：后端 /astroextra/<接口> 算，vendored 上游 directedFigures 排版。
+    "neroman": ToolDefinition("neroman", "predict", "neroman", None, NeromanInput, "起演进推运（Néroman：对数时标弧，演进位置 / 对本命相位 / 天顶上升过本命点）。Néroman evolved directions.", execution="local"),
+    "bezzafigure": ToolDefinition("bezzafigure", "predict", "bezzafigure", None, BezzaFigureInput, "起推运图（Bezza：真太阳弧下 Placidus 世俗推进与四类接触）。Bezza directed figure.", execution="local"),
+    "jayprofection": ToolDefinition("jayprofection", "predict", "jayprofection", None, JayProfectionInput, "起周日小限（Jay：赤经中天每年 +30°，十二年逐年表）。Jay diurnal profection.", execution="local"),
+    "michon": ToolDefinition("michon", "predict", "michon", None, MichonInput, "起双黄道（Michon：回归 / 恒星黄道叠合的谐波族）。Michon double zodiac.", execution="local"),
+    # 时主轮转十二法（上游 v3.14.0）：后端 /astroextra/timelords 算，vendored 上游 timeLordTables 排版；tlMethod 选法。
+    "timelords": ToolDefinition("timelords", "predict", "timelords", None, TimeLordsInput, "起时主轮转（十二法的期表 / 事件表，tlMethod 选法）。Time-lord tables (12 methods).", execution="local"),
+    "vedicprog": ToolDefinition("vedicprog", "predict", "vedicprog", None, VedicProgInput, "起恒星推运 / Vedic sidereal 二次推运。Generate the 恒星推运 / Vedic sidereal progression.", execution="local"),
+    # 上游 v3.11 星运四键（[Q-106/T-10] 星历/回归轴/产前朔望 + [#80] 回归黄道二次推运）。
+    "ephemeris": ToolDefinition("ephemeris", "predict", "ephemeris", None, EphemerisInput, "起星历（入座 / 留逆 / 朔望弦 / 食相 + 行运触发本命）。Ephemeris events in a date window.", execution="local"),
+    "returntimeline": ToolDefinition("returntimeline", "predict", "returntimeline", None, ReturnTimelineInput, "起回归轴（逐年日返 + 首个月返时刻与上升）。Solar/lunar return timeline by year.", execution="local"),
+    "prenatalsyzygy": ToolDefinition("prenatalsyzygy", "predict", "prenatalsyzygy", None, PrenatalSyzygyInput, "起产前朔望（取度 + 朔望时刻星盘）。Prenatal syzygy and its chart.", execution="local"),
+    "prog": ToolDefinition("prog", "predict", "prog", None, ProgInput, "起二次推运（回归黄道，含三次 / 小推运）。Tropical secondary progressions.", execution="local"),
+    "planetaryarc": ToolDefinition("planetaryarc", "predict", "planetaryarc", None, PlanetaryArcInput, "起行星弧向运（整盘按 arcSource 二次弧方向）。Generate the 行星弧 / Planetary Arc direction (whole chart directed by arcSource's secondary arc).", execution="local"),
+    "planetaryages": ToolDefinition("planetaryages", "predict", "planetaryages", None, PlanetaryAgesInput, "起行星年龄 / 托勒密人生七阶（本命盘）。Generate the 行星年龄 / Ages of Man (Ptolemy seven ages) for the natal chart.", execution="local"),
+    "balbillus": ToolDefinition("balbillus", "predict", "balbillus", None, BalbillusInput, "起 Balbillus 129 年系统（旺距削减主限）人生分段表。Generate the Balbillus 129年系统 life-period table for the natal chart.", execution="local"),
+    "yearsystem129": ToolDefinition("yearsystem129", "predict", "yearsystem129", None, YearSystem129Input, "起 129 年系统（七政接续，129 年一轮）分段。Generate the 129年系统 (seven-planet succession, 129-year cycle) periods for the natal chart.", execution="local"),
+    "triplicityrulers": ToolDefinition("triplicityrulers", "predict", "triplicityrulers", None, TriplicityRulersInput, "起三分主星推运——区间光体的三分主星按昼夜划分人生阶段。Generate the 三分主星推运 (Triplicity-Ruler life periods) — sect light's triplicity rulers split life into stages.", execution="local"),
+    "keypoints": ToolDefinition("keypoints", "predict", "keypoints", None, KeypointsInput, "起数字相位推运——七星小年数 + 释放点座距按年龄激活。Generate the 数字相位推运 (numeric keypoints) — planetary period-numbers + release-point sign distances activate planets by year.", execution="local"),
+    "lunationphase": ToolDefinition("lunationphase", "predict", "lunationphase", None, LunationPhaseInput, "起月相推运——本命日月黄经差按次限速率推进的八相时间轴。Generate the 月相推运 (progressed lunation phase) timeline — natal Sun-Moon elongation advanced by the secondary rate.", execution="local"),
+    "extrareturns": ToolDefinition("extrareturns", "predict", "extrareturns", None, ExtraReturnsInput, "起多重回归（土星 / 木星 / 月交返照）应期表。Generate the 多重回归 (Saturn / Jupiter / lunar-node returns) dates via the planet-return backend.", execution="local"),
+    "persiandirected": ToolDefinition("persiandirected", "predict", "persiandirected", None, PersianDirectedInput, "起波斯向运（黄经象征 1°/年）应期表。Generate the 波斯向运 / Persian Directed (symbolic 1°/year) hit-list.", execution="local"),
+    "horary": ToolDefinition("horary", "chart", "horary", None, HoraryInput, "起卜卦 / horary 断盘（根本性 / 征象星 / 完成 / 月亮 / 裁决 / 应期），以问卦时刻起盘。Run a 卜卦 / horary judgment (radicality, significators, perfection, moon, verdict, timing) for a question cast at its asked-moment.", execution="local"),
+    "election": ToolDefinition("election", "chart", "election", None, ElectionInput, "起择日 / electional 断盘（红线 / 用事规则包 / 评分 / 建议），评估候选时刻。Run a 择日 / electional judgment (hard flags, topic rule pack, scoring, recommendations) for a candidate moment.", execution="local"),
+    "tianxing": ToolDefinition("tianxing", "chart", "tianxing", None, TianxingInput, "天星择日·征象搜索：在时间窗内扫出满足西占征象条件树的时段（起盘信息 / 搜索配置 / 条件 / 命中区间）。Scan a time window for intervals matching a Western-astrology omen condition tree (天星择日 electional search).", execution="local"),
+    "qizhengelection": ToolDefinition("qizhengelection", "chart", "qizhengelection", None, QizhengElectionInput, "七政择日动盘（果老择日双轮）：候选时刻的十一曜黄道地支度 / 二十四山方位 / 地平高度顺逆 + 真太阳时命度，另可搜未来日月食与星曜到达指定罗盘方位的时刻。Qizheng electional dynamic wheel: 11-body compass-mountain positions at a candidate moment, plus eclipse and azimuth-arrival searches.", execution="local"),
+    "qimenzeri": ToolDefinition("qimenzeri", "cn", "qimenzeri", None, QimenZeriInput, "奇门择日「找局」：在时间窗内扫出满足奇门条件树的时辰，并附完整奇门盘（17 段 + 择日三段）。Scan a time window for 时辰 matching a 奇门遁甲 condition tree, with the full 奇门 chart attached.", execution="local"),
+    # 择日十技法（上游 v3.10.0）：奇门/天星之外的八个成员。前六个的区间搜索跑 vendored 引擎、
+    # 展示盘仍走各自基底技法的原算源；七政/印度两个的判定与搜索都在 astropy 后端。
+    "huanglizeri": ToolDefinition("huanglizeri", "cn", "huanglizeri", None, HuangliZeriInput, "黄历择吉：在日期范围内扫出满足通书条件树的日子，并附完整黄历日课（10 段 + 择吉三段）。Scan a date range for days matching a 通书 condition tree, with the full 黄历 almanac attached.", execution="local"),
+    "bazizeri": ToolDefinition("bazizeri", "cn", "bazizeri", None, BaziZeriInput, "八字择时：在时间窗内扫出满足八字条件树的时辰（十神在柱/刑冲穿破/纳音星运等 26 类），并附完整八字盘。Scan a time window for 时辰 matching a BaZi condition tree, with the full BaZi chart attached.", execution="local"),
+    "taiyizeri": ToolDefinition("taiyizeri", "cn", "taiyizeri", None, TaiyiZeriInput, "太乙择时：在时间窗内扫出满足太乙条件树的时辰（十精诸算/九州分野等 24 类），并附完整太乙盘。Scan a time window for 时辰 matching a 太乙 condition tree, with the full 太乙 chart attached.", execution="local"),
+    "ziweizeri": ToolDefinition("ziweizeri", "cn", "ziweizeri", None, ZiweiZeriInput, "紫微择时：在时间窗内扫出满足紫微条件树的时辰（格局含破格/宫干四化/来因宫等 28 类），并附完整紫微盘。Scan a time window for 时辰 matching a 紫微斗数 condition tree, with the full chart attached.", execution="local"),
+    "liurengzeri": ToolDefinition("liurengzeri", "cn", "liurengzeri", None, LiurengZeriInput, "六壬择时：在时间窗内扫出满足六壬条件树的时辰（小局大格/遁干/旺衰等 27 类），并附完整六壬盘。Scan a time window for 时辰 matching a 六壬 condition tree, with the full chart attached.", execution="local"),
+    "sanshizeri": ToolDefinition("sanshizeri", "cn", "sanshizeri", None, SanshiZeriInput, "三式合一择时：条件可跨六壬/奇门/太乙三盘自由组合（70 类，最多的一支），并附三式合一盘。Scan a time window with conditions spanning 六壬 / 奇门 / 太乙 simultaneously, with the united chart attached.", execution="local"),
+    "qizhengzeri": ToolDefinition("qizhengzeri", "astro", "qizhengzeri", None, QizhengZeriInput, "七政择时：在时间窗内扫出满足七政条件树的分钟级区间（七态庙旺等），判定跑 astropy swisseph 直连，并附果老盘。Scan a time window for minute-level intervals matching a 七政 condition tree (backend swisseph), with the 果老 chart attached.", execution="local"),
+    "indiazeri": ToolDefinition("indiazeri", "astro", "indiazeri", None, IndiaZeriInput, "印度择时（Muhurta）：Panchanga 五肢 / Lagna / 三十须臾 / Choghadia / 行星时 / 五祸等条件的分钟级区间搜索，判定跑 astropy。Muhurta election search over Panchanga limbs, Lagna, the 30 muhurtas, Choghadia, planetary hours and the five doshas (backend astropy).", execution="local"),
+    "geomancy": ToolDefinition("geomancy", "cn", "geomancy", None, GeomancyInput, "以起卦时刻确定性起天文地占（4 母卦 → 16 图形 / 十二宫 / 判官见证 / 解读）。Cast 天文地占 / astronomical geomancy deterministically from the query moment (4 mothers → 16 figures, 12 houses, judge/witnesses, technique reading).", execution="local"),
+    "lingqi": ToolDefinition("lingqi", "cn", "lingqi", None, LingqiInput, "以起卦时刻确定性掷灵棋经十二棋（上四中四下四 → 六十四卦 → 繇辞 / 诸家注 / 课断 / 断诗）。Cast the 灵棋经 (Book of Numinous Chess) deterministically from the query moment — twelve pieces in three layers → one of 64 figures, with its oracle verse, commentator notes, verdict, and poem.", execution="local"),
+    "tarot": ToolDefinition("tarot", "cn", "tarot", None, TarotInput, "以问卦时刻确定性抽塔罗牌阵（种子洗牌 → 牌面 → 综合断语）。Draw a 塔罗 / tarot spread deterministically from the query moment (seeded shuffle → cards → verdict/synthesis reading).", execution="local"),
+    "wangji": ToolDefinition("wangji", "shenshu", "wangji", None, WangjiInput, "按日期时间起皇极经世·心易发微（wangji）神数盘，返回后端断语。Cast a 皇极经世·心易发微 (wangji) 神数 chart from a date/time and return its backend-built reading.", execution="local"),
+    "wuzhao": ToolDefinition("wuzhao", "shenshu", "wuzhao", None, ShenShuInput, "按日期时间起五兆（wuzhao）神数盘，返回后端断语。Cast a 五兆 (wuzhao) 神数 chart from a date/time and return its backend-built reading.", execution="local"),
+    "taixuan": ToolDefinition("taixuan", "shenshu", "taixuan", None, ShenShuInput, "按日期时间起太玄·揲蓍（taixuan）神数盘，返回后端断语。Cast a 太玄·揲蓍 (taixuan) 神数 chart from a date/time and return its backend-built reading.", execution="local"),
+    "jingjue": ToolDefinition("jingjue", "shenshu", "jingjue", None, ShenShuInput, "按日期时间起荆诀（jingjue）十六卦课，返回后端断语。Cast a 荆诀 (jingjue, 16-gua) 课 from a date/time and return its backend-built reading.", execution="local"),
+    "shenyishu": ToolDefinition("shenyishu", "shenshu", "shenyishu", None, ShenShuInput, "按日期时间起神易数（shenyishu）神数盘，返回后端断语。Cast a 神易数 (shenyishu) 神数 chart from a date/time and return its backend-built reading.", execution="local"),
+    "shaozi": ToolDefinition("shaozi", "shenshu", "shaozi", None, ShenShuInput, "按日期时间（+性别）起邵子神数（shaozi）盘，返回后端断语。Cast a 邵子神数 (shaozi) chart from a date/time (+gender) and return its backend-built reading.", execution="local"),
+    "tieban": ToolDefinition("tieban", "shenshu", "tieban", None, ShenShuInput, "按日期时间（+性别）起铁板神数（tieban）盘，返回后端断语。Cast a 铁板神数 (tieban) chart from a date/time (+gender) and return its backend-built reading.", execution="local"),
+    "fendjing": ToolDefinition("fendjing", "shenshu", "fendjing", None, ShenShuInput, "Cast a 鬼谷分定经·两头钳 (fendjing) chart from a date/time and return its backend-built reading.", execution="local"),
+    "beiji": ToolDefinition("beiji", "shenshu", "beiji", None, ShenShuInput, "Cast a 北极神数 (beiji) chart from a date/time and return its backend-built reading.", execution="local"),
+    "nanji": ToolDefinition("nanji", "shenshu", "nanji", None, ShenShuInput, "Cast a 南极神数 (nanji) chart from a date/time and return its backend-built reading.", execution="local"),
+    "chunzi": ToolDefinition("chunzi", "shenshu", "chunzi", None, ShenShuInput, "Cast a 蠢子数 (chunzi) chart from a date/time (+gender) and return its backend-built reading.", execution="local"),
+    "xianqin": ToolDefinition("xianqin", "shenshu", "xianqin", None, ShenShuInput, "按日期时间（+性别/地点）起演禽（xianqin）盘，返回后端断语。Cast a 演禽 (xianqin) chart from a date/time (+gender/place) and return its backend-built reading.", execution="local"),
+    "cetian": ToolDefinition("cetian", "shenshu", "cetian", None, CetianInput, "按日期时间（+性别/地点）起策天飞星·紫微（cetian）盘，返回后端断语。Cast a 策天飞星·紫微 (cetian) chart from a date/time (+gender/place) and return its backend-built reading.", execution="local"),
+    "qizhengkin": ToolDefinition("qizhengkin", "shenshu", "qizhengkin", None, QizhengKinInput, "按日期时间（+性别/地点）起七政四余·张果星宗（qizhengkin）盘，返回后端断语。Cast a 七政四余·张果星宗 (qizhengkin) chart from a date/time (+gender/place) and return its backend-built reading.", execution="local"),
+    "solarreturn": ToolDefinition("solarreturn", "predict", "solarreturn", "/predict/solarreturn", PredictiveInput, "计算太阳返照盘。Compute the solar return chart."),
+    "lunarreturn": ToolDefinition("lunarreturn", "predict", "lunarreturn", "/predict/lunarreturn", PredictiveInput, "计算太阴返照盘。Compute the lunar return chart."),
+    "solararc": ToolDefinition("solararc", "predict", "solararc", "/predict/solararc", PredictiveInput, "计算太阳弧向运。Compute solar arc directions."),
+    "givenyear": ToolDefinition("givenyear", "predict", "givenyear", "/predict/givenyear", PredictiveInput, "计算指定年推运盘。Compute given-year predictive output."),
+    "profection": ToolDefinition("profection", "predict", "profection", "/predict/profection", ProfectionInput, "计算小限 / 年运推限。Compute profection output."),
+    "pd": ToolDefinition("pd", "predict", "pd", "/predict/pd", PredictiveInput, "计算本初方向 / 主限。Compute primary directions."),
+    "pdchart": ToolDefinition("pdchart", "predict", "pdchart", "/predict/pdchart", PredictiveInput, "计算主限法盘。Compute primary direction chart output."),
+    "zr": ToolDefinition("zr", "predict", "zr", "/predict/zr", ZodiacalReleaseInput, "计算黄道释放（zodiacal release）。Compute zodiacal release output."),
+    "firdaria": ToolDefinition("firdaria", "predict", "firdaria", None, FirdariaInput, "生成法达星限。Generate the 法达星限 output.", execution="local"),
+    "decennials": ToolDefinition("decennials", "predict", "decennials", None, DecennialsInput, "生成十年大运（含完整时间轴段）。Generate the 十年大运 output with full timeline sections.", execution="local"),
+    "otherbu": ToolDefinition("otherbu", "other", "otherbu", None, OtherBuInput, "生成西洋游戏 / 占星骰子。Generate the 西洋游戏 / 占星骰子 output.", execution="local"),
+    "relative": ToolDefinition("relative", "astro", "relative", "/modern/relative", RelativeInput, "计算合盘 / 关系盘。Compute relationship / relative chart output."),
+    "india_chart": ToolDefinition("india_chart", "astro", "india_chart", "/india/chart", IndiaChartInput, "计算印度（吠陀）恒星黄道盘（indiaHsys 0–24 分宫制 + indiaAyanamsa 47 岁差）。Compute Indian (Vedic) sidereal chart."),
+    "india_rectify": ToolDefinition("india_rectify", "astro", "india_rectify", None, IndiaRectifyInput, "印度 KP 法出生时间校正：锚点±半窗扫描候选，按 RP/Pranapada/边界(+事件)判据打分排序（候选榜 / Lagna 子主区段 / 步长诊断）。KP birth-time rectification: scan a window around the anchor time and rank candidates by RP / Pranapada / gandanta-boundary (+ optional life events).", execution="local"),
+    "planet_cycles": ToolDefinition("planet_cycles", "astro", "planet_cycles", None, PlanetCyclesInput, "行星周期：任意两星（木土/土冥/天海…）在给定年区间内的合/冲精确时间轴（世运周期骨架；支持地心/日心/站心）。Planet cycles: exact conjunction/opposition timeline for any planet pair over a year range (geo/helio/topo).", execution="local"),
+    "jieqi_birth": ToolDefinition("jieqi_birth", "cn", "jieqi_birth", None, JieQiBirthInput, "出生节气窗：定位出生时刻前后的节气精确时刻并标出所落区间（八字起运窗同源数据）。Locate the solar terms bracketing a birth moment (the same window BaZi luck-period counting uses).", execution="local"),
+    "ziwei_birth": ToolDefinition("ziwei_birth", "cn", "ziwei_birth", "/ziwei/birth", ZiWeiBirthInput, "生成紫微斗数命盘。Generate Zi Wei birth chart.", execution="local"),
+    "ziwei_rules": ToolDefinition("ziwei_rules", "cn", "ziwei_rules", "/ziwei/rules", ZiWeiRulesInput, "获取紫微斗数规则库。Fetch Zi Wei rules."),
+    "bazi_birth": ToolDefinition("bazi_birth", "cn", "bazi_birth", "/bazi/direct", BaZiBirthInput, "生成八字命盘（四柱 / 大运 / 神煞 / 五行力量 / 格局）。Generate BaZi birth output.", execution="local"),
+    "bazi_direct": ToolDefinition("bazi_direct", "cn", "bazi_direct", "/bazi/direct", BaZiDirectInput, "八字命盘，与 bazi_birth 同一引擎、同一输出（大运 / 流年 / 小运都在里面）；保留这个名字兼容旧调用，新调用用 bazi_birth。Same output as bazi_birth (kept for compatibility).", execution="local"),
+    "liureng_gods": ToolDefinition(
+        "liureng_gods",
+        "cn",
+        "liureng_gods",
+        "/liureng/gods",
+        LiuRengGodsInput,
+        "起大六壬正盘（四课三传，含当前时间起课）/ four lessons and three transmissions. Use this MCP tool for any 大六壬起课 request, including current-time pans; do not hand-calculate with shell/Python or web snippets. Returns Xingque-compatible structured export sections, memory, and report-ready data.",
+        execution="local",
+    ),
+    "liureng_runyear": ToolDefinition(
+        "liureng_runyear",
+        "cn",
+        "liureng_runyear",
+        "/liureng/runyear",
+        LiuRengRunYearInput,
+        "生成大六壬行年 / runyear（走本地 Horosa runtime，勿用日历脚本手算，以保持存储 / 导出契约 / 报告一致）。Generate 大六壬行年 / runyear output through the local Horosa runtime. Use this tool instead of manual calendar scripts so storage, export contracts, and reports remain consistent.",
+        execution="local",
+    ),
+    "jieqi_year": ToolDefinition("jieqi_year", "cn", "jieqi_year", "/jieqi/year", JieQiYearInput, "生成全年节气盘。Generate JieQi year output."),
+    "nongli_time": ToolDefinition("nongli_time", "cn", "nongli_time", "/nongli/time", NongliTimeInput, "生成农历时间换算。Generate NongLi time output."),
+    "huangli": ToolDefinition("huangli", "cn", "huangli", None, HuangliInput, "起老黄历日课（今日宜忌 / 值神值宿 / 彭祖百忌 / 吉神凶煞 / 冲煞·胎神·方位 / 时辰吉凶 / 物候六曜数九三伏 / 流年年神方位）。Generate the 老黄历 day almanac — daily do/avoid, duty spirits and lunar mansion, Peng Zu taboos, auspicious/inauspicious spirits, clash-sha and fetal-god directions, hourly luck, phenology, and the year-spirit directions.", execution="local"),
+    "tongshu": ToolDefinition("tongshu", "cn", "tongshu", None, TongshuInput, "起通书择日（董公 / 奇门叠数 / 三垣列宿 / 天元乌兔 / 三元玄空大卦 五流派）。Generate the 通书择日 date-selection verdict across the five classical schools.", execution="local"),
+    "calendar_month": ToolDefinition("calendar_month", "cn", "calendar_month", "/calendar/month", CalendarMonthInput, "Generate 黄历/万年历 month calendar (农历/干支/节气/朔望, with optional selected-day detail)."),
+    "gua_desc": ToolDefinition("gua_desc", "cn", "gua_desc", "/gua/desc", GuaDescInput, "获取卦义说明。Fetch Gua descriptions."),
+    "gua_meiyi": ToolDefinition("gua_meiyi", "cn", "gua_meiyi", "/gua/meiyi", GuaMeiyiInput, "获取梅花易数卦义。Fetch MeiYi Gua descriptions."),
+}
+
+
+# MCP 名 → 注册表键。agent 从 tools/list、SKILL.md、guidance 学到的是 MCP 名（horosa_astro_chart），
+# CLI `tool run` / `horosa_tool_run` / `report from-tool` / hecan 的 `tools` 收的却是注册表键（chart）。
+# 两种写法都要能到达同一个技法；而且必须在澄清闸**之前**解析——闸门对不认识的名字放行（只拦已登记的技法），
+# 只在执行层才认 MCP 名会让「换个名字就绕过闸门」成立。
+MCP_NAME_ALIASES: dict[str, str] = {definition.mcp_name: name for name, definition in TOOL_DEFINITIONS.items()}
+
+
+def resolve_tool_name(name: object) -> str | None:
+    """技法名两种写法（`chart` / `horosa_astro_chart`）→ 注册表键；认不出返回 None（调用方报 tool.unknown）。"""
+    if not isinstance(name, str):
+        return None
+    text = name.strip()
+    if text in TOOL_DEFINITIONS:
+        return text
+    return MCP_NAME_ALIASES.get(text)
+
+
+# 查资料类工具（审计 S-14）：注册表 / 知识库 / 规则表 / 卦辞 / 名人库 / 玄史——同参数恒得同结果，不起盘。
+# run_tool 缺省**不存档**（MCP 注解 readOnlyHint=True 因此是真的），记忆检索缺省也不列它们的旧记录。结果太长时阅读视图的续读写成
+# 「同一调用 + response_sections」（没有 run_id 时 result_view 的既有路径）。显式 save_result=True（CLI 开关、dispatch 组）照存。
+LOOKUP_TOOLS = frozenset({
+    "export_registry", "export_parse", "knowledge_registry", "knowledge_read", "ziwei_rules", "gua_desc", "gua_meiyi",
+    "astrodata", "xuanshi",
+})
+
+# 门面工具数（非技法工具：dispatch / guidance / tool_run / memory×3 / report×2 / export×… 等）。
+# 🔴 计数单一真值：以前 marketplace 说 97、instructions 说 106、字节契约说 115、实际 116 —— 四处
+# 互不相同且都「有人守」。默认平铺面 = FULL_SURFACE_TOOL_COUNT（门面 + 广告出来的技法），任何文案都从这里算。
+FACADE_TOOL_COUNT = 14
+
+# 精简面工具数 = 14 门面 + horosa_tool_run。README×2 的「14 个门面/14 facades」由 verify_docs_sync 锁步到此常量。
+COMPACT_SURFACE_TOOL_COUNT = FACADE_TOOL_COUNT + 1
+
+# 注册了、但不单独广告成平铺 MCP 工具的技法键（审计 S-16，维护者 2026-11-14 按推荐定）：bazi_direct 与 bazi_birth 同一引擎、同一输出
+# （Java 回退也已统一走 /bazi/direct），两个并列工具只会让模型二选一、白占全量面 ≈2.3 KB。键名照收：horosa_tool_run / CLI / dispatch /
+# 记忆检索都还认 bazi_direct（旧存档照查）；直呼平铺名 horosa_cn_bazi_direct 的客户端要改用 horosa_cn_bazi_birth。
+UNADVERTISED_TECHNIQUES = frozenset({"bazi_direct"})
+# 全量平铺面工具数 = 门面 + 广告出来的技法。任何文案都从这里算（不再写 FACADE_TOOL_COUNT + len(TOOL_DEFINITIONS)）。
+FULL_SURFACE_TOOL_COUNT = FACADE_TOOL_COUNT + len(TOOL_DEFINITIONS) - len(UNADVERTISED_TECHNIQUES)
+
+
+# 西占盘族（本命 + 五张派生盘 + 世运）：[埃及历] 与 [信息] 互容接纳过滤吃**本盘**（上游 buildAstroSnapshotContent 对任意盘
+# 按 fields 产出，astroAiSnapshot.js:1731；派生盘快照同一 builder，derivedAstroSnapshot.js），所以全族都挂。
+ASTRO_CHART_FAMILY_TOOLS = frozenset({"chart", "chart13", "chart12", "hellen_chart", "harmonic", "mundane", "draconic", "relocation", "transformchart"})
+
+# 古典格局派生分析 (星阙 v2.6.7)：[古典格局] 段来自 /astroextra/analysis（护卫/优势相位/相位动态/逐题主星/偶然尊贵/恒星/
+# 行星时/格局/分布/气质/almutem…），按需 fetch、优雅降级（失败→该段不出）。[古典]（逐曜状态/围攻/围绕）直接读 /chart 响应。
+# 🔴 只挂上游会挂的盘（钉版 pipeline.js:513-518 CLASSICAL_SKIP_KEYS / CLASSICAL_SKIP_DERIVED）：后端按常规黄道以**本命参数**
+# 重算，挂到改黄道读数框架的派生盘（十三分 chart13 / 十二分 chart12 / 希腊分 hellen_chart / 调波 harmonic / 龙盘 draconic）上
+# 就是「本命结论冒充派生盘结论」——v0.50.0 前这五张盘的 [古典格局] 与本命逐字节相同（审计 C-01）。
+# 重置盘保留，但**按重置后的地点**算（上游 v3.14.0：AstroRelocationLab.relocClassicalBody = { _v:'cls1', ...relocParams, 恒星轨 }，
+# 随重置盘快照进正文；pipeline.js:553-556 不再按本命出生地另补）——service/enrich._derived_section_params 换经纬。
+# 世运盘不挂（上游 mundane 不是 astrochart 族、preset 无此段；LESSONS v0.14.0）。
+# 占星地图（acg）的本命盘段在 runner 里按 "chart" 挂（上游 locastro 同保留）。
+CLASSICAL_ANALYSIS_TOOLS = frozenset({"chart", "relocation"})
+
+# [盘面细节]（上游 v3.14.0，导出 v61）：占星右栏「细节」页签 30 张表的结论摘要，后端 /astroextra/chartdetails 算、vendored
+# utils/chartDetails.js::buildChartDetailsText 排版。挂哪些盘 = 上游 pipeline.js:546-562 的同一张跳过表（与 [古典格局] 同进同退：
+# `Promise.all([fetchAstroClassicalAnalysisSectionForExport(), fetchChartDetailsSectionForExport()])`）；后端 _natal_from_request
+# 以**本命参数、回归黄道**重算，挂到改黄道读数框架的派生盘上就是本命结论冒充派生盘结论。重置盘按重置后的地点算
+# （AstroRelocationLab.js relocParams）。占星地图（acg）的本命盘段在 runner 里按 "chart" 挂（上游 locastro preset 同有此段）。
+CHART_DETAILS_TOOLS = CLASSICAL_ANALYSIS_TOOLS
+
+# 本命四盘缺省的严格接纳（service `_apply_chart_request_defaults` 补 0；说明与上游出处见 service/text/chart_family.py）。
+STRONG_RECEPTION_DEFAULT_TOOLS = frozenset({"chart", "chart13", "chart12", "hellen_chart"})
+
+# 🔴 别挪进 schemas/tools/：verify_schema_knob_wiring 只认 schema 包外出现的字段名，挪进去这七个旋钮就成了「没人用」。
+# 埃及历七轴（上游随盘键 egypt_<axis>，egyptianSchools.EGYPT_RECORD_KEYS；挂载齿轮 techniqueMountSettings.js:965-980）。
+EGYPT_AXIS_KEYS = (
+    "egypt_decanRuler", "egypt_decanAnchor", "egypt_decanNaming", "egypt_starClock",
+    "egypt_calendarAnchor", "egypt_petosirisMod", "egypt_godEdition",
+)

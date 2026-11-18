@@ -1,0 +1,711 @@
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+DEFAULT_RELEASE_REPO = "Horace-Maxwell/horosa-skill"
+
+logger = logging.getLogger(__name__)
+
+# ── env 旗标生命周期注册表（v0.33.0 批 II-1/II-3）────────────────────────────────
+# 单一真值源：每个 HOROSA_* 旗标在此登记生命周期档（stable=文档化用户面 / experimental=试验 /
+# internal=构建机·脚本·runtime 机务，用户一般不设 / deprecated=保留但劝退）。前向兼容纪律：
+# **未知旗标 warn-and-ignore**（一次性告警，绝不硬拒——codex 0.112.0 因未知 key 硬拒配置直接
+# 起不来的反面教材）；只有显式 HOROSA_STRICT_CONFIG=1 才升级为报错。removed 档=接受并忽略+
+# 指路替代（删旗标不删兼容）。
+ENV_FLAG_REGISTRY: dict[str, str] = {
+    # v0.37.0 运行时安全：mac 启动器的「只杀自己人」补丁开关（设 0 会失去误杀保护），
+    # 以及 AppCDS 训练 JVM 的端口（上游硬编码 39997，与别的程序撞车时是静默降级）。
+    "HOROSA_MCP_MAX_CONCURRENT_TOOLS": "stable",
+    "HOROSA_RUNTIME_LAUNCHER_PATCH": "experimental",
+    "HOROSA_RUNTIME_TRUST_PORTS": "experimental",
+    "HOROSA_PORTS": "stable",
+    "HOROSA_CDS_TRAIN_PORT": "experimental",
+    "HOROSA_STRICT_CONFIG": "stable",
+    "HOROSA_CLARIFY": "stable",
+    "HOROSA_SERVER_ROOT": "stable",
+    "HOROSA_CHART_SERVER_ROOT": "stable",
+    "HOROSA_SKILL_DATA_DIR": "stable",
+    "HOROSA_SKILL_DB_PATH": "stable",
+    "HOROSA_SKILL_OUTPUT_DIR": "stable",
+    # v0.40.0 P0：报告类工具 output_path 只许落在输出目录内；本变量（os.pathsep 分隔）加白名单根。
+    "HOROSA_REPORT_OUTPUT_ROOTS": "stable",
+    "HOROSA_RUNTIME_ROOT": "stable",
+    "HOROSA_RUNTIME_MANIFEST_URL": "stable",
+    "HOROSA_RUNTIME_PLATFORM": "stable",
+    "HOROSA_RUNTIME_RELEASE_REPO": "stable",
+    "HOROSA_RUNTIME_MIRROR": "stable",
+    "HOROSA_RUNTIME_MIRROR_ALLOW_HTTP": "stable",
+    # v0.38.0 B6 下载旋钮：慢网 / 企业代理下 120 s 读超时与 3 次重试不够时可调（每个镜像各算一轮）。
+    "HOROSA_RUNTIME_DOWNLOAD_TIMEOUT_SECONDS": "stable",
+    "HOROSA_RUNTIME_DOWNLOAD_ATTEMPTS": "stable",
+    "HOROSA_LOCAL_BACKEND_PORT": "stable",
+    "HOROSA_LOCAL_CHART_PORT": "stable",
+    "HOROSA_RUNTIME_START_TIMEOUT_SECONDS": "stable",
+    "HOROSA_RUNTIME_CALL_WAIT_SECONDS": "stable",
+    "HOROSA_RUNTIME_JAVA_RETRY_COOLDOWN_SECONDS": "stable",
+    "HOROSA_MCP_COMPACT": "stable",
+    # MCP 结果视图（v0.50.0-dev，service/result_view.py）：缺省 reading = 正文一遍 + 段索引 + 依据卡；full（别名 raw）= 原始树全带。
+    # 后两项是阅读视图的模型预算（估算 token / 字符，两条都守），超了按段裁并在 warnings 里写明续读的调用。
+    "HOROSA_MCP_RESULT_VIEW": "stable",
+    "HOROSA_MCP_RESULT_MAX_TOKENS": "stable",
+    "HOROSA_MCP_RESULT_MAX_CHARS": "stable",
+    "HOROSA_MCP_ELICIT": "stable",
+    "HOROSA_MCP_ELICIT_TIMEOUT_SECONDS": "stable",
+    "HOROSA_MCP_TOKEN": "stable",
+    "HOROSA_MCP_ALLOWED_HOSTS": "stable",
+    "HOROSA_MCP_ALLOWED_ORIGINS": "stable",
+    "HOROSA_TOOLSETS": "stable",
+    "HOROSA_JS_ENGINE_TIMEOUT_SECONDS": "stable",
+    "HOROSA_SKILL_HOST": "stable",
+    "HOROSA_SKILL_PORT": "stable",
+    "HOROSA_SKILL_LOG_LEVEL": "stable",
+    "HOROSA_TRACE_ENABLED": "stable",
+    "HOROSA_TRACE_DIR": "stable",
+    "HOROSA_TRACE_CAPTURE_PAYLOADS": "stable",
+    "HOROSA_DATA_PRIVATE": "stable",
+    "HOROSA_MEMORY_MCP_DELETE": "stable",
+    "HOROSA_ARTIFACT_COMPRESS": "stable",
+    "HOROSA_MCP_ISERROR": "stable",
+    "HOROSA_TRACE_CAPTURE_AI_ANSWERS": "stable",
+    "HOROSA_TRACE_OTLP_ENDPOINT": "stable",
+    "HOROSA_TECHNIQUE_CARD": "stable",
+    "HOROSA_OUTPUT_SCHEMA": "stable",
+    # 输出文字：缺省简体（逐字节不变）；zh-Hant = 繁体（台湾字形）、zh-Hant-HK = 繁体（香港字形）。只转给人读的字段，见 textscript/localize.py。
+    "HOROSA_OUTPUT_SCRIPT": "stable",
+    # 自备知识库（knowledge/user.py）：文件夹（缺省 <data_dir>/knowledge）与每次计算带入的总字数上限。
+    "HOROSA_USER_KNOWLEDGE_DIR": "stable",
+    "HOROSA_USER_KNOWLEDGE_MAX_CHARS": "stable",
+    # 可选向量检索（knowledge/vectors.py，v0.45.1）：=0 关；模型目录（离线放好的 bge-small-zh 两份文件，缺省在状态目录下）。
+    "HOROSA_KNOWLEDGE_VECTORS": "stable",
+    "HOROSA_EMBED_MODEL_DIR": "stable",
+    "HOROSA_ASTRODATA_DB": "stable",
+    "HOROSA_NODE_BIN": "stable",
+    "HOROSA_CORE_JS_ROOT": "experimental",
+    "HOROSA_UV_BIN": "internal",
+    "HOROSA_UVX_BIN": "internal",
+    "HOROSA_MCPORTER_BIN": "internal",
+    "HOROSA_SERVER_PORT": "internal",
+    "HOROSA_CHART_PORT": "internal",
+    "HOROSA_BACKEND_PORT": "internal",
+    "HOROSA_ROOT": "internal",
+    "HOROSA_LOG_ROOT": "internal",
+    "HOROSA_SOURCE_ROOT": "internal",
+    "HOROSA_JOB_STARTED": "internal",   # ci.yml 首步写、末步 scripts/ci_job_budget.py 读（job 用掉自身超时的比例）
+    "HOROSA_WINDOWS_SOURCE_ROOT": "internal",
+    "HOROSA_LINUX_JAVA_HOME": "internal",
+    "HOROSA_LINUX_PYTHON_HOME": "internal",
+    "HOROSA_LINUX_SKIP_DOWNLOAD": "internal",
+    "HOROSA_RUNTIME_RELEASE_BASE_URL": "internal",
+    "HOROSA_SKILL_PYPROJECT": "internal",
+    "HOROSA_LAUNCH_NONCE": "internal",
+    # v0.38.1 C7：宿主（Claude Code 插件 / MCPB）告诉我们「你是从哪个目录被启动的」，
+    # runtime.not_installed 的修复命令据此写成 `uv run --directory <该目录> …`（用户能直接复制）。
+    "HOROSA_INSTALL_CONTEXT": "stable",
+    "HOROSA_PLUGIN_ROOT": "stable",
+    # v0.39.0 可选云端决策层（TypeSafe Jev）：缺省 off = 零字节变化；语义见 decisions/policy.py。
+    "HOROSA_JEV": "experimental",
+    "HOROSA_JEV_API_KEY": "experimental",
+    "HOROSA_JEV_SCOPE": "experimental",
+    "HOROSA_JEV_SURFACES": "experimental",
+    "HOROSA_JEV_MODEL": "experimental",
+    "HOROSA_JEV_BASE_URL": "experimental",
+    "HOROSA_JEV_TIMEOUT_MS": "experimental",
+    "HOROSA_JEV_LEDGER": "experimental",
+    "HOROSA_JEV_LIVE": "internal",
+    # v0.47.2-dev：skill 自己不读、但维护机 / 用户 shell 里合法存在的变量——不登记，每次启动都报「未知环境变量」。
+    # 测试开关：veraPDF 可执行文件（tests/test_pdf_tagged.py 的 PDF/UA-1 全量校验）。
+    "HOROSA_VERAPDF": "internal",
+    # 启动器（start_horosa_local.ps1 / start_vendored_instance.sh）交给上游 Java / chart 进程的引擎旋钮。
+    "HOROSA_EPHE_PATH_FASTPATH": "internal",
+    "HOROSA_DESKTOP_MONGO_OPTIONAL": "internal",
+    "HOROSA_DESKTOP_MONGO_SKIP_PING": "internal",
+    "HOROSA_MONGO_FALLBACK_DIR": "internal",
+    "HOROSA_ENABLE_STARTUP_CRON": "internal",
+    "HOROSA_ENABLE_STARTUP_TRANSGROUP_INIT": "internal",
+    # 星阙桌面端 Windows 构建脚本（Prepare_Runtime_Windows.ps1）读的 JDK 路径：装着桌面端构建环境的机器常设成用户级变量。
+    "HOROSA_JAVA_HOME": "internal",
+    # 报告盘图用星阙 app 原版画法（reports/app_charts.py）；=0 只画 skill 自绘的图（排查用）。
+    "HOROSA_APP_CHARTS": "internal",
+    # app-charts/build.mjs 的调试开关：=1 打不压缩的 bundle（看报错栈用），只在维护机构建时设。
+    "HOROSA_APP_CHARTS_DEBUG": "internal",
+}
+# removed 档：曾存在于历史版本、现已删除的旗标 → 接受并忽略 + 指路。删代码不删兼容。
+REMOVED_ENV_FLAGS: dict[str, str] = {}
+
+_ENV_AUDIT_DONE = False
+
+
+def unknown_env_guess(key: str) -> str | None:
+    """拼错的 HOROSA_* → 最接近的登记名（没有就 None）。doctor / client check / runtime/status 共用。"""
+    import difflib
+
+    found = difflib.get_close_matches(key, list(ENV_FLAG_REGISTRY), n=1, cutoff=0.75)
+    return found[0] if found else None
+
+
+def unknown_env_names() -> list[dict[str, str | None]]:
+    """本进程环境里不认识的 HOROSA_*（已移除的不算）：[{name, did_you_mean}]。"""
+    return [{"name": key, "did_you_mean": unknown_env_guess(key)} for key in sorted(os.environ)
+            if key.startswith("HOROSA_") and key not in ENV_FLAG_REGISTRY and key not in REMOVED_ENV_FLAGS]
+
+
+def audit_env_flags(*, force: bool = False, log: bool = True) -> list[str]:
+    """扫描 HOROSA_* 环境变量：未知 → warn-and-ignore（返回并记日志，进程内只告警一次）；
+    HOROSA_STRICT_CONFIG=1 时未知升级为 ValueError（显式选择加入的严格档）。
+
+    `log=False`：只要结果、不再打日志 —— doctor 把告警放进 JSON，此前它用 force=True 再打一遍，同一句话在 stderr 出现两次（E-15）。"""
+    global _ENV_AUDIT_DONE
+    warnings: list[str] = []
+    for key in sorted(os.environ):
+        if not key.startswith("HOROSA_"):
+            continue
+        if key in ENV_FLAG_REGISTRY:
+            continue
+        if key in REMOVED_ENV_FLAGS:
+            warnings.append(f"环境变量 {key} 已在新版移除：{REMOVED_ENV_FLAGS[key]}（本次忽略）")
+            continue
+        guess = unknown_env_guess(key)
+        warnings.append(f"未知环境变量 {key}" + (f"（是不是 {guess}？）" if guess else "（拼写有误？或来自更新版本的 skill）")
+                        + "——这个变量不起作用（审计 PF-12：以前说「不影响运行」，其实是想设的那一项没生效）。")
+    if warnings and (os.environ.get("HOROSA_STRICT_CONFIG", "").strip().lower() in {"1", "true", "yes"}):
+        raise ValueError("HOROSA_STRICT_CONFIG=1：" + "；".join(warnings))
+    if warnings and log and (force or not _ENV_AUDIT_DONE):
+        for line in warnings:
+            # 启动期环境审计，没有工具调用可告知——不是降级点（verify_silent_degrades 只盯 logger.warning）。
+            logger.log(logging.WARNING, "%s", line)
+    _ENV_AUDIT_DONE = True
+    return warnings
+
+
+def _default_home_dir() -> Path:
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "HorosaSkill"
+    return Path.home() / ".horosa-skill"
+
+
+DEFAULT_START_TIMEOUT_SECONDS = 45.0
+# v0.38.1 R11：仿真宿主（Windows on ARM 跑 x64 载荷 / Rosetta 下的 x64 Python）冷启动实测 59.6 s（真机矩阵 ARM lane），
+# 45 s 的出厂预算会让 `selfcheck` / `runtime start` 在健康机器上以 starting 收场。仿真时缺省放大到 120 s；
+# 用户显式设 HOROSA_RUNTIME_START_TIMEOUT_SECONDS 时永远以用户为准。
+EMULATED_START_TIMEOUT_SECONDS = 120.0
+
+
+def _host_runs_emulated() -> bool:
+    try:
+        from horosa_skill.runtime import manager as _manager
+
+        if _manager.arch_report().get("emulated") is True:
+            return True
+        return _manager.host_platform_key() in _manager.PLATFORM_FALLBACKS
+    except Exception:  # noqa: BLE001 - 探测失败就按原生算，绝不让配置加载失败
+        return False
+
+
+def _default_start_timeout_seconds() -> float:
+    return EMULATED_START_TIMEOUT_SECONDS if _host_runs_emulated() else DEFAULT_START_TIMEOUT_SECONDS
+
+
+def _default_runtime_root() -> Path:
+    if os.name == "nt":
+        local_appdata = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if local_appdata:
+            return Path(local_appdata) / "Horosa" / "runtime"
+    return Path.home() / ".horosa" / "runtime"
+
+
+# 未展开的模板占位符：`${user_config.runtimeRoot}` / `${CLAUDE_PLUGIN_ROOT}` 这类。
+# 🔴 不锚定：`${workspaceFolder}/horosa`、`${env:HOME}/.horosa` 这种**部分**模板（VS Code / Cline / Zed
+# 用户最常写的形状）此前会漏过 `^…$` 的判定，一路走到 ensure_dirs 在 CWD 里 mkdir 出一个名叫
+# `${workspaceFolder}` 的真目录。宿主没替换占位符 = 整个值都不能当路径用。
+_UNEXPANDED_TEMPLATE = re.compile(r"\$\{[^}]*\}")
+_warned_unexpanded: set[str] = set()
+# 本进程内见过的未展开占位符：{env 名: 字面量}。doctor 会把它读出来当面告诉用户
+# —— 这条通知发生在**任何工具调用之前**（Settings.from_env），没有 envelope 可挂，
+# 但它绝不能只活在日志里：宿主没替换占位符时，用户看到的是「装了却全是 not_installed」。
+_unexpanded_templates: dict[str, str] = {}
+
+
+def unexpanded_env_templates() -> dict[str, str]:
+    """本进程启动时被当作「未设置」处理的未展开占位符（供 doctor / 诊断输出）。"""
+    return dict(_unexpanded_templates)
+
+
+def _env_text(name: str, default: str | None = None) -> str | None:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    stripped = value.strip()
+    if not stripped:
+        return default
+    if _UNEXPANDED_TEMPLATE.search(stripped):
+        # 🔴 宿主没展开占位符时，值是**字面量**而不是路径。照单全收的后果实测过两次：
+        # `HOROSA_RUNTIME_ROOT='${user_config.runtimeRoot}'` → 每个技法工具都回
+        # `runtime.not_installed`，而 `Settings.ensure_dirs()` 还会在 CWD 里 mkdir 出一个
+        # 名叫 `${user_config.runtimeRoot}` 的真目录（仓里那几个 `${env:HOME:-…}` 目录同族）。
+        # 当作未设置 → 回落默认值，是唯一不会把用户目录搞脏的解释。
+        _unexpanded_templates[name] = stripped
+        if name not in _warned_unexpanded:
+            _warned_unexpanded.add(name)
+            # 用 logger.log(WARNING) 而非 logger.warning：verify_silent_degrades 把包内的
+            # 裸 logger.warning 定义为「只告诉了日志、没告诉调用方」的债。这条是**启动期配置
+            # 通知**，那一刻还没有任何工具调用、没有 envelope 可挂；调用方要知道的那一份走
+            # `unexpanded_env_templates()` → doctor，比 warnings 列表更早也更该出现在那儿。
+            logger.log(
+                logging.WARNING,
+                "%s 的值是未展开的模板占位符 %r（宿主没有替换它）——按未设置处理，回落默认值。",
+                name, stripped,
+            )
+        return default
+    return stripped
+
+
+def _env_path(name: str, default: Path) -> Path:
+    raw_value = _env_text(name)
+    if raw_value is None:
+        return default
+    return Path(raw_value).expanduser()
+
+
+# ── 取值被拒的 env（E-10）────────────────────────────────────────────────────
+# 🔴 旧实现：`HOROSA_RUNTIME_DOWNLOAD_ATTEMPTS=abc`、`HOROSA_JS_ENGINE_TIMEOUT_SECONDS=-5` 一律悄悄回落默认值，而 doctor 的
+# provenance 还写着 `env:<NAME>` —— 用户看到「来源 = 我设的变量」，值却是默认的，怎么都对不上。
+# 现在每个解析器返回 (值, 拒绝原因)；被拒的记在这里（按变量名，最近一次解析为准），provenance 写
+# `default:rejected env:<NAME>=<值>`，doctor 列出每一条。值一律经 `redact_env_value`：名字像密钥的整段遮掉，URL 遮 userinfo。
+_env_rejections: dict[str, dict[str, Any]] = {}
+_SECRET_NAME = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)", re.IGNORECASE)
+_URL_USERINFO = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]*@")
+
+
+def mask_url_userinfo(text: str) -> str:
+    """`http://user:pass@proxy:8080` → `http://***@proxy:8080`。"""
+    return _URL_USERINFO.sub(lambda m: f"{m.group('scheme')}***@", text)
+
+
+def redact_env_value(name: str, value: str | None) -> str | None:
+    """给人看的 env 值：名字像密钥 / 令牌的整段遮掉，其余遮 URL 里的 userinfo、截到 120 字。"""
+    if value is None:
+        return None
+    if _SECRET_NAME.search(name):
+        return "<redacted>"
+    return mask_url_userinfo(value)[:120]
+
+
+def env_rejections() -> dict[str, dict[str, Any]]:
+    """本进程里取值被拒的 env：{名字: {value(已遮), reason, action, used}}。action = used_default / kept_as_is。"""
+    return {name: dict(entry) for name, entry in _env_rejections.items()}
+
+
+def _record_rejection(name: str, raw: str, reason: str, *, used: Any, action: str = "used_default") -> None:
+    _env_rejections[name] = {"value": redact_env_value(name, raw), "reason": reason, "action": action, "used": used}
+
+
+def _clear_rejection(name: str) -> None:
+    _env_rejections.pop(name, None)
+
+
+def parse_int(raw: str, *, minimum: int | None = None, maximum: int | None = None) -> tuple[int | None, str | None]:
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return None, "not an integer"
+    if minimum is not None and value < minimum:
+        return None, f"below the minimum {minimum}"
+    if maximum is not None and value > maximum:
+        return None, f"above the maximum {maximum}"
+    return value, None
+
+
+def parse_float(raw: str, *, minimum: float | None = None) -> tuple[float | None, str | None]:
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        return None, "not a number"
+    if value != value or value in (float("inf"), float("-inf")):
+        return None, "not a finite number"
+    if minimum is not None and value < minimum:
+        return None, f"below the minimum {minimum:g}"
+    return value, None
+
+
+def parse_bool(raw: str) -> tuple[bool | None, str | None]:
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True, None
+    if normalized in {"0", "false", "no", "off"}:
+        return False, None
+    return None, "not one of 1/0, true/false, yes/no, on/off"
+
+
+def url_root_problem(value: str) -> str | None:
+    """服务根 URL 的形状问题（没有 http(s) scheme / 没有主机）；没问题返回 None。"""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(value.strip())
+    if parsed.scheme not in {"http", "https"}:
+        return "no http:// or https:// scheme" if "://" not in value else f"scheme `{parsed.scheme}` is not http or https"
+    if not parsed.hostname:
+        return "no host"
+    try:
+        parsed.port
+    except ValueError:
+        return "the port is not a number in 1-65535"
+    return None
+
+
+def _env_url(name: str) -> str | None:
+    """URL 型 env：形状不对时**照用**（换成默认值可能悄悄打到另一台服务上），但记一条 kept_as_is，doctor 点名。"""
+    raw = _env_text(name)
+    if raw is None:
+        _clear_rejection(name)
+        return None
+    problem = url_root_problem(raw)
+    if problem:
+        _record_rejection(name, raw, problem, used=redact_env_value(name, raw), action="kept_as_is")
+    else:
+        _clear_rejection(name)
+    return raw
+
+
+def _env_parsed(name: str, default: Any, parser: Any) -> Any:
+    raw = _env_text(name)
+    if raw is None:
+        _clear_rejection(name)
+        return default
+    value, reason = parser(raw)
+    if reason is not None:
+        _record_rejection(name, raw, reason, used=default)
+        return default
+    _clear_rejection(name)
+    return value
+
+
+def _env_int(name: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    return _env_parsed(name, default, lambda raw: parse_int(raw, minimum=minimum, maximum=maximum))
+
+
+def _env_float(name: str, default: float, *, minimum: float | None = None) -> float:
+    return _env_parsed(name, default, lambda raw: parse_float(raw, minimum=minimum))
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    return _env_parsed(name, default, parse_bool)
+
+
+def _env_result_view(name: str) -> str:
+    """MCP 结果视图（reading / sections / titles / full，raw = full）。认不出的值回落 reading 并告警一次。"""
+    from horosa_skill.result_view import READING, normalize_view
+
+    raw_value = _env_text(name)
+    if raw_value is None:
+        return READING
+    view = normalize_view(raw_value)
+    if view is None:
+        # 登记成「被拒」：doctor / client check 才看得见（审计 PF-08：以前只在 stderr 说一句）。
+        _record_rejection(name, raw_value, "not one of reading / sections / titles / full", used=READING)
+        if name not in _warned_unexpanded:
+            _warned_unexpanded.add(name)
+            # 启动期配置通知：还没有工具调用可挂告警（同 _env_text 的未展开占位符）。
+            logger.log(logging.WARNING, "%s=%r 认不出（可选 reading / sections / titles / full）——按 reading 返回。", name, raw_value)
+        return READING
+    _clear_rejection(name)
+    return view
+
+
+def _env_script(name: str) -> str:
+    """输出文字设置。认不出的值（拼错）回落简体并告警一次——宁可照旧输出，也不在拼写错误时报错拒绝服务。"""
+    from horosa_skill.textscript import SIMPLIFIED, parse_script
+
+    raw_value = _env_text(name)
+    script = parse_script(raw_value)
+    if script is None and raw_value is not None:
+        _record_rejection(name, raw_value, "not one of zh-Hans / zh-Hant / zh-Hant-HK / true / false", used=SIMPLIFIED)
+    elif script is not None:
+        _clear_rejection(name)
+    if script is None:
+        if name not in _warned_unexpanded:
+            _warned_unexpanded.add(name)
+            # 启动期配置通知：还没有工具调用可挂告警（同 _env_text 的未展开占位符）。
+            logger.log(
+                logging.WARNING,
+                "%s=%r 认不出（可选 zh-Hans / zh-Hant / zh-Hant-HK，或 true/false）——按简体输出。",
+                name, raw_value,
+            )
+        return SIMPLIFIED
+    return script
+
+
+def output_script_from_env() -> str:
+    """不构造整份 Settings、只读输出文字设置（CLI 打印结果时用）。"""
+    return _env_script("HOROSA_OUTPUT_SCRIPT")
+
+
+# 自动挑端口的备用区间：默认口被占时从这里往上找。避开常见开发端口（3000/5000/8000/8080）。
+_AUTO_BACKEND_BASE = 19999
+_AUTO_CHART_BASE = 18899
+_AUTO_SPAN = 100
+
+
+def _auto_ports(runtime_root: Path, backend_default: int, chart_default: int) -> tuple[int, int]:
+    """`HOROSA_PORTS=auto`：挑一对能用的端口。
+
+    顺序：① 注册表里记着的那对（这份 runtime 上次就跑在那儿；正在跑的话必须复用，否则每个新
+    客户端都会另起一套）→ ② 默认口若空闲就用默认 → ③ 从备用区间往上探。
+    挑出来只是**候选**：`start_local_services` 仍会做归属判定，占着的若不是我们的照样报冲突。
+    """
+    from horosa_skill.runtime.ports import find_free_port, port_bindable
+
+    recorded: dict[str, Any] = {}
+    try:
+        raw = (runtime_root / "runtime-state.json").read_text(encoding="utf-8")
+        state = json.loads(raw)
+        if isinstance(state, dict) and isinstance(state.get("ports"), dict):
+            recorded = state["ports"]
+    except (OSError, ValueError):
+        recorded = {}
+
+    def _pick(recorded_key: str, default_port: int, base: int) -> int:
+        candidate = recorded.get(recorded_key)
+        if isinstance(candidate, int) and 0 < candidate < 65536:
+            # 空闲（可重用）或正被占（很可能就是我们上次起的那份）都直接复用。
+            return candidate
+        if port_bindable(default_port):
+            return default_port
+        return find_free_port(base, span=_AUTO_SPAN)
+
+    return (
+        _pick("backend", backend_default, _AUTO_BACKEND_BASE),
+        _pick("chart", chart_default, _AUTO_CHART_BASE),
+    )
+
+
+# 字段 ↔ env 旗标映射（provenance 用；新增 env 驱动字段须同步登记，测试锁步）。
+FIELD_ENV_MAP = {
+    "server_root": "HOROSA_SERVER_ROOT",
+    "chart_server_root": "HOROSA_CHART_SERVER_ROOT",
+    "data_dir": "HOROSA_SKILL_DATA_DIR",
+    "db_path": "HOROSA_SKILL_DB_PATH",
+    "output_dir": "HOROSA_SKILL_OUTPUT_DIR",
+    "report_output_roots": "HOROSA_REPORT_OUTPUT_ROOTS",
+    "runtime_root": "HOROSA_RUNTIME_ROOT",
+    "runtime_manifest_url": "HOROSA_RUNTIME_MANIFEST_URL",
+    "runtime_platform": "HOROSA_RUNTIME_PLATFORM",
+    "runtime_release_repo": "HOROSA_RUNTIME_RELEASE_REPO",
+    "local_backend_port": "HOROSA_LOCAL_BACKEND_PORT",
+    "local_chart_port": "HOROSA_LOCAL_CHART_PORT",
+    "runtime_start_timeout_seconds": "HOROSA_RUNTIME_START_TIMEOUT_SECONDS",
+    "runtime_download_timeout_seconds": "HOROSA_RUNTIME_DOWNLOAD_TIMEOUT_SECONDS",
+    "runtime_download_attempts": "HOROSA_RUNTIME_DOWNLOAD_ATTEMPTS",
+    "runtime_java_retry_cooldown_seconds": "HOROSA_RUNTIME_JAVA_RETRY_COOLDOWN_SECONDS",
+    "mcp_compact": "HOROSA_MCP_COMPACT",
+    "mcp_result_view": "HOROSA_MCP_RESULT_VIEW",
+    "mcp_result_max_tokens": "HOROSA_MCP_RESULT_MAX_TOKENS",
+    "mcp_result_max_chars": "HOROSA_MCP_RESULT_MAX_CHARS",
+    "js_engine_timeout_seconds": "HOROSA_JS_ENGINE_TIMEOUT_SECONDS",
+    "host": "HOROSA_SKILL_HOST",
+    "port": "HOROSA_SKILL_PORT",
+    "log_level": "HOROSA_SKILL_LOG_LEVEL",
+    "trace_enabled": "HOROSA_TRACE_ENABLED",
+    "trace_dir": "HOROSA_TRACE_DIR",
+    "trace_capture_payloads": "HOROSA_TRACE_CAPTURE_PAYLOADS",
+    "data_private": "HOROSA_DATA_PRIVATE",
+    "memory_mcp_delete": "HOROSA_MEMORY_MCP_DELETE",
+    "artifact_compress": "HOROSA_ARTIFACT_COMPRESS",
+    "trace_capture_ai_answers": "HOROSA_TRACE_CAPTURE_AI_ANSWERS",
+    "trace_otlp_endpoint": "HOROSA_TRACE_OTLP_ENDPOINT",
+    "output_script": "HOROSA_OUTPUT_SCRIPT",
+    "user_knowledge_dir": "HOROSA_USER_KNOWLEDGE_DIR",
+    "user_knowledge_max_chars": "HOROSA_USER_KNOWLEDGE_MAX_CHARS",
+}
+
+
+def _rejected_source(env_name: str) -> str | None:
+    """取值被拒、用了默认值的字段：`default:rejected env:<NAME>=<值>`（前缀仍是 default —— doctor 契约按冒号前一段分组）。"""
+    entry = _env_rejections.get(env_name)
+    if not entry or entry.get("action") != "used_default":
+        return None
+    return f"default:rejected env:{env_name}={entry.get('value')!r} ({entry.get('reason')})"
+
+
+class Settings(BaseModel):
+    server_root: str = Field(default="http://127.0.0.1:9999")
+    chart_server_root: str = Field(default="http://127.0.0.1:8899")
+    # 调用时才解析默认目录（不在类定义时捕获函数对象）：测试的 conftest 把它们换成临时目录，永不碰用户真实数据。
+    data_dir: Path = Field(default_factory=lambda: _default_home_dir())
+    runtime_root: Path = Field(default_factory=lambda: _default_runtime_root())
+    db_path: Path | None = None
+    output_dir: Path | None = None
+    # 报告类工具 output_path 的额外白名单根（v0.40.0 P0；输出目录恒在白名单内）。
+    report_output_roots: list[Path] = Field(default_factory=list)
+    runtime_manifest_url: str | None = None
+    runtime_platform: str | None = None
+    runtime_release_repo: str = DEFAULT_RELEASE_REPO
+    local_backend_port: int = 9999
+    local_chart_port: int = 8899
+    # 冷启动等待：Java(Spring Boot fat jar)+Python(星历重导入) 后端首启常超 15s，45s 覆盖常见机器。
+    runtime_start_timeout_seconds: float = 45.0
+    # 归档下载：读超时（每块 1 MiB 之间的等待）与每个镜像的重试次数（v0.38.0 B6，此前写死 120 s / 3 次）。
+    runtime_download_timeout_seconds: float = 120.0
+    runtime_download_attempts: int = 3
+    # Java 后端起不来（degraded_chart_only）后的重试冷却：冷却期内碰 Java 的调用快速失败
+    # （runtime.java_backend_unavailable），不再为了再试 Java 先杀掉健康的 chart 服务再全量重启；0 = 关闭冷却。
+    runtime_java_retry_cooldown_seconds: float = 120.0
+    # MCP 精简工具面：True 时只暴露门面工具（dispatch/guidance/memory/report 等 + 通用直呼
+    # horosa_tool_run），技法工具不平铺（省 tools/list 上下文预算）；默认 False 保持全量平铺（门面 + 全部技法）。
+    mcp_compact: bool = False
+    # MCP 工具结果的缺省视图与模型预算（service/result_view.py）。Claude Code 超过 5 万字符就把结果落盘、只给模型一句提示，
+    # 预算按这条线留余量；估算 token 对中文偏保守（每字 1.5）。
+    mcp_result_view: str = "reading"
+    mcp_result_max_tokens: int = 20_000
+    mcp_result_max_chars: int = 48_000
+    js_engine_timeout_seconds: float = 60.0
+    host: str = "127.0.0.1"
+    port: int = 8765
+    log_level: str = "INFO"
+    trace_enabled: bool = True
+    trace_dir: Path | None = None
+    trace_capture_payloads: bool = False
+    # 新建的数据目录 / 存档 / 库按私有权限建（0700 / 0600）；行为由 fileperm 读同名环境变量，这里登记给 env 表与 doctor。
+    data_private: bool = True
+    memory_mcp_delete: bool = True   # horosa_memory_manage 的 delete（审计待决项 6）；共享部署设 0 关
+    artifact_compress: bool = True   # 新产物存 .json.gz（审计待决项 7）；0 = 照旧明文 .json
+    mcp_transport: str = "stdio"     # serve 时的传输（不来自环境变量）：HTTP 且没设令牌时 MCP 面的删除缺省关
+    trace_capture_ai_answers: bool = False
+    trace_otlp_endpoint: str | None = None
+    # 输出文字（textscript.SCRIPTS 之一）。只在结果离开进程时转换；存档、门禁、引擎永远是简体。
+    output_script: str = "zh-Hans"
+    # 自备知识库：None = <data_dir>/knowledge（knowledge/user.py::knowledge_dir 推导）；单次计算带入的总字数上限。
+    user_knowledge_dir: Path | None = None
+    user_knowledge_max_chars: int = 12_000
+    # Settings provenance（v0.33.0 批 II-3）：每字段的取值来源（env:<NAME> / derived:<字段> / default），
+    # doctor 三列（字段/值/来源）据此呈现——「这项配置为什么是这个值」一眼可答。exclude 不入序列化。
+    settings_provenance: dict[str, str] = Field(default_factory=dict, exclude=True)
+
+    @classmethod
+    def from_env(cls) -> "Settings":
+        audit_env_flags()
+        data_dir = _env_path("HOROSA_SKILL_DATA_DIR", _default_home_dir())
+        runtime_root = _env_path("HOROSA_RUNTIME_ROOT", _default_runtime_root())
+        backend_port = _env_int("HOROSA_LOCAL_BACKEND_PORT", 9999, minimum=1, maximum=65535)
+        chart_port = _env_int("HOROSA_LOCAL_CHART_PORT", 8899, minimum=1, maximum=65535)
+        ports_mode = (_env_text("HOROSA_PORTS", "") or "").strip().lower()
+        if ports_mode == "auto":
+            backend_port, chart_port = _auto_ports(runtime_root, backend_port, chart_port)
+        # 🔴 URL 必须跟着端口走。旧实现里 server_root 与 local_backend_port 是两个互不相干的字段：
+        # 只设 HOROSA_LOCAL_BACKEND_PORT=19999 时，启动器听 19999，而探针、客户端、doctor 全都还
+        # 打 9999 —— 用户「换个端口避开占用」的正常操作，结果是「服务起来了却一个技法都用不了」。
+        server_root_env = _env_url("HOROSA_SERVER_ROOT")
+        chart_root_env = _env_url("HOROSA_CHART_SERVER_ROOT")
+        db_path_env = _env_text("HOROSA_SKILL_DB_PATH")
+        output_dir_env = _env_text("HOROSA_SKILL_OUTPUT_DIR")
+        trace_dir_env = _env_text("HOROSA_TRACE_DIR")
+        start_timeout_default_source = (
+            "default:emulated_host" if _env_text("HOROSA_RUNTIME_START_TIMEOUT_SECONDS") is None and _host_runs_emulated() else None
+        )
+        return cls(
+            server_root=server_root_env or f"http://127.0.0.1:{backend_port}",
+            chart_server_root=chart_root_env or f"http://127.0.0.1:{chart_port}",
+            data_dir=data_dir,
+            db_path=Path(db_path_env).expanduser() if db_path_env else data_dir / "memory.db",
+            output_dir=Path(output_dir_env).expanduser() if output_dir_env else data_dir / "runs",
+            report_output_roots=[Path(p.strip()).expanduser() for p in (_env_text("HOROSA_REPORT_OUTPUT_ROOTS", "") or "").split(os.pathsep) if p.strip()],
+            runtime_root=runtime_root,
+            runtime_manifest_url=_env_text("HOROSA_RUNTIME_MANIFEST_URL"),
+            runtime_platform=_env_text("HOROSA_RUNTIME_PLATFORM"),
+            runtime_release_repo=_env_text("HOROSA_RUNTIME_RELEASE_REPO", DEFAULT_RELEASE_REPO) or DEFAULT_RELEASE_REPO,
+            local_backend_port=backend_port,
+            local_chart_port=chart_port,
+            runtime_start_timeout_seconds=_env_float("HOROSA_RUNTIME_START_TIMEOUT_SECONDS", _default_start_timeout_seconds(), minimum=0.1),
+            runtime_download_timeout_seconds=_env_float("HOROSA_RUNTIME_DOWNLOAD_TIMEOUT_SECONDS", 120.0, minimum=1.0),
+            runtime_download_attempts=_env_int("HOROSA_RUNTIME_DOWNLOAD_ATTEMPTS", 3, minimum=1, maximum=20),
+            runtime_java_retry_cooldown_seconds=_env_float("HOROSA_RUNTIME_JAVA_RETRY_COOLDOWN_SECONDS", 120.0, minimum=0.0),
+            mcp_compact=_env_bool("HOROSA_MCP_COMPACT", False),
+            mcp_result_view=_env_result_view("HOROSA_MCP_RESULT_VIEW"),
+            mcp_result_max_tokens=_env_int("HOROSA_MCP_RESULT_MAX_TOKENS", 20_000, minimum=2_000, maximum=1_000_000),
+            mcp_result_max_chars=_env_int("HOROSA_MCP_RESULT_MAX_CHARS", 48_000, minimum=4_000, maximum=2_000_000),
+            js_engine_timeout_seconds=_env_float("HOROSA_JS_ENGINE_TIMEOUT_SECONDS", 60.0, minimum=0.1),
+            host=_env_text("HOROSA_SKILL_HOST", "127.0.0.1") or "127.0.0.1",
+            port=_env_int("HOROSA_SKILL_PORT", 8765, minimum=1, maximum=65535),
+            log_level=(_env_text("HOROSA_SKILL_LOG_LEVEL", "INFO") or "INFO").upper(),
+            trace_enabled=_env_bool("HOROSA_TRACE_ENABLED", True),
+            trace_dir=Path(trace_dir_env).expanduser() if trace_dir_env else data_dir / "traces",
+            trace_capture_payloads=_env_bool("HOROSA_TRACE_CAPTURE_PAYLOADS", False),
+            data_private=_env_bool("HOROSA_DATA_PRIVATE", True),
+            memory_mcp_delete=_env_bool("HOROSA_MEMORY_MCP_DELETE", True),
+            artifact_compress=_env_bool("HOROSA_ARTIFACT_COMPRESS", True),
+            trace_capture_ai_answers=_env_bool("HOROSA_TRACE_CAPTURE_AI_ANSWERS", False),
+            trace_otlp_endpoint=_env_url("HOROSA_TRACE_OTLP_ENDPOINT"),
+            output_script=_env_script("HOROSA_OUTPUT_SCRIPT"),
+            user_knowledge_dir=_env_path("HOROSA_USER_KNOWLEDGE_DIR", data_dir / "knowledge"),
+            user_knowledge_max_chars=_env_int("HOROSA_USER_KNOWLEDGE_MAX_CHARS", 12_000, minimum=500, maximum=200_000),
+            settings_provenance={
+                field: (_rejected_source(env_name) or f"env:{env_name}" if _env_text(env_name) is not None else (
+                    # 三个路径字段无独立 env 时由 data_dir 派生（而非模型默认）
+                    "derived:data_dir" if field in {"db_path", "output_dir", "trace_dir", "user_knowledge_dir"}
+                    # 两个 URL 无独立 env 时由端口派生（auto 模式下端口本身也是探出来的）
+                    else "derived:local_backend_port" if field == "server_root"
+                    else "derived:local_chart_port" if field == "chart_server_root"
+                    else "auto:HOROSA_PORTS" if ports_mode == "auto" and field in {
+                        "local_backend_port", "local_chart_port"
+                    }
+                    else "default"
+                ))
+                for field, env_name in FIELD_ENV_MAP.items()
+            } | ({"runtime_start_timeout_seconds": start_timeout_default_source} if start_timeout_default_source else {}),
+        )
+
+    def ensure_dirs(self) -> None:
+        # 二次防御：任何一段路径里还留着 `${…}` 就拒绝 mkdir —— 宁可报错，也不在用户的工作目录里
+        # 造出字面量目录（v0.37.0 清理过三处 `${env:HOME…}`，同族）。
+        for label, path in (("data_dir", self.data_dir), ("runtime_root", self.runtime_root),
+                            ("output_dir", self.output_dir), ("trace_dir", self.trace_dir)):
+            if path is not None and "${" in str(path):
+                from horosa_skill.errors import ToolValidationError, bilingual
+
+                raise ToolValidationError(
+                    bilingual(
+                        f"{label} 里还留着未展开的占位符：{path}",
+                        f"{label} still contains an unexpanded placeholder: {path}",
+                    ),
+                    code="config.unexpanded_template",
+                    details={"field": label, "value": str(path),
+                             "next_action": "在客户端的扩展设置里填上真实路径，或删掉该环境变量用默认路径。"},
+                )
+        from horosa_skill.fileperm import make_private_dir
+
+        make_private_dir(self.data_dir)  # 新建的数据目录 0700（HOROSA_DATA_PRIVATE=0 关；已有目录不动）
+        self.runtime_root.mkdir(parents=True, exist_ok=True)
+        assert self.db_path is not None
+        assert self.output_dir is not None
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        if self.trace_dir is not None:
+            self.trace_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def runtime_current_dir(self) -> Path:
+        return self.runtime_root / "current"
+
+    @property
+    def runtime_state_path(self) -> Path:
+        return self.runtime_root / "runtime-state.json"
+
+    @property
+    def default_runtime_manifest_url(self) -> str:
+        """缺省清单钉本包版本（审计 PF-04）：钉在旧版本的 wheel 以前装到的 runtime 随 latest 漂移；镜像缓存了旧清单就是一次静默降级。
+        这个版本的清单不存在（未发布的开发版）时 install 退到 latest 并告警（latest_runtime_manifest_url）。"""
+        from horosa_skill import __version__
+
+        return f"https://github.com/{self.runtime_release_repo}/releases/download/v{__version__}/runtime-manifest.json"
+
+    @property
+    def latest_runtime_manifest_url(self) -> str:
+        return f"https://github.com/{self.runtime_release_repo}/releases/latest/download/runtime-manifest.json"

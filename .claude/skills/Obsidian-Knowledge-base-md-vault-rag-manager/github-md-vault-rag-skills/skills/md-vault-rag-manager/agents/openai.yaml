@@ -1,0 +1,4 @@
+interface:
+  display_name: "Obsidian Personal Vault RAG"
+  short_description: "Build guided Obsidian personal knowledge vaults"
+  default_prompt: "Use $md-vault-rag-manager to initialize and guide my Obsidian personal knowledge vault with rule-first offline RAG."

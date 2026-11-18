@@ -1,0 +1,16 @@
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+.claude/
+.forge/
+.playwright-mcp/
+__pycache__/
+
+# Internal docs, plans and agent instructions stay local.
+/docs/
+/plans/
+/AGENTS.md
+/AGENTS.zh-CN.md
+/evals/

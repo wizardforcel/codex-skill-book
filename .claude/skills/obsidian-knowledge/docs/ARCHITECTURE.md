@@ -1,0 +1,144 @@
+# Architecture
+
+The CLI, Streamable HTTP MCP server, and Claude Code and Codex hooks share vault retrieval and protection
+components.
+
+## Codemap
+
+The following directories contain the shared components and host adapters:
+
+| Location | Responsibility |
+| --- | --- |
+| `lib/vault_index/` | Retrieval, configuration, verified file I/O, papercut logs, and CLI orchestration. |
+| `hooks/` | Lifecycle hooks, provider-owned i-insist checkers and rule template, and the dependency-light vault registry. |
+| `hooks/hookslib/` | Shared protection, capture, transcript, memory-routing, session primer, and reflection logic. |
+| `gardener/` | Installed vault maintenance commands, shared traversal and policy, and reviewed repairs. |
+| `scripts/` | Packaging, release, and quality tools. |
+| `plugins/obsidian-knowledge/` | Generated Codex distribution; edit root sources and run `scripts/sync_codex_plugin.py`. |
+
+In the retrieval core, `config.py` defines Pydantic configuration models,
+`models.py` holds shared result types, `filters.py` handles path filtering and
+weights, and `indexer.py` wraps memweave's keyword and dense retrieval.
+`embeddings.py` supplies memweave providers: direct Ollama HTTP embeddings for
+`ollama/` models, an offline provider for keyword-only indexing, and the default
+LiteLLM provider for other model identifiers. Ollama and keyword-only paths never
+import LiteLLM.
+`vault_files.py` handles confined, verified writes and text patches.
+`note_creation.py` reads the opt-in declarative creation defaults from a configured template
+and adds missing creation metadata before a new note's atomic write, without
+running Templater or changing existing notes.
+`vault_listing.py` provides bounded directory discovery. `mcp_index.py` reads
+persisted index status without rebuilding and queues maintenance notifications.
+`mcp_server.py` exposes these operations and bounded CLI search
+subprocesses over Streamable HTTP. `mcp_native.py` registers confined filesystem append and app-backed tools and
+shares mutation serialization with existing file writes. `obsidian_cli.py` runs
+the official CLI with fixed vault selection, filesystem identity checks, bounded
+output, and subprocess deadlines. Obsidian owns app operations and link rewriting;
+these tools require a live app. Importing `lib` enables beartype runtime checks.
+
+`vector_search.py` registers a memweave hybrid strategy using sqlite-vec's native
+nearest-neighbor query. Memweave normalizes embeddings, so L2 candidate ordering
+matches cosine ordering; the strategy derives cosine scores from L2 distance
+without fetching vectors a second time and retains the keyword merge. Model and source filters apply before candidate selection. Pools
+are capped at sqlite-vec's 4096-candidate ceiling; large requests never switch
+back to exhaustive JSON-vector retrieval. The strategy owns bounded expansion,
+filters digest eligibility, and deduplicates documents before returning candidates.
+Budget exhaustion degrades explicitly to keyword retrieval.
+Schema initialization adds a covering `(model, source, id)` chunk index to both
+new and existing caches. This keeps candidate eligibility off the large chunk
+text/JSON-embedding table without changing ranking, filters, or embedding policy;
+no re-embedding is required.
+`search_budget.py` carries the command deadline and computes a result-scaled
+semantic deadline shared by embedding waits and SQLite progress interruption.
+`index_lock.py` coordinates writers and maintenance. Read-only queries bypass
+this application lock and use one SQLite WAL snapshot for keyword and vector
+retrieval, including during index updates. Rebuild generations are published
+separately; query connections never create schema or run maintenance.
+
+The wheel installs `hooks/vault_registry.py` as the top-level `vault_registry`
+module, `hooks/vault_preferences.py` as `vault_preferences`,
+`hooks/note_frontmatter.py` and `hooks/markdown_spans.py` as dependency-light
+shared document parsers, and `hooks/hookslib/` as `hookslib`. The registry owns only host-local vault paths;
+preferences own portable policy and relative template selection. Hooks, the CLI, and gardener commands
+share these canonical module names in source checkouts and installed wheels.
+
+## Invariants
+
+The static import checker is `scripts/prek_hooks/check_architecture.py`.
+Preserve these boundaries:
+
+- `lib` imports neither adapters nor shared hooks. Only `cli.py` dispatches
+  to `gardener.cli`. Dependency-light top-level registry, preferences, and
+  document-parser modules may be shared with `lib`.
+- `hooks/hookslib` imports neither `lib`, `vault_index`, nor `gardener`.
+  It may import the shared `vault_registry` and `vault_preferences` modules.
+- Hook entrypoints import `hookslib` and may import `lib.vault_index` for the doctor.
+- Keep `lib` free of import cycles. Put shared result types in `models.py`.
+
+Gardener commands reuse hook convention checks and the confined, verified vault
+writer. Their shared policy excludes hidden files, dependency directories,
+protected sources, sync conflicts, and symlinks. Scanners retain their documented
+scope; repairs require a writable managed path and an unchanged reviewed baseline.
+The skill contains guidance, while executable maintenance code ships in the wheel.
+
+Review dynamic imports and generated subprocess code separately; the checker
+covers static imports, including local and relative imports.
+
+Runtime requirements:
+
+- i-insist normalizes tool inputs. Vault checks consume neutral file changes and
+  shell commands directly; the provider owns no harness or approval adapter.
+- Hooks must not crash the host. Broad catches at entrypoint boundaries are
+  deliberate and marked `# allow: exception-handling`.
+- Launch Claude Code Python hooks with `uv run --script` and declare every
+  third-party import, including those reached through `hookslib`, in the
+  script's PEP 723 block. The host's `python3` has no project dependencies.
+  `tests/test_hook_launcher.py` enforces both.
+- Keep the Codex distribution generated. The `codex-plugin-sync` check detects drift.
+- Store caches outside the vault, keyed by vault path, to avoid sync conflicts
+  and collisions between vaults.
+
+## Worktree isolation
+
+For isolated feature work, use `new-feature create NAME --no-agent`, then
+commit in the worktree and integrate with `new-feature merge NAME` and
+`new-feature teardown NAME` from the control checkout. Managed worktrees get
+their own `.venv` through `uv sync --group dev` and share the uv package cache.
+
+Install Git hooks with `uv run prek install` from the permanent control checkout:
+shared worktree hooks must not reference a disposable interpreter. See
+[quality checks](QUALITY.md) for gate ownership. Release CI owns version updates.
+Generated `coverage.json` is disposable and does not block worktree teardown.
+
+Tests use temporary caches and disable live Ollama probes. For manual indexing
+in concurrent worktrees, set `OBSIDIAN_VAULT_ROOT` and
+`OBSIDIAN_KNOWLEDGE_CACHE_ROOT` to a throwaway vault and cache. A real vault's
+index is shared across worktrees that target it.
+
+## Bundled indexing library
+
+The fixed memweave runtime is vendored under `obsidian_knowledge_vendor.memweave`
+and included in both wheels and source archives. Its source commit, license, and
+update instructions are in `obsidian_knowledge_vendor/memweave/VENDORED.md`.
+Application imports use this private namespace; installing the application does
+not install or overwrite the separately distributed `memweave` package. Runtime
+requirements are declared directly in the application metadata so registry
+installations do not need a Git checkout. Upstream code retains its own tests and
+style; application quality tools exclude the bundled source.
+
+## Index worker ownership
+
+`index_worker.py` owns watcher events and periodic reconciliation; `dirty_paths.py`
+coalesces durable revisions and quiet deadlines. One worker indexes settled files,
+cancels superseded work, and retains failures for retry. Queries never schedule
+maintenance. `index_generations.py` publishes rebuilds with an atomic pointer;
+existing readers retain their chosen generation. See
+[CLI operations](CLI.md#settled-file-indexing-worker).
+
+## Cache identity
+
+`cache_paths.py` selects one host-local, vault-keyed cache root for workers,
+queries and MCP status without creating state. An inaccessible default base uses
+the sandbox base; explicit overrides never silently fall back. Once selected,
+concrete generations fail on storage errors rather than relocating away from
+their queue and publication pointer.

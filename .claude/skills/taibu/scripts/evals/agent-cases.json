@@ -1,0 +1,590 @@
+[
+  {
+    "id": "astrology",
+    "tool": "astrology",
+    "guide": "astrology",
+    "arguments": {
+      "birthYear": 1990,
+      "birthMonth": 1,
+      "birthDay": 1,
+      "birthHour": 12,
+      "birthMinute": 30,
+      "latitude": 40.7128,
+      "longitude": -74.006,
+      "transitDateTime": "2026-04-10T09:30:00"
+    },
+    "prompt": "请用 西方占星命盘 按以下已确认参数调用此工具，依据当前返回盘面给出不超过600字的简洁解读和不确定性。未给出的可选参数使用工具默认值，不追加未请求的其他计算。参数：{\"birthYear\":1990,\"birthMonth\":1,\"birthDay\":1,\"birthHour\":12,\"birthMinute\":30,\"latitude\":40.7128,\"longitude\":-74.006,\"transitDateTime\":\"2026-04-10T09:30:00\"}",
+    "assertions": [
+      "使用指定体系的实际 Core 结果，不捏造计算值",
+      "解读引用具体盘面依据，回答用户问题",
+      "说明不确定性，给出可执行建议，避免绝对化预言"
+    ]
+  },
+  {
+    "id": "bazi",
+    "tool": "bazi",
+    "guide": "bazi",
+    "arguments": {
+      "gender": "male",
+      "birthYear": 1992,
+      "birthMonth": 8,
+      "birthDay": 14,
+      "birthHour": 7,
+      "birthMinute": 40
+    },
+    "prompt": "我是男的，1992年8月14日早上7点40出生在杭州，帮我排一下八字，看看日主强弱和喜用神大概是什么情况",
+    "assertions": [
+      "四柱干支正确：壬申年 戊申月 壬戌日 甲辰时（与 taibu-core 对同一生辰的计算一致）",
+      "必须调用真实计算工具，以 Core 结果为依据",
+      "对日主（壬水）强弱给出明确判断，并引用盘面依据（月令、通根、十神结构）",
+      "分别明确给出用神、喜神、忌神（不并称『喜用神』），且各有取用理由"
+    ],
+    "sourceEvalId": 0
+  },
+  {
+    "id": "bazi_pillars_resolve",
+    "tool": "bazi_pillars_resolve",
+    "guide": "bazi",
+    "arguments": {
+      "yearPillar": "壬申",
+      "monthPillar": "戊申",
+      "dayPillar": "壬戌",
+      "hourPillar": "甲辰"
+    },
+    "prompt": "请用 四柱反推 按以下已确认参数调用此工具，依据当前返回盘面给出不超过600字的简洁解读和不确定性。未给出的可选参数使用工具默认值，不追加未请求的其他计算。参数：{\"yearPillar\":\"壬申\",\"monthPillar\":\"戊申\",\"dayPillar\":\"壬戌\",\"hourPillar\":\"甲辰\"}",
+    "assertions": [
+      "使用指定体系的实际 Core 结果，不捏造计算值",
+      "解读引用具体盘面依据，回答用户问题",
+      "说明不确定性，给出可执行建议，避免绝对化预言"
+    ]
+  },
+  {
+    "id": "bazi_hour_candidates",
+    "tool": "bazi_hour_candidates",
+    "guide": "birth-hour",
+    "arguments": {
+      "gender": "female",
+      "birthYear": 1995,
+      "birthMonth": 1,
+      "birthDay": 9,
+      "fromHour": 5,
+      "toHour": 12,
+      "eventYears": [2018, 2021]
+    },
+    "prompt": "我是女生，1995年1月9日出生，不知道具体几点，家里说是上午。2018年换了工作，2021年结婚。能帮我推一下出生时辰吗？",
+    "assertions": [
+      "调用推算出生时辰工具列出上午的候选时辰，引用 Core 返回的时柱干支与区分事实，不捏造",
+      "不替用户直接定下时辰：给出最可能的一到三个候选及各自依据，请用户确认",
+      "用 2018、2021 两年流年、大运与各候选时柱的关系说明区分依据，并追问兄弟姐妹、子女等进一步线索",
+      "用户确认之前不按某个时辰下命局结论"
+    ]
+  },
+  {
+    "id": "ziwei",
+    "tool": "ziwei",
+    "guide": "ziwei",
+    "arguments": {
+      "gender": "male",
+      "birthYear": 1990,
+      "birthMonth": 1,
+      "birthDay": 15,
+      "birthHour": 9
+    },
+    "prompt": "请用 紫微斗数命盘 按以下已确认参数调用此工具，依据当前返回盘面给出不超过600字的简洁解读和不确定性。未给出的可选参数使用工具默认值，不追加未请求的其他计算。参数：{\"gender\":\"male\",\"birthYear\":1990,\"birthMonth\":1,\"birthDay\":15,\"birthHour\":9}",
+    "assertions": [
+      "使用指定体系的实际 Core 结果，不捏造计算值",
+      "解读引用具体盘面依据，回答用户问题",
+      "说明不确定性，给出可执行建议，避免绝对化预言"
+    ]
+  },
+  {
+    "id": "ziwei_horoscope",
+    "tool": "ziwei_horoscope",
+    "guide": "ziwei",
+    "arguments": {
+      "gender": "male",
+      "birthYear": 1990,
+      "birthMonth": 1,
+      "birthDay": 15,
+      "birthHour": 9,
+      "targetDate": "2026-03-13"
+    },
+    "prompt": "请用 紫微斗数运限 按以下已确认参数调用此工具，依据当前返回盘面给出不超过600字的简洁解读和不确定性。未给出的可选参数使用工具默认值，不追加未请求的其他计算。参数：{\"gender\":\"male\",\"birthYear\":1990,\"birthMonth\":1,\"birthDay\":15,\"birthHour\":9,\"targetDate\":\"2026-03-13\"}",
+    "assertions": [
+      "使用指定体系的实际 Core 结果，不捏造计算值",
+      "解读引用具体盘面依据，回答用户问题",
+      "说明不确定性，给出可执行建议，避免绝对化预言"
+    ]
+  },
+  {
+    "id": "ziwei_flying_star",
+    "tool": "ziwei_flying_star",
+    "guide": "ziwei",
+    "arguments": {
+      "gender": "male",
+      "birthYear": 1990,
+      "birthMonth": 1,
+      "birthDay": 15,
+      "birthHour": 9,
+      "queries": [
+        {
+          "type": "mutagedPlaces",
+          "palace": "命宫"
+        },
+        {
+          "type": "surroundedPalaces",
+          "palace": "命宫"
+        }
+      ]
+    },
+    "prompt": "请用 紫微斗数飞星 按以下已确认参数调用此工具，依据当前返回盘面给出不超过600字的简洁解读和不确定性。未给出的可选参数使用工具默认值，不追加未请求的其他计算。参数：{\"gender\":\"male\",\"birthYear\":1990,\"birthMonth\":1,\"birthDay\":15,\"birthHour\":9,\"queries\":[{\"type\":\"mutagedPlaces\",\"palace\":\"命宫\"},{\"type\":\"surroundedPalaces\",\"palace\":\"命宫\"}]}",
+    "assertions": [
+      "使用指定体系的实际 Core 结果，不捏造计算值",
+      "解读引用具体盘面依据，回答用户问题",
+      "说明不确定性，给出可执行建议，避免绝对化预言"
+    ]
+  },
+  {
+    "id": "liuyao",
+    "tool": "liuyao",
+    "guide": "liuyao",
+    "arguments": {
+      "question": "月底前能不能拿到 offer",
+      "method": "number",
+      "numbers": [
+        3,
+        7,
+        5
+      ],
+      "date": "2026-08-01T15:30:00",
+      "yongShenTargets": [
+        "官鬼"
+      ]
+    },
+    "prompt": "帮我用六爻起一卦，问月底前能不能拿到 offer。用报数起卦，我报的数字是 3、7、5，起卦时间按 2026-08-01 15:30 算。",
+    "assertions": [
+      "卦象正确：本卦火山旅、变卦天山遯、动爻六五（数字 3,7,5 与 2026-08-01 15:30 的确定性起卦结果）",
+      "用神选取官鬼（求职问 offer 的正确用神）",
+      "必须调用真实计算工具，以 Core 结果为依据",
+      "给出能否拿到 offer 的明确结论，并包含应期或时间性说明"
+    ],
+    "sourceEvalId": 1
+  },
+  {
+    "id": "meihua",
+    "tool": "meihua",
+    "guide": "meihua",
+    "arguments": {
+      "question": "这次合作能否谈成？",
+      "method": "time",
+      "date": "2026-04-04T10:30:00"
+    },
+    "prompt": "请用 梅花易数起卦 按以下已确认参数调用此工具，依据当前返回盘面给出不超过600字的简洁解读和不确定性。未给出的可选参数使用工具默认值，不追加未请求的其他计算。参数：{\"question\":\"这次合作能否谈成？\",\"method\":\"time\",\"date\":\"2026-04-04T10:30:00\"}",
+    "assertions": [
+      "使用指定体系的实际 Core 结果，不捏造计算值",
+      "解读引用具体盘面依据，回答用户问题",
+      "说明不确定性，给出可执行建议，避免绝对化预言"
+    ]
+  },
+  {
+    "id": "tarot",
+    "tool": "tarot",
+    "guide": "tarot",
+    "arguments": {
+      "spreadType": "three-card",
+      "question": "本月运势如何",
+      "referenceYear": 2026
+    },
+    "prompt": "请用 塔罗抽牌 按以下已确认参数调用此工具，依据当前返回盘面给出不超过600字的简洁解读和不确定性。未给出的可选参数使用工具默认值，不追加未请求的其他计算。参数：{\"spreadType\":\"three-card\",\"question\":\"本月运势如何\",\"referenceYear\":2026}",
+    "assertions": [
+      "使用指定体系的实际 Core 结果，不捏造计算值",
+      "解读引用具体盘面依据，回答用户问题",
+      "说明不确定性，给出可执行建议，避免绝对化预言"
+    ]
+  },
+  {
+    "id": "taiyi",
+    "tool": "taiyi",
+    "guide": "taiyi",
+    "arguments": {
+      "mode": "day",
+      "date": "2026-04-10",
+      "timezone": "Asia/Shanghai",
+      "question": "此事能否顺利推进？"
+    },
+    "prompt": "请用 太乙排盘 按以下已确认参数调用此工具，依据当前返回盘面给出不超过600字的简洁解读和不确定性。未给出的可选参数使用工具默认值，不追加未请求的其他计算。参数：{\"mode\":\"day\",\"date\":\"2026-04-10\",\"timezone\":\"Asia/Shanghai\",\"question\":\"此事能否顺利推进？\"}",
+    "assertions": [
+      "使用指定体系的实际 Core 结果，不捏造计算值",
+      "解读引用具体盘面依据，回答用户问题",
+      "说明不确定性，给出可执行建议，避免绝对化预言"
+    ]
+  },
+  {
+    "id": "almanac",
+    "tool": "almanac",
+    "guide": "almanac",
+    "arguments": {
+      "birthYear": 1990,
+      "birthMonth": 1,
+      "birthDay": 15,
+      "birthHour": 9,
+      "date": "2026-02-14"
+    },
+    "prompt": "请用 黄历查询 按以下已确认参数调用此工具，依据当前返回盘面给出不超过600字的简洁解读和不确定性。未给出的可选参数使用工具默认值，不追加未请求的其他计算。参数：{\"birthYear\":1990,\"birthMonth\":1,\"birthDay\":15,\"birthHour\":9,\"date\":\"2026-02-14\"}",
+    "assertions": [
+      "使用指定体系的实际 Core 结果，不捏造计算值",
+      "解读引用具体盘面依据，回答用户问题",
+      "说明不确定性，给出可执行建议，避免绝对化预言"
+    ]
+  },
+  {
+    "id": "bazi_dayun",
+    "tool": "bazi_dayun",
+    "guide": "bazi",
+    "arguments": {
+      "gender": "male",
+      "birthYear": 1990,
+      "birthMonth": 1,
+      "birthDay": 15,
+      "birthHour": 9
+    },
+    "prompt": "请用 八字大运 按以下已确认参数调用此工具，依据当前返回盘面给出不超过600字的简洁解读和不确定性。未给出的可选参数使用工具默认值，不追加未请求的其他计算。参数：{\"gender\":\"male\",\"birthYear\":1990,\"birthMonth\":1,\"birthDay\":15,\"birthHour\":9}",
+    "assertions": [
+      "使用指定体系的实际 Core 结果，不捏造计算值",
+      "解读引用具体盘面依据，回答用户问题",
+      "说明不确定性，给出可执行建议，避免绝对化预言"
+    ]
+  },
+  {
+    "id": "qimen",
+    "tool": "qimen",
+    "guide": "qimen",
+    "arguments": {
+      "year": 2026,
+      "month": 3,
+      "day": 15,
+      "hour": 16,
+      "minute": 51,
+      "timezone": "Asia/Shanghai",
+      "question": "事业发展如何？"
+    },
+    "prompt": "请用 奇门遁甲排盘 按以下已确认参数调用此工具，依据当前返回盘面给出不超过600字的简洁解读和不确定性。未给出的可选参数使用工具默认值，不追加未请求的其他计算。参数：{\"year\":2026,\"month\":3,\"day\":15,\"hour\":16,\"minute\":51,\"timezone\":\"Asia/Shanghai\",\"question\":\"事业发展如何？\"}",
+    "assertions": [
+      "使用指定体系的实际 Core 结果，不捏造计算值",
+      "解读引用具体盘面依据，回答用户问题",
+      "说明不确定性，给出可执行建议，避免绝对化预言"
+    ]
+  },
+  {
+    "id": "daliuren",
+    "tool": "daliuren",
+    "guide": "daliuren",
+    "arguments": {
+      "date": "2026-03-15",
+      "hour": 16,
+      "minute": 53,
+      "timezone": "Asia/Shanghai",
+      "question": "今日运势如何"
+    },
+    "prompt": "请用 大六壬排盘 按以下已确认参数调用此工具，依据当前返回盘面给出不超过600字的简洁解读和不确定性。未给出的可选参数使用工具默认值，不追加未请求的其他计算。参数：{\"date\":\"2026-03-15\",\"hour\":16,\"minute\":53,\"timezone\":\"Asia/Shanghai\",\"question\":\"今日运势如何\"}",
+    "assertions": [
+      "使用指定体系的实际 Core 结果，不捏造计算值",
+      "解读引用具体盘面依据，回答用户问题",
+      "说明不确定性，给出可执行建议，避免绝对化预言"
+    ]
+  },
+  {
+    "id": "xiaoliuren",
+    "tool": "xiaoliuren",
+    "guide": "xiaoliuren",
+    "arguments": {
+      "lunarMonth": 6,
+      "lunarDay": 18,
+      "hour": 15,
+      "question": "谈合作顺不顺利"
+    },
+    "prompt": "今天农历六月十八，下午三点半，用小六壬帮我看看等下去谈合作顺不顺利",
+    "assertions": [
+      "落宫与所采用的农历日期计算一致：采信口述六月十八则为大安（木/东方/吉），核实系统日期后按实际农历日则以该日确定性结果为准；其他任何落宫为错",
+      "必须调用真实计算工具，以 Core 结果为依据",
+      "若采用与用户口述不同的日期，答案中明确说明了日期差异及依据",
+      "直接回答谈合作顺不顺利，风格简洁并给出可执行建议"
+    ],
+    "sourceEvalId": 2
+  },
+  {
+    "id": "bazi_relations",
+    "tool": "bazi_relations",
+    "guide": "bazi",
+    "chart": {
+      "tool": "bazi",
+      "arguments": { "gender": "male", "birthYear": 1990, "birthMonth": 1, "birthDay": 15, "birthHour": 9 }
+    },
+    "arguments": { "year": 2027 },
+    "prompt": "先排我的八字，再用排好的盘细看 2027 流年与原局有哪些刑冲合害。",
+    "assertions": [
+      "先调用 bazi 排盘，再用命盘引用调用 bazi_relations，不重复传出生信息",
+      "引用叠加关系与岁运提示的实际返回内容，不捏造盘面",
+      "说明不确定性，给出可执行建议，避免绝对化预言"
+    ]
+  },
+  {
+    "id": "bazi_relations_filtered",
+    "tool": "bazi_relations",
+    "guide": "bazi",
+    "chart": {
+      "tool": "bazi",
+      "arguments": { "gender": "male", "birthYear": 1990, "birthMonth": 1, "birthDay": 15, "birthHour": 9 }
+    },
+    "arguments": { "year": 2027, "pillars": ["月柱", "流年"] },
+    "prompt": "先排我的八字，只看 2027 流年和我月柱之间的冲刑合害，别的关系先不展开。",
+    "assertions": [
+      "先调用 bazi 排盘，再用命盘引用调用 bazi_relations，并用 pillars 只取月柱与流年之间的关系，不重复传出生信息",
+      "所列关系与同字牵连一并解读，不把未列出的关系说成不存在",
+      "引用实际返回内容，不捏造盘面，避免绝对化预言"
+    ]
+  },
+  {
+    "id": "ziwei_palace",
+    "tool": "ziwei_palace",
+    "guide": "ziwei",
+    "chart": {
+      "tool": "ziwei",
+      "arguments": { "gender": "male", "birthYear": 1990, "birthMonth": 1, "birthDay": 15, "birthHour": 9 }
+    },
+    "arguments": { "palace": "命宫" },
+    "prompt": "我是男的，1990 年 1 月 15 日上午九点出生。排好我的紫微盘后，细看命宫：星曜四化、三方四正与运限叠加。",
+    "assertions": [
+      "先排紫微盘，再用命盘引用调用 ziwei_palace 查询命宫",
+      "引用命宫实际星曜与三方四正，不捏造盘面",
+      "说明不确定性，给出可执行建议，避免绝对化预言"
+    ]
+  },
+  {
+    "id": "liuyao_line",
+    "tool": "liuyao_line",
+    "guide": "liuyao",
+    "chart": {
+      "tool": "liuyao",
+      "arguments": { "question": "财运怎么样？", "yongShenTargets": ["妻财"], "method": "select", "hexagramName": "天火同人", "date": "2026-02-10 14:00:00" }
+    },
+    "arguments": { "role": "世" },
+    "prompt": "用选卦方式起「天火同人」看财运，再细看世爻的旺衰与生克。",
+    "assertions": [
+      "先起卦，再用命盘引用调用 liuyao_line 按世爻查询",
+      "引用世爻实际纳甲、旺衰与空亡，不捏造盘面",
+      "说明不确定性，给出可执行建议，避免绝对化预言"
+    ]
+  },
+  {
+    "id": "qimen_palace",
+    "tool": "qimen_palace",
+    "guide": "qimen",
+    "chart": {
+      "tool": "qimen",
+      "arguments": { "year": 2024, "month": 1, "day": 1, "hour": 3, "juNumber": 1, "dunType": "yang" }
+    },
+    "arguments": { "palace": 1 },
+    "prompt": "按给定时刻排奇门局，再细看第一宫的天地盘、星门神与格局。",
+    "assertions": [
+      "先排奇门局，再用命盘引用调用 qimen_palace 查询第 1 宫",
+      "引用该宫实际星门神与生克，不捏造盘面",
+      "说明不确定性，给出可执行建议，避免绝对化预言"
+    ]
+  },
+  {
+    "id": "ziwei-horoscope-2027",
+    "tool": "ziwei_horoscope",
+    "guide": "ziwei",
+    "arguments": { "gender": "female", "birthYear": 1995, "birthMonth": 6, "birthDay": 20, "birthHour": 14, "birthMinute": 20, "targetDate": "2027-06-01" },
+    "prompt": "我 1995 年 6 月 20 日下午两点二十出生，女的。帮我看看 2027 年整体运势怎么样，哪几个月要特别注意？",
+    "assertions": [
+      "命盘由工具计算：四柱乙亥 壬午 壬午 丁未、五行局土五局与 Core 结果一致",
+      "必须调用真实计算工具，以 Core 结果为依据",
+      "2027 年大限与流年依据来自工具实际返回：大限己丑（虚岁25–34）落福德宫、流年丁未落财帛宫",
+      "细化到月份时有流月层结果支撑，不是仅凭流年外推；结论引用宫位与四化，避免绝对化预言"
+    ],
+    "sourceEvalId": 3
+  },
+  {
+    "id": "qimen-signing-2026",
+    "tool": "qimen",
+    "guide": "qimen",
+    "arguments": { "year": 2026, "month": 11, "day": 5, "hour": 14, "minute": 30, "timezone": "Asia/Shanghai", "question": "下周签约顺不顺利" },
+    "prompt": "2026 年 11 月 5 日下午两点半，帮我起一局看看下周签约顺不顺利，宜往哪个方向谈。",
+    "assertions": [
+      "局盘由工具计算：阴遁5局、值符天英星、值使景门与 Core 结果一致",
+      "必须调用真实计算工具，以 Core 结果为依据",
+      "用神取法正确：以日干癸落巽四宫为自身、时干己落震三宫为时机，引用实际落宫",
+      "给出明确的可行性与方位建议；应期用相对条件表述；不把单时刻盘面当作未来数月的盘面"
+    ],
+    "sourceEvalId": 4
+  },
+  {
+    "id": "bazi-dayun-2026",
+    "tool": "bazi_dayun",
+    "guide": "bazi",
+    "arguments": { "gender": "male", "birthYear": 1988, "birthMonth": 2, "birthDay": 8, "birthHour": 10, "birthMinute": 30 },
+    "prompt": "我 1988 年 2 月 8 日上午十点半出生，男的。2026 和 2027 这两年整体运势怎么样？",
+    "assertions": [
+      "四柱干支正确：戊辰 甲寅 癸巳 丁巳（与 Core 对同一生辰的计算一致）",
+      "必须调用真实计算工具，以 Core 结果为依据",
+      "起运与大运依据来自 bazi_dayun 实际返回：9 岁起运（1996 年）、2026 年起走戊午大运",
+      "2026、2027 流年干支（丙午、丁未）正确并说明引动；每条断语落到具体干支，不绝对化"
+    ],
+    "sourceEvalId": 5
+  },
+  {
+    "id": "birth-hour-unknown",
+    "mayAskUser": true,
+    "tool": "bazi_hour_candidates",
+    "guide": "birth-hour",
+    "arguments": { "gender": "male", "birthYear": 1990, "birthMonth": 5, "birthDay": 20 },
+    "prompt": "我是男的，公历 1990 年 5 月 20 日出生。出生时辰不知道，家里人只记得是傍晚前后。帮我看看八字命局。",
+    "assertions": [
+      "没有按假定的时辰直接下结论；先列出候选时辰（如酉、戌时段）及候选之间的区分事实",
+      "必须调用真实计算工具（bazi_hour_candidates），以 Core 结果为依据",
+      "向用户核对六亲与几件前事的年份，把候选收窄后请用户确认，不自行替用户选定时辰",
+      "用户确认前不给出时柱、命宫与小运相关的结论；只按三柱分析时说明未覆盖的部分",
+      "按推理时柱的方法先向用户提问并暂停任务，即视为通过"
+    ],
+    "sourceEvalId": 6
+  },
+  {
+    "id": "mangpai-career-2026",
+    "tool": "bazi_dayun",
+    "guide": "bazi-mangpai",
+    "arguments": { "gender": "male", "birthYear": 1990, "birthMonth": 5, "birthDay": 20, "birthHour": 20, "birthMinute": 0 },
+    "prompt": "我是男的，1990 年 5 月 20 日晚上八点出生。请用盲派帮我看事业层次和 2026、2027 两年的应期。",
+    "assertions": [
+      "四柱干支正确：庚午 辛巳 乙酉 丙戌（与 Core 对同一生辰的计算一致）",
+      "必须调用真实计算工具，以 Core 结果为依据",
+      "使用盲派术语与思路（宾主、体用、做功、功神），不与子平的用神喜神忌神混称",
+      "大运依据来自工具实际返回：2025 年起走乙酉大运；应期落到大运与流年并写明引动方式，不绝对化"
+    ],
+    "sourceEvalId": 7
+  },
+  {
+    "id": "dream-unprompted",
+    "tool": "none",
+    "guide": "dream",
+    "arguments": {},
+    "prompt": "昨晚梦见一条蛇追着我跑，最后钻进了老家的柜子里。醒来心里发慌，这梦是什么意思？",
+    "assertions": [
+      "加载并遵循解梦方法（dream），不调用排盘工具",
+      "先辨梦之类（如象梦、思梦、惧梦），再取象，并落到做梦者的处境与近期情绪",
+      "传统梦书说法只作常见说法，不虚构典籍条目或原文，不作凶兆断言",
+      "给出心理视角（梦与白天关切、情绪的联系）与具体可行的建议"
+    ]
+  },
+  {
+    "id": "astrology-transit-window",
+    "tool": "astrology",
+    "guide": "astrology",
+    "arguments": { "birthYear": 1990, "birthMonth": 1, "birthDay": 1, "birthHour": 12, "birthMinute": 30, "latitude": 40.7128, "longitude": -74.006, "transitDateTime": "2027-09-01T09:30:00" },
+    "prompt": "1990 年 1 月 1 日中午十二点半出生在纽约，男的。帮我看看 2027 年 9 月前后的流运，给个能落地的时间范围。",
+    "assertions": [
+      "本命关键配置正确：太阳摩羯11°02、月亮双鱼6°21、上升金牛2°43（与 Core 计算一致）",
+      "必须调用真实计算工具，以 Core 结果为依据",
+      "流运触发引用实际返回的相位（如海王星四分天王星、天王星对冲火星）与容许度，不捏造",
+      "应期给出时间尺度（年/月）与区间，说明入相位、精确、出相位的判断；避免宿命化预言"
+    ],
+    "sourceEvalId": 8
+  },
+  {
+    "id": "bazi-hepan-2026",
+    "tool": "bazi_hepan",
+    "guide": "bazi",
+    "arguments": {
+      "a": { "name": "男方", "gender": "male", "birthYear": 1990, "birthMonth": 1, "birthDay": 15, "birthHour": 9 },
+      "b": { "name": "女方", "gender": "female", "birthYear": 1992, "birthMonth": 3, "birthDay": 8, "birthHour": 14 }
+    },
+    "prompt": "我是男的，1990 年 1 月 15 日上午九点。女朋友 1992 年 3 月 8 日下午两点。帮我看看我们俩合不合适，以后相处要注意什么。",
+    "assertions": [
+      "双方出生信息齐全，命盘由工具计算，不为任何一方假设或改动出生数据",
+      "调用 bazi_hepan 取两盘之间的事实：日柱、年柱、日主互见的十神与五行生克",
+      "不给分数、不下「合」或「不合」的单一结论，分别写互补处与易冲突处并落到具体干支",
+      "建议针对两盘的具体关系，不写放之四海皆准的空话，避免绝对化预言"
+    ]
+  },
+  {
+    "id": "almanac-select-wedding-2026",
+    "tool": "almanac_select",
+    "guide": "almanac",
+    "arguments": { "startDate": "2026-11-15", "endDate": "2026-12-15", "activity": "嫁娶", "excludeClash": ["牛", "鸡"] },
+    "prompt": "我们想在 2026 年 11 月 15 日到 12 月 15 日之间挑个结婚领证的日子。我属牛，对象属鸡，帮我们筛一下哪些天合适。",
+    "assertions": [
+      "必须调用真实计算工具（almanac_select），区间与两个生肖按用户所给传入",
+      "候选日依据工具返回的宜忌、建除、黄黑道与冲煞，不自行增补未返回的吉日或吉时",
+      "给出候选日与排除理由（如冲生肖、忌嫁娶），并说明区间内共多少天、排除多少",
+      "未查询其他日期时说明需要另查，不虚列吉日；健康与就医不由黄历决定"
+    ]
+  },
+  {
+    "id": "daliuren-lessons-signing",
+    "tool": "daliuren_lessons",
+    "guide": "daliuren",
+    "chart": { "tool": "daliuren", "arguments": { "date": "2026-03-15", "hour": 16, "minute": 53, "timezone": "Asia/Shanghai", "question": "这份合同下周能签成吗" } },
+    "arguments": { "focus": "传", "leiShen": "贵人" },
+    "prompt": "我想问下周能不能签下这份合同，起课时间是 2026 年 3 月 15 日 16:53。起课后帮我细看三传和贵人。",
+    "assertions": [
+      "四课、三传与贵人的内容与详查返回一致：课体、三传地支与所乘天将逐条对得上，不捏造",
+      "三传与贵人的实际返回内容（地支、天将、遁干六亲、旬空）引用准确，不捏造",
+      "应期写明取自哪一传、哪种取法（值日、冲合、填实、出空），不凭记忆写死历日",
+      "结论明确回答能否签成与时间范围，给出建议，避免绝对化预言"
+    ]
+  },
+  {
+    "id": "astrology-point-saturn",
+    "tool": "astrology_point",
+    "guide": "astrology",
+    "chart": { "tool": "astrology", "arguments": { "birthYear": 1990, "birthMonth": 1, "birthDay": 1, "birthHour": 12, "birthMinute": 30, "latitude": 40.7128, "longitude": -74.006, "transitDateTime": "2026-04-10T09:30:00" } },
+    "arguments": { "planet": "saturn", "focus": "流运" },
+    "prompt": "1990 年 1 月 1 日中午十二点半出生在纽约，男的。重点帮我看看土星现在对我有哪些流运触发。",
+    "assertions": [
+      "先调用 astrology 排盘，再用命盘引用调用 astrology_point，不重复传出生信息",
+      "土星的星座宫位、传统尊贵、宫主星落点与流运触发逐项取自工具返回，不捏造",
+      "区分本命结构与流运触发，不据本命相位推流运；流运相位只取自实际返回的列表",
+      "应期给出时间尺度与区间（年/月），说明入相位与出相位，避免宿命化预言"
+    ]
+  },
+  {
+    "id": "past-events-calibration",
+    "mayAskUser": true,
+    "tool": "bazi",
+    "guide": "past-events",
+    "arguments": { "gender": "male", "birthYear": 1990, "birthMonth": 1, "birthDay": 15, "birthHour": 9 },
+    "prompt": "我是男的，1990 年 1 月 15 日上午九点出生。之前有人给我看八字说我身弱，也有人说身强，我自己也拿不准。帮我看看接下来几年怎么样。",
+    "assertions": [
+      "先排盘并指出论断依赖的取舍（旺衰与用神在强弱之间）",
+      "向用户核对两三件在两种取舍下判断相反的往事，问发生年份与顺逆，一次问两三件",
+      "先不给出推断，避免用「是不是换了工作」这类引导式问法",
+      "用户确认前不硬定强弱与用神；按验证前事先提问并暂停任务即视为通过"
+    ]
+  },
+  {
+    "id": "liuyao-line-fushen-yingqi",
+    "tool": "liuyao_line",
+    "guide": "liuyao",
+    "chart": { "tool": "liuyao", "arguments": { "question": "这笔货款什么时候能收回", "yongShenTargets": ["妻财"], "method": "select", "hexagramName": "乾为天", "changedHexagramName": "天风姤", "date": "2026-03-15 10:00:00" } },
+    "arguments": { "role": "妻财" },
+    "prompt": "我想问一笔货款什么时候能收回来，2026 年 3 月 15 日上午 10 点起得乾为天之天风姤。帮我看看能不能收回、大概应期在什么时候。",
+    "assertions": [
+      "先排六爻盘，再用命盘引用调用 liuyao_line 查看妻财（伏神所在飞神爻）与动爻事实，不捏造盘面未输出的取用说明",
+      "准确指出求财取妻财为用神，本卦妻财不现而伏于飞神之下，并按《增删卜易·飞伏神章》结合日月与飞伏生克判断伏神能否引拔出露",
+      "明确给出货款能否收回的倾向性结论及应期触发条件（如冲飞、值日或出空填实），未经工具核实的历日不写死具体公历月日"
+    ]
+  },
+  {
+    "id": "almanac-auspicious-hours-2026",
+    "tool": "almanac",
+    "guide": "almanac",
+    "arguments": { "date": "2026-05-18", "detailLevel": "full" },
+    "prompt": "我们打算 2026 年 5 月 18 日搬家入宅，帮我看看这天合不合适？如果当天办，选哪几个吉时、喜神财神在什么方位？",
+    "assertions": [
+      "调用 almanac 并传 detailLevel: \"full\" 获取当日宜忌、冲煞、值神建除、吉神方位与十二时辰吉凶，不凭记忆手算建除或时辰",
+      "直接回答当日是否适合入宅/移徙，引用盘面实际返回的建除、黄黑道、宜忌与冲煞",
+      "吉时（含钟表时间区间）与喜神、财神方位逐项与 Core 返回一致，避开日破凶时，不虚构未返回的信息"
+    ]
+  }
+]

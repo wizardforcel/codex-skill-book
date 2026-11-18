@@ -1,0 +1,774 @@
+from __future__ import annotations
+
+import json
+import io
+import os
+import subprocess
+from pathlib import Path
+
+import pytest
+import typer
+
+from horosa_skill.config import Settings
+from horosa_skill.surfaces import cli
+from horosa_skill.surfaces import runtime_helpers as runtime_helpers
+from horosa_skill.surfaces import openclaw_smoke, serve_flow
+from horosa_skill.client_config import openclaw as client_openclaw
+from horosa_skill.client_config import payload as client_payload
+
+
+class _ManagerStub:
+    def __init__(self) -> None:
+        self.started = 0
+        self.stopped = 0
+
+    def start_local_services(self, *, wait_seconds: float | None = None) -> dict[str, object]:
+        self.started += 1
+        return {"ok": True, "already_running": False}
+
+    LAUNCHER_LOG_NAME = "launcher.log"
+
+    def runtime_mode(self) -> str:
+        return "managed"
+
+    def endpoint_identities(self, *, endpoints=None) -> list[dict[str, object]]:
+        return []
+
+    def load_runtime_state(self, *, strict: bool = False) -> dict[str, object] | None:
+        return None
+
+    def stop_local_services(self, *, force: bool = False) -> dict[str, object]:
+        self.stopped += 1
+        return {"ok": True}
+
+
+def test_stdio_serve_skips_eager_runtime_start(monkeypatch) -> None:
+    settings = Settings(db_path=Path("memory.db"), output_dir=Path("runs"))
+    manager = _ManagerStub()
+    warmups: list[_ManagerStub] = []
+
+    monkeypatch.setattr(cli.Settings, "from_env", classmethod(lambda cls: settings))
+    monkeypatch.setattr(runtime_helpers, "_runtime_manager", lambda settings_arg: manager)
+    monkeypatch.setattr(serve_flow, "_start_stdio_runtime_warmup", lambda manager_arg: warmups.append(manager_arg))
+    monkeypatch.setattr("horosa_skill.surfaces.mcp_server.run_mcp_server", lambda settings_arg, transport, service=None: None)
+
+    cli.serve(transport="stdio", host="127.0.0.1", port=8765, skip_runtime_start=False)
+
+    assert warmups == [manager]
+    assert manager.started == 0
+    assert manager.stopped == 0
+
+
+def test_streamable_http_serve_keeps_the_runtime_warm_by_default(monkeypatch, tmp_path) -> None:
+    """HTTP serve 退出时**默认不停** runtime。
+
+    🔴 旧行为是「这次 serve 起的就在退出时停掉」，而 runtime 是**共享**的：Claude Desktop 与
+    Cursor 同时挂着时，关掉其中一个会把另一个的后端一起停掉，而重启一次要几十秒到几分钟。
+
+    🔴 旧用例还是「因为错误的原因通过」的：它直接以 Python 函数调用 `cli.serve(...)`，
+    没传 `stop_runtime_on_exit`，于是那个形参拿到的是 typer 的 `OptionInfo` **对象**——
+    对象恒真，所以停机分支照走。任何直接调 typer 命令函数的测试都有这个陷阱：布尔默认值
+    必须显式传，否则测的是 `bool(OptionInfo)` 而不是你的默认值。
+    """
+    settings = Settings(db_path=tmp_path / "memory.db", output_dir=tmp_path / "runs",
+                        runtime_root=tmp_path / "rt")
+    manager = _ManagerStub()
+
+    monkeypatch.setattr(cli.Settings, "from_env", classmethod(lambda cls: settings))
+    monkeypatch.setattr(runtime_helpers, "_runtime_manager", lambda settings_arg: manager)
+    monkeypatch.setattr("horosa_skill.surfaces.mcp_server.run_mcp_server", lambda settings_arg, transport, service=None: None)
+    monkeypatch.setattr("horosa_skill.runtime.ports.port_bindable", lambda *a, **k: True)
+
+    cli.serve(transport="streamable-http", host="127.0.0.1", port=8765,
+              skip_runtime_start=False, stop_runtime_on_exit=False)
+
+    assert manager.started == 1
+    assert manager.stopped == 0, "默认必须保温，否则会切断另一个还挂着的客户端"
+
+
+def test_streamable_http_serve_stops_runtime_when_asked(monkeypatch, tmp_path) -> None:
+    settings = Settings(db_path=tmp_path / "memory.db", output_dir=tmp_path / "runs",
+                        runtime_root=tmp_path / "rt")
+    manager = _ManagerStub()
+
+    monkeypatch.setattr(cli.Settings, "from_env", classmethod(lambda cls: settings))
+    monkeypatch.setattr(runtime_helpers, "_runtime_manager", lambda settings_arg: manager)
+    monkeypatch.setattr("horosa_skill.surfaces.mcp_server.run_mcp_server", lambda settings_arg, transport, service=None: None)
+    monkeypatch.setattr("horosa_skill.runtime.ports.port_bindable", lambda *a, **k: True)
+
+    cli.serve(transport="streamable-http", host="127.0.0.1", port=8765,
+              skip_runtime_start=False, stop_runtime_on_exit=True)
+
+    assert manager.started == 1
+    assert manager.stopped == 1
+
+
+def test_serve_refuses_a_port_already_in_use(monkeypatch, tmp_path) -> None:
+    """8765 被占是最常见的一次失败（两个终端各起一个 serve），不能是 uvicorn 的裸 traceback。"""
+    settings = Settings(db_path=tmp_path / "memory.db", output_dir=tmp_path / "runs",
+                        runtime_root=tmp_path / "rt")
+    monkeypatch.setattr(cli.Settings, "from_env", classmethod(lambda cls: settings))
+    monkeypatch.setattr("horosa_skill.runtime.ports.port_bindable", lambda *a, **k: False)
+    monkeypatch.setattr("horosa_skill.runtime.ports.port_holders",
+                        lambda port: [{"pid": 1234, "command": "python -m http.server 8765"}])
+    ran: list[str] = []
+    monkeypatch.setattr("horosa_skill.surfaces.mcp_server.run_mcp_server", lambda *a, **k: ran.append("served"))
+
+    with pytest.raises(typer.Exit) as excinfo:
+        cli.serve(transport="streamable-http", host="127.0.0.1", port=8765,
+                  skip_runtime_start=True, stop_runtime_on_exit=False)
+
+    assert excinfo.value.exit_code == 2
+    assert ran == []
+
+
+def test_load_payload_decodes_utf8_stdin_bytes_when_text_encoding_is_legacy(monkeypatch) -> None:
+    raw = json.dumps({"question": "这个事情能不能推进？风险在哪里？"}, ensure_ascii=False).encode("utf-8")
+    stdin = io.TextIOWrapper(io.BytesIO(raw), encoding="cp1252", errors="surrogateescape")
+    monkeypatch.setattr(cli.sys, "stdin", stdin)
+
+    payload = cli._load_payload(stdin=True, input_file=None)
+
+    assert payload["question"] == "这个事情能不能推进？风险在哪里？"
+
+
+def test_print_json_writes_utf8_bytes_when_stdout_encoding_is_legacy(monkeypatch) -> None:
+    class StdoutStub:
+        def __init__(self) -> None:
+            self.buffer = io.BytesIO()
+
+    stdout = StdoutStub()
+    monkeypatch.setattr(cli.sys, "stdout", stdout)
+
+    cli._print_json({"message": "核心结论"})
+
+    assert json.loads(stdout.buffer.getvalue().decode("utf-8")) == {"message": "核心结论"}
+
+
+def test_resolve_skill_root_accepts_package_dir(tmp_path: Path) -> None:
+    skill_root = tmp_path / "horosa-skill"
+    skill_root.mkdir()
+    (skill_root / "pyproject.toml").write_text("[project]\nname='horosa-skill'\n", encoding="utf-8")
+
+    assert client_payload._resolve_skill_root(skill_root) == skill_root.resolve()
+
+
+def test_resolve_skill_root_accepts_repo_root(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    skill_root = repo_root / "horosa-skill"
+    skill_root.mkdir(parents=True)
+    (skill_root / "pyproject.toml").write_text("[project]\nname='horosa-skill'\n", encoding="utf-8")
+
+    assert client_payload._resolve_skill_root(repo_root) == skill_root.resolve()
+
+
+def test_build_openclaw_config_uses_uv_stdio_by_default(tmp_path: Path, monkeypatch) -> None:
+    skill_root = tmp_path / "horosa-skill"
+    skill_root.mkdir()
+    uv_bin = str((tmp_path / "bin" / "uv").resolve())
+    monkeypatch.setattr(client_openclaw, "resolve_uv_command", lambda: [uv_bin])
+
+    payload = client_openclaw._build_openclaw_config(
+        skill_root=skill_root,
+        server_name="horosa",
+        format_name="mcporter",
+        isolate_home=None,
+    )
+
+    server = payload["mcpServers"]["horosa"]
+    assert server["command"] == uv_bin
+    assert server["args"][-2:] == ["--transport", "stdio"]
+    assert server["cwd"] == str(skill_root.resolve())
+
+
+def test_build_openclaw_config_supports_isolated_home(tmp_path: Path, monkeypatch) -> None:
+    skill_root = tmp_path / "horosa-skill"
+    home_dir = tmp_path / "home"
+    skill_root.mkdir()
+    monkeypatch.setattr(cli.os, "name", "posix", raising=False)
+    monkeypatch.setattr(client_openclaw, "resolve_uv_command", lambda: ["python", "-m", "uv"])
+
+    payload = client_openclaw._build_openclaw_config(
+        skill_root=skill_root,
+        server_name="horosa",
+        format_name="openclaw",
+        isolate_home=home_dir,
+    )
+
+    server = payload["mcp"]["servers"]["horosa"]
+    assert server["command"] == "python"
+    assert server["args"][:3] == ["-m", "uv", "run"]
+    assert server["args"][-2:] == ["--transport", "stdio"]
+    assert server["env"]["HOME"] == str(home_dir.resolve())
+    assert server["env"]["HOROSA_RUNTIME_ROOT"] == str((home_dir / ".horosa" / "runtime").resolve())
+    assert server["env"]["HOROSA_SKILL_DATA_DIR"] == str((home_dir / ".horosa-skill").resolve())
+    assert server["env"]["HOROSA_SERVER_ROOT"].startswith("http://127.0.0.1:")
+    assert server["env"]["HOROSA_CHART_SERVER_ROOT"].startswith("http://127.0.0.1:")
+    assert int(server["env"]["HOROSA_LOCAL_CHART_PORT"]) == int(server["env"]["HOROSA_LOCAL_BACKEND_PORT"]) + 1
+
+
+def test_build_openclaw_config_supports_isolated_home_on_windows(tmp_path: Path, monkeypatch) -> None:
+    skill_root = tmp_path / "horosa-skill"
+    home_dir = tmp_path / "home"
+    skill_root.mkdir()
+
+    monkeypatch.setattr(cli.os, "name", "nt", raising=False)
+    monkeypatch.setattr(client_openclaw, "resolve_uv_command", lambda: [r"C:\Program Files\uv\uv.exe"])
+
+    payload = client_openclaw._build_openclaw_config(
+        skill_root=skill_root,
+        server_name="horosa",
+        format_name="mcporter",
+        isolate_home=home_dir,
+    )
+
+    server = payload["mcpServers"]["horosa"]
+    assert server["command"] == r"C:\Program Files\uv\uv.exe"
+    assert server["args"][:2] == ["run", "--directory"]
+    assert server["args"][-2:] == ["--transport", "stdio"]
+    assert server["env"]["HOME"] == str(home_dir.resolve())
+    assert server["env"]["USERPROFILE"] == str(home_dir.resolve())
+    assert server["env"]["HOROSA_RUNTIME_ROOT"] == str((home_dir / ".horosa" / "runtime").resolve())
+    assert server["env"]["HOROSA_SKILL_DATA_DIR"] == str((home_dir / ".horosa-skill").resolve())
+    assert server["env"]["HOROSA_SERVER_ROOT"].startswith("http://127.0.0.1:")
+    assert server["env"]["HOROSA_CHART_SERVER_ROOT"].startswith("http://127.0.0.1:")
+    assert int(server["env"]["HOROSA_LOCAL_CHART_PORT"]) == int(server["env"]["HOROSA_LOCAL_BACKEND_PORT"]) + 1
+
+
+def test_openclaw_setup_bootstraps_workspace_and_runs_smoke(monkeypatch, tmp_path: Path) -> None:
+    skill_root = tmp_path / "repo" / "horosa-skill"
+    skill_root.mkdir(parents=True)
+    (skill_root / "pyproject.toml").write_text("[project]\nname='horosa-skill'\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    expected_home = (workspace / ".horosa-home").resolve()
+    captured: dict[str, object] = {}
+    smoke_calls: list[dict[str, object]] = []
+
+    class ManagerStub:
+        def install(self, manifest_url: str | None = None) -> dict[str, object]:
+            assert manifest_url == "file:///tmp/runtime-manifest.json"
+            assert os.environ["HOME"] == str(expected_home)
+            assert os.environ["HOROSA_RUNTIME_ROOT"] == str((expected_home / ".horosa" / "runtime").resolve())
+            assert os.environ["HOROSA_SKILL_DATA_DIR"] == str((expected_home / ".horosa-skill").resolve())
+            assert os.environ["HOROSA_SERVER_ROOT"].startswith("http://127.0.0.1:")
+            assert os.environ["HOROSA_CHART_SERVER_ROOT"].startswith("http://127.0.0.1:")
+            assert int(os.environ["HOROSA_LOCAL_CHART_PORT"]) == int(os.environ["HOROSA_LOCAL_BACKEND_PORT"]) + 1
+            return {"ok": True, "installed": True, "changed": True, "manifest": {"version": "0.5.11", "runtime_payload_version": "0.5.11"}}
+
+        def start_local_services(self, *, wait_seconds: float | None = None) -> dict[str, object]:
+            return {"ok": True, "already_running": False}
+
+        def doctor(self) -> dict[str, object]:
+            return {
+                "issues": [],
+                "manifest_version": "0.5.11",
+                "runtime_payload_version": "0.5.11",
+                "endpoints": [{"label": "java_backend", "reachable": True}],
+            }
+
+    def fake_smoke_check(*, workspace_root: Path, config_path: Path, output_path: Path, include_list: bool = True) -> dict[str, object]:
+        smoke_calls.append(
+            {
+                "workspace_root": workspace_root,
+                "config_path": config_path,
+                "output_path": output_path,
+                "include_list": include_list,
+            }
+        )
+        return {"ok": True, "server_visible": True, "listed_tool_count": 43}
+
+    monkeypatch.setattr(client_openclaw, "resolve_uv_command", lambda: ["/usr/local/bin/uv"])
+    monkeypatch.setattr(runtime_helpers, "_runtime_manager", lambda settings_arg: ManagerStub())
+    monkeypatch.setattr(openclaw_smoke, "_run_openclaw_smoke_check", fake_smoke_check)
+    monkeypatch.setattr(cli, "_print_json", lambda data: captured.setdefault("report", data))
+
+    original_home = os.environ.get("HOME")
+
+    cli.client_openclaw_setup(
+        workspace=workspace,
+        skill_root=skill_root,
+        server_name="horosa",
+        isolate_home=None,
+        config=None,
+        native_config=tmp_path / ".openclaw" / "openclaw.json",
+        write_native_config=True,
+        skip_smoke=False,
+        manifest_url="file:///tmp/runtime-manifest.json",
+    )
+
+    config_path = (workspace / "config" / "mcporter.json").resolve()
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    server = payload["mcpServers"]["horosa"]
+    native_config_path = (tmp_path / ".openclaw" / "openclaw.json").resolve()
+    native_payload = json.loads(native_config_path.read_text(encoding="utf-8"))
+
+    assert server["env"]["HOME"] == str(expected_home)
+    assert native_payload["mcp"]["servers"]["horosa"] == server
+    if os.name == "nt":
+        assert server["env"]["USERPROFILE"] == str(expected_home)
+    else:
+        assert "USERPROFILE" not in server["env"]
+    assert smoke_calls == [
+        {
+            "workspace_root": workspace.resolve(),
+            "config_path": config_path,
+            "output_path": (expected_home / ".horosa-skill" / "openclaw_setup_smoke_check.json"),
+            "include_list": False,
+        }
+    ]
+    assert captured["report"]["ok"] is True
+    assert captured["report"]["config"] == str(config_path)
+    assert captured["report"]["config_written_to"] == str(config_path)
+    assert captured["report"]["native_config"] == str(native_config_path)
+    assert captured["report"]["native_config_written_to"] == str(native_config_path)
+    assert captured["report"]["local_home"] == str(expected_home)
+    assert captured["report"]["ready_for_openclaw"] is True
+    assert captured["report"]["install"]["version"] == "0.5.11"
+    assert captured["report"]["install"]["runtime_payload_version"] == "0.5.11"
+    assert captured["report"]["doctor"]["manifest_version"] == "0.5.11"
+    assert captured["report"]["smoke"]["ok"] is True
+    assert os.environ.get("HOME") == original_home
+
+
+def test_doctor_adds_user_facing_summary(monkeypatch, tmp_path: Path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        runtime_root=tmp_path / "runtime",
+        db_path=tmp_path / "memory.db",
+        output_dir=tmp_path / "runs",
+    )
+    captured: dict[str, object] = {}
+
+    class ManagerStub:
+        LAUNCHER_LOG_NAME = "launcher.log"
+
+        def doctor(self) -> dict[str, object]:
+            return {
+                "ok": True,
+                "installed": True,
+                "manifest_version": "0.5.11",
+                "runtime_payload_version": "0.5.11",
+                "issues": ["services:not_running"],
+                "endpoints": [{"label": "java_backend", "reachable": False}],
+            }
+
+        def runtime_mode(self) -> str:
+            return "managed"
+
+        def endpoint_identities(self, *, endpoints=None) -> list[dict[str, object]]:
+            return [{"label": "java_backend", "reachable": False, "identity": None}]
+
+        def load_installed_manifest(self, *, strict: bool = False) -> dict[str, object] | None:
+            return {"version": "0.5.11"}
+
+        def load_runtime_state(self, *, strict: bool = False) -> dict[str, object] | None:
+            return None
+
+    monkeypatch.setattr(cli.Settings, "from_env", classmethod(lambda cls: settings))
+    monkeypatch.setattr(runtime_helpers, "_runtime_manager", lambda settings_arg: ManagerStub())
+    monkeypatch.setattr(cli, "_print_json", lambda data: captured.setdefault("report", data))
+
+    cli.doctor()
+
+    report = captured["report"]
+    assert report["ready_for_openclaw"] is False
+    assert report["status"] == "needs_attention"
+    assert report["manifest_version"] == "0.5.11"
+    assert report["runtime_payload_version"] == "0.5.11"
+    assert "not running yet" in report["user_summary"]
+    # MCP-10：旧断言是 `"openclaw-setup" in next_action` —— 把「对所有客户端都说去配 OpenClaw」的缺陷钉成了契约。
+    # 服务没起的下一步是把它起来；只有设了 OPENCLAW_WORKSPACE（确知是 OpenClaw）时才给 OpenClaw 的命令。
+    assert "runtime start" in report["next_action"] and "openclaw" not in report["next_action"].lower()
+    assert report["environment"]["runtime_root"] == str(settings.runtime_root)
+    assert "current process environment" in report["environment"]["note"]
+
+
+def test_openclaw_check_reports_missing_config_as_user_facing_error(monkeypatch, tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    errors: list[str] = []
+
+    monkeypatch.setattr(cli.typer, "echo", lambda message, err=False: errors.append(message))
+
+    with pytest.raises(cli.typer.Exit):
+        cli.client_openclaw_check(workspace=workspace, config=None, full=False, output=tmp_path / "report.json")
+
+    payload = json.loads(errors[0])
+    assert payload["code"] == "client.config_missing"
+    assert payload["ready_for_openclaw"] is False
+    assert "config not found" in payload["user_summary"].lower()
+    assert "openclaw-setup" in payload["next_action"]
+
+
+def test_report_from_tool_cli_forwards_ai_answer_and_structured_report(monkeypatch, tmp_path: Path) -> None:
+    tool_payload = tmp_path / "payload.json"
+    ai_report_path = tmp_path / "ai-report.json"
+    ai_answer_path = tmp_path / "answer.txt"
+    output_path = tmp_path / "report.docx"
+    tool_payload.write_text(
+        (
+            '{"date":"2028-04-06","time":"09:33:00","zone":"+08:00",'
+            '"lat":"31n13","lon":"121e28","agent_confirmed_settings":true,'
+            '"clarification_notes":"test fixture confirmed settings"}'
+        ),
+        encoding="utf-8",
+    )
+    ai_report_path.write_text('{"ai_report":{"direct_answer":"可以推进。","recommendations":["先小步验证。"]}}', encoding="utf-8")
+    ai_answer_path.write_text("完整解盘正文。", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class ServiceStub:
+        def report_from_tool(self, payload: dict[str, object], gate: str | None = None) -> dict[str, object]:
+            captured["payload"] = payload
+            return {"ok": True, "artifact_path": str(output_path), "format": "docx"}
+
+    monkeypatch.setattr(cli, "_service", lambda: ServiceStub())
+    monkeypatch.setattr(cli, "_print_json", lambda data: captured.setdefault("printed", data))
+
+    cli.report_from_tool(
+        tool="liureng_gods",
+        format_name="docx",
+        output=output_path,
+        question="这件事能不能推进？",
+        title="大六壬报告",
+        language="zh-CN",
+        ai_answer_text="结论先说：",
+        ai_answer_file=ai_answer_path,
+        ai_report_file=ai_report_path,
+        include_raw_json=False,
+        stdin=False,
+        input_file=tool_payload,
+    )
+
+    payload = captured["payload"]
+    assert payload["tool_name"] == "liureng_gods"
+    assert payload["format"] == "docx"
+    assert payload["question"] == "这件事能不能推进？"
+    assert payload["title"] == "大六壬报告"
+    assert payload["ai_report"]["direct_answer"] == "可以推进。"
+    assert payload["ai_answer_text"] == "结论先说：\n\n完整解盘正文。"
+    assert payload["output_path"] == str(output_path)
+    assert captured["printed"]["ok"] is True
+
+
+def test_openclaw_check_wraps_runtime_error_for_users(monkeypatch, tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    config_path = workspace / "config" / "mcporter.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("{}", encoding="utf-8")
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        runtime_root=tmp_path / "runtime",
+        db_path=tmp_path / "memory.db",
+        output_dir=tmp_path / "runs",
+    )
+    errors: list[str] = []
+
+    monkeypatch.setattr(cli.Settings, "from_env", classmethod(lambda cls: settings))
+    monkeypatch.setattr(
+        openclaw_smoke,
+        "_run_openclaw_smoke_check",
+        lambda **kwargs: (_ for _ in ()).throw(
+            cli.RuntimeError(
+                "missing mcporter",
+                code="client.command_not_found",
+                details={"command": ["mcporter"], "cwd": str(workspace)},
+            )
+        ),
+    )
+    monkeypatch.setattr(cli.typer, "echo", lambda message, err=False: errors.append(message))
+
+    with pytest.raises(cli.typer.Exit):
+        cli.client_openclaw_check(workspace=workspace, config=config_path, full=False, output=tmp_path / "report.json")
+
+    payload = json.loads(errors[0])
+    assert payload["ready_for_openclaw"] is False
+    assert "could not find `mcporter`" in payload["user_summary"]
+    assert "HOROSA_MCPORTER_BIN" in payload["next_action"]
+
+
+def test_run_subprocess_json_accepts_diagnostic_prefix(monkeypatch, tmp_path: Path) -> None:
+    def fake_run(*args, **kwargs) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["mcporter"],
+            returncode=0,
+            stdout='warming runtime\n{"status":"ok","tools":[]}\n',
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    payload = openclaw_smoke._run_subprocess_json(["mcporter", "list"], cwd=tmp_path)
+
+    assert payload == {"status": "ok", "tools": []}
+
+
+def test_openclaw_smoke_falls_back_to_headless_tool_when_chart_fails(monkeypatch, tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    config_path = workspace / "config" / "mcporter.json"
+    output_path = tmp_path / "smoke.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("{}", encoding="utf-8")
+    commands: list[list[str]] = []
+
+    def fake_run_subprocess_json(command: list[str], *, cwd: Path, timeout_seconds: float = 180.0) -> dict[str, object]:
+        commands.append(command)
+        if "list" in command:
+            return {"status": "ok", "tools": ["chart", "qimen"]}
+        if any("horosa_knowledge_registry" in item for item in command):
+            return {"ok": True}
+        if any("horosa_astro_chart" in item for item in command):
+            return {
+                "ok": False,
+                "error": {"code": "tool.backend_param_error", "message": "200001 param error"},
+            }
+        if any("horosa_cn_qimen" in item for item in command):
+            return {
+                "ok": True,
+                "memory_ref": {"run_id": "qimen-run", "artifact_path": str(tmp_path / "qimen.json")},
+            }
+        if any("horosa_memory_show" in item for item in command):
+            args_index = command.index("--args") + 1
+            assert json.loads(command[args_index])["run_id"] == "qimen-run"
+            return {"ok": True}
+        raise AssertionError(command)
+
+    monkeypatch.setattr(openclaw_smoke, "resolve_mcporter_command", lambda: ["mcporter"])
+    monkeypatch.setattr(openclaw_smoke, "_run_subprocess_json", fake_run_subprocess_json)
+
+    report = openclaw_smoke._run_openclaw_smoke_check(
+        workspace_root=workspace,
+        config_path=config_path,
+        output_path=output_path,
+    )
+
+    assert report["ok"] is True
+    assert report["chart_ok"] is False
+    assert report["chart_error"]["code"] == "tool.backend_param_error"
+    assert report["fallback_tool"] == "horosa_cn_qimen"
+    assert report["fallback_tool_ok"] is True
+    assert report["compute_ok"] is True
+    assert report["compute_tool"] == "horosa_cn_qimen"
+    assert report["run_id"] == "qimen-run"
+    assert "chart_ok" not in report["failed_checks"]
+    assert "compute_ok" not in report["failed_checks"]
+    assert json.loads(output_path.read_text(encoding="utf-8"))["run_id"] == "qimen-run"
+    assert len(commands) == 5
+    chart_args = json.loads(commands[2][commands[2].index("--args") + 1])
+    fallback_args = json.loads(commands[3][commands[3].index("--args") + 1])
+    assert chart_args["agent_confirmed_settings"] is True
+    assert fallback_args["agent_confirmed_settings"] is True
+    list_command = commands[0]
+    assert list_command.count("--root") == 1
+
+
+def test_openclaw_check_uses_extended_timeout_for_tool_calls(monkeypatch, tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    config_path = workspace / "config" / "mcporter.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("{}", encoding="utf-8")
+
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        runtime_root=tmp_path / "runtime",
+        db_path=tmp_path / "memory.db",
+        output_dir=tmp_path / "runs",
+    )
+    commands: list[list[str]] = []
+    chart_calls = 0
+
+    def fake_run_subprocess_json(command: list[str], *, cwd: Path, timeout_seconds: float = 180.0) -> dict[str, object]:
+        nonlocal chart_calls
+        commands.append(command)
+        if "list" in command:
+            return {"status": "ok", "tools": ["a", "b"]}
+        if any("horosa_knowledge_registry" in item for item in command):
+            return {"ok": True}
+        if any("horosa_astro_chart" in item for item in command):
+            chart_calls += 1
+            if chart_calls == 1:
+                return {"ok": False, "error": "Call timed out", "issue": {"kind": "offline", "rawMessage": "timed out after 120000ms"}}
+            return {"ok": True, "memory_ref": {"run_id": "run-1", "artifact_path": str(tmp_path / "artifact.json")}}
+        if any("horosa_memory_show" in item for item in command):
+            return {"ok": True}
+        raise AssertionError(command)
+
+    monkeypatch.setattr(cli.Settings, "from_env", classmethod(lambda cls: settings))
+    monkeypatch.setattr(openclaw_smoke, "resolve_mcporter_command", lambda: ["mcporter"])
+    monkeypatch.setattr(openclaw_smoke, "_run_subprocess_json", fake_run_subprocess_json)
+
+    cli.client_openclaw_check(workspace=workspace, config=config_path, full=False, output=tmp_path / "report.json")
+
+    assert chart_calls == 2
+    assert len(commands) == 5
+    list_command, knowledge_command, first_chart_command, second_chart_command, memory_command = commands
+    assert "--timeout" not in list_command
+    for command in (knowledge_command, first_chart_command, second_chart_command, memory_command):
+        assert command[-2:] == ["--timeout", "120000"]
+
+
+def test_run_subprocess_json_times_out_cleanly(monkeypatch, tmp_path: Path) -> None:
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd=["mcporter"], timeout=1, output="warming", stderr="stuck")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(cli.RuntimeError) as exc_info:
+        openclaw_smoke._run_subprocess_json(["mcporter", "list"], cwd=tmp_path, timeout_seconds=1)
+
+    assert exc_info.value.code == "client.command_timeout"
+    assert exc_info.value.details["timeout_seconds"] == 1
+
+
+def test_friendly_payload_for_platform_unsupported_carries_the_dead_end_advice(tmp_path: Path) -> None:
+    # v0.38.1 发布后抓到：这个分支读的是函数里不存在的名字 `details`（NameError）——Linux / Intel Mac 上
+    # `client openclaw-setup` / `openclaw-check` 撞到 runtime.platform_unsupported 时，本该打印网关出路，
+    # 实际是一段 traceback。守卫之二是 CI 的 verify_undefined_names（F821 基线 0）。
+    from horosa_skill.runtime.manager import _platform_dead_end_advice
+
+    advice = _platform_dead_end_advice("linux-x64")
+    exc = cli.RuntimeError("no payload for linux-x64", code="runtime.platform_unsupported", details=advice)
+    payload = openclaw_smoke._friendly_runtime_error_payload(
+        exc, action_label="OpenClaw setup", workspace_root=tmp_path / "ws", config_path=None
+    )
+    assert payload["code"] == "runtime.platform_unsupported"
+    assert payload["next_action"] == advice["next_action"]
+    assert "HOROSA_SERVER_ROOT" in payload["next_action"]
+    assert payload["retry_command"]
+
+    bare = cli.RuntimeError("no payload", code="runtime.platform_unsupported", details=None)
+    fallback = openclaw_smoke._friendly_runtime_error_payload(bare, action_label="OpenClaw check", workspace_root=None, config_path=None)
+    assert "HOROSA_SERVER_ROOT" in fallback["next_action"]
+
+
+def test_openclaw_full_check_from_a_wheel_install_explains_instead_of_a_python_traceback(monkeypatch, tmp_path: Path) -> None:
+    # v0.41.1：全量自检脚本不进 wheel；uvx / pip 装的包跑 `--full` 以前只回 Python 的 "can't open file"。
+    from typer.testing import CliRunner
+
+    workspace = tmp_path / "workspace"
+    config_path = workspace / "config" / "mcporter.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(runtime_helpers, "_package_root", lambda: tmp_path / "site-packages")
+    monkeypatch.setenv("HOROSA_SKILL_DATA_DIR", str(tmp_path / "data"))
+    calls: list[str] = []
+    real_run = subprocess.run
+
+    def spy_run(command, *args, **kwargs):
+        calls.append(" ".join(map(str, command)))
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", spy_run)
+
+    result = CliRunner().invoke(cli.app, ["client", "openclaw-check", "--workspace", str(workspace), "--full"])
+
+    assert result.exit_code == 2
+    assert not [c for c in calls if "run_openclaw_full_self_check" in c]  # never launched the missing script
+    payload = json.loads(result.stderr if hasattr(result, "stderr") else result.output)
+    assert payload["code"] == "openclaw_check.full_unavailable"
+    assert "without --full" in payload["next_action"]
+
+
+def test_openclaw_smoke_fetches_npx_mcporter_before_the_first_timed_call(monkeypatch, tmp_path: Path) -> None:
+    # v0.38.1 发布后：Windows CI 的 OpenClaw smoke 第一跳 `npx mcporter call …` 在 150 s 处超时，stderr 里是
+    # 「npm warn exec … will be installed: mcporter@0.9.0」——npx 首次安装（含原生打包器绑定）算在了工具调用的预算里。
+    # 负向对照：旧实现第一条子进程就是计时的 call，且没有 `--version` 预热。
+    workspace = tmp_path / "workspace"
+    config_path = workspace / "config" / "mcporter.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("{}", encoding="utf-8")
+    events: list[tuple[str, list[str], float | None]] = []
+
+    def fake_run(command, **kwargs):
+        events.append(("warmup", list(command), kwargs.get("timeout")))
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="0.9.0\n", stderr="")
+
+    def fake_run_subprocess_json(command: list[str], *, cwd: Path, timeout_seconds: float = 180.0) -> dict[str, object]:
+        events.append(("json", command, timeout_seconds))
+        if any("horosa_astro_chart" in item for item in command):
+            return {"ok": True, "memory_ref": {"run_id": "run-1", "artifact_path": str(tmp_path / "a.json")}}
+        return {"ok": True}
+
+    npx = str(tmp_path / "bin" / ("npx.cmd" if os.name == "nt" else "npx"))
+    monkeypatch.setattr(openclaw_smoke, "resolve_mcporter_command", lambda: [npx, "mcporter"])
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(openclaw_smoke, "_run_subprocess_json", fake_run_subprocess_json)
+
+    report = openclaw_smoke._run_openclaw_smoke_check(
+        workspace_root=workspace, config_path=config_path, output_path=tmp_path / "smoke.json", include_list=False
+    )
+
+    assert events[0] == ("warmup", [npx, "mcporter", "--version"], openclaw_smoke.NPX_MCPORTER_WARMUP_TIMEOUT_SECONDS)
+    assert openclaw_smoke.NPX_MCPORTER_WARMUP_TIMEOUT_SECONDS > 150
+    assert [kind for kind, _command, _timeout in events].count("warmup") == 1
+    assert all(kind == "json" for kind, _command, _timeout in events[1:])
+    assert events[1][1][:3] == [npx, "mcporter", "call"]
+    assert isinstance(report["npx_warmup_seconds"], float)
+
+
+def test_openclaw_smoke_skips_the_warmup_for_an_installed_mcporter(monkeypatch, tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    config_path = workspace / "config" / "mcporter.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("{}", encoding="utf-8")
+
+    def forbidden_run(*args, **kwargs):
+        raise AssertionError("an installed mcporter needs no npx warm-up")
+
+    monkeypatch.setattr(openclaw_smoke, "resolve_mcporter_command", lambda: [str(tmp_path / "mcporter")])
+    monkeypatch.setattr(subprocess, "run", forbidden_run)
+    monkeypatch.setattr(
+        openclaw_smoke,
+        "_run_subprocess_json",
+        lambda command, *, cwd, timeout_seconds=180.0: (
+            {"ok": True, "memory_ref": {"run_id": "r", "artifact_path": "a"}} if any("chart" in c for c in command) else {"ok": True}
+        ),
+    )
+    report = openclaw_smoke._run_openclaw_smoke_check(
+        workspace_root=workspace, config_path=config_path, output_path=tmp_path / "smoke.json", include_list=False
+    )
+    assert report["npx_warmup_seconds"] is None
+    assert openclaw_smoke._is_npx_mcporter(["npx", "mcporter"]) and openclaw_smoke._is_npx_mcporter(["C:\\node\\npx.cmd", "mcporter"])
+    assert not openclaw_smoke._is_npx_mcporter(["mcporter"]) and not openclaw_smoke._is_npx_mcporter(["npx", "other-package"])
+
+
+def test_npx_warmup_timeout_names_the_install_phase(monkeypatch, tmp_path: Path) -> None:
+    def slow_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=command, timeout=kwargs["timeout"], output=b"", stderr=b"npm warn exec ... will be installed")
+
+    monkeypatch.setattr(subprocess, "run", slow_run)
+    with pytest.raises(cli.RuntimeError) as exc_info:
+        openclaw_smoke._warm_npx_mcporter(["npx", "mcporter"], cwd=tmp_path)
+    assert exc_info.value.code == "client.command_timeout"
+    assert exc_info.value.details["phase"] == "npx_install"
+    assert "will be installed" in exc_info.value.details["stderr"]
+    payload = openclaw_smoke._friendly_runtime_error_payload(exc_info.value, action_label="OpenClaw setup", workspace_root=tmp_path)
+    assert "npx" in payload["user_summary"] and "npm i -g mcporter" in payload["next_action"]
+
+
+def test_run_subprocess_json_timeout_reports_a_complete_result_that_did_not_exit(monkeypatch, tmp_path: Path) -> None:
+    # 失败那一跑：stdout 里已经是完整的工具结果，进程却没退出。POSIX 上 TimeoutExpired.stdout 是 bytes（即使 text=True），
+    # 旧实现 `isinstance(exc.stdout, str)` 直接丢成 ""——在 Linux/macOS 上连这份证据都留不下。
+    complete = b'{"ok": true, "trace_id": "t"}\n'
+
+    def hung_after_output(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=["mcporter"], timeout=1, output=complete, stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", hung_after_output)
+    with pytest.raises(cli.RuntimeError) as exc_info:
+        openclaw_smoke._run_subprocess_json(["mcporter", "call", "horosa.horosa_knowledge_registry"], cwd=tmp_path, timeout_seconds=1)
+    details = exc_info.value.details
+    assert details["output_complete"] is True
+    assert details["stdout"] == complete.decode("utf-8")
+    payload = openclaw_smoke._friendly_runtime_error_payload(exc_info.value, action_label="OpenClaw setup", workspace_root=tmp_path)
+    assert "complete result" in payload["user_summary"]
+    assert "MCPORTER_DEBUG_HANG=1" in payload["next_action"]
+
+    def never_finished(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=["mcporter"], timeout=1, output=b'{"ok": tr', stderr=None)
+
+    monkeypatch.setattr(subprocess, "run", never_finished)
+    with pytest.raises(cli.RuntimeError) as partial:
+        openclaw_smoke._run_subprocess_json(["mcporter", "call", "x"], cwd=tmp_path, timeout_seconds=1)
+    assert partial.value.details["output_complete"] is False
+    assert "did not return in time" in openclaw_smoke._friendly_runtime_error_payload(partial.value, action_label="OpenClaw setup")["user_summary"]

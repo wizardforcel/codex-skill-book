@@ -1,0 +1,90 @@
+[project]
+name = "horosa-skill"
+version = "0.51.0"
+description = "GitHub-first Horosa AI skill distribution with CLI, MCP, and local structured memory."
+readme = "README.md"
+license = "AGPL-3.0-only"
+requires-python = ">=3.12"
+dependencies = [
+  "cryptography>=45.0.0",
+  "httpx>=0.28.0",
+  # SDK 2.x（v0.45.1 迁移，docs/LESSONS.md）：FastMCP → MCPServer；同一服务按 MCP-Protocol-Version 同时服务 2026-07-28
+  # （MRTR：input_required 多轮）与更早修订（initialize + 会话 + 服务端发起的 elicitation）。新依赖都是纯 Python
+  # （mcp-types / httpx2 / opentelemetry-api），编译件与 1.x 相同，win_arm64 照常。
+  # 报告里调用方写的 Markdown 按 CommonMark（+ GFM 表格 / 删除线）解析成块树，PDF 与 DOCX 画同一棵（reports/markdown.py，v0.50.0）。
+  # 本来就随 mcp[cli] → typer → rich 装着（MIT，纯 Python，含 mdurl）；直接声明是因为报告代码直接用它，不能靠别人的传递依赖。
+  "markdown-it-py>=3.0.0,<5",
+  "mcp[cli]>=2.3.0,<3",
+  # mcp 2.3 要求 pydantic>=2.12；下限跟上，免得旧 pydantic 环境装出一对不兼容的组合。
+  "pydantic>=2.12.0",
+  "python-docx>=1.1.2",
+  "reportlab>=4.4.3",
+  # 报告盘图用星阙 app 原版绘图代码出 SVG（horosa-core-js/dist/app-charts.cjs），svglib 把它转成 reportlab 矢量图嵌进 PDF。
+  # 2.x 不带 cairo（位图另走 figures.drawing_to_png）；只多 cssselect2 / tinycss2 / webencodings 三个纯 Python 包，lxml 已在锁里。
+  "svglib>=2.4.0,<3",
+  # codex config.toml 的保注释合并（client config --write --format codex 只动 [mcp_servers.<name>]）
+  "tomlkit>=0.12.0",
+  "tzdata>=2025.2",
+  # typer 0.24 + click 8.5（2026-08）：位置参数的 help 在 `--help` 里整段消失；0.27.3 起正常。uvx 装新环境会拿最新 click，必须抬下限。
+  "typer>=0.27.3",
+]
+
+[project.optional-dependencies]
+# 可选向量检索（knowledge/vectors.py）：三个包在 macOS arm64 / Windows x64 / Windows ARM64 都有 cp312 轮子
+# （onnxruntime 1.24.2 起才有 win_arm64）。不用 fastembed：它的 py-rust-stemmers 没有 win_arm64 轮子。
+vectors = [
+  "onnxruntime>=1.24.2",
+  "tokenizers>=0.20",
+  "numpy>=1.26",
+]
+dev = [
+  "pytest>=8.3.0",
+  "numpy>=1.26",
+  # scripts/verify_undefined_names.py (F821/F822/F823) — exact pin: the gate must not change under a lint upgrade
+  "ruff==0.16.7",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.0",
+  "ruff==0.16.7",
+  # 向量检索的融合 / 存取测试用概念替身嵌入（tests/test_user_knowledge_vectors.py），只要 numpy；onnxruntime 不进 CI。
+  "numpy>=1.26",
+]
+
+[project.scripts]
+horosa-skill = "horosa_skill.surfaces.cli:app"
+
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/horosa_skill"]
+include = [
+  "src/horosa_skill/knowledge/data/*.json",
+  "src/horosa_skill/benchmark/data/*.json",
+  "src/horosa_skill/data/*.json",
+  # 星阙 app 的星体符号字体（ywastro = ywastrochart 同一文件；morinus）：报告盘图用 app 原版代码画，符号要嵌进 PDF。
+  "src/horosa_skill/data/fonts/*.ttf",
+  # 塔罗牌面图（上游 public/tarot-art 逐字节拷贝，144 张 ≈1.9 MB；来源 / 授权上游未记录，见 contracts/third_party_facts.json
+  # tarot-art.provenance；维护者 2026-11-09 定随包分发）：报告牌阵图照 app 显示真实牌面。scripts/sync_tarot_art.py 同步。
+  "src/horosa_skill/data/tarot-art/manifest.json",
+  "src/horosa_skill/data/tarot-art/*/*.jpg",
+  # v0.41.0：`setup` 装进客户端 skills 目录的 skill 副本（scripts/gen_agent_mirrors.py 生成；verify_wheel_contents.py 守）。
+  "src/horosa_skill/agent_skill/**/*.md",
+]
+
+# Windows 启动/停止脚本覆盖模板（issue #14 loopback 修补）住在 scripts/ 供 builder 共用；wheel 里没有
+# scripts/ → `uvx horosa-skill` 装出来的 Windows 用户会跑 runtime 原版脚本。force-include 进包，
+# manager._runtime_template_root 先找包内副本再回退源码树（v0.36.0 C4；scripts/verify_wheel_contents.py 守）。
+[tool.hatch.build.targets.wheel.force-include]
+"scripts/runtime_templates/windows" = "horosa_skill/runtime/templates/windows"
+# v0.40.0 P1：运行期契约（Jev 阈值锁 / 技法算源）此前不在 wheel 里 → uvx 安装下 enforce 永不生效、算源恒「未标注」。
+# 消费方经 horosa_skill/contracts_locator.py 先找源码树再找这份包内副本；scripts/verify_wheel_contents.py 守。
+"contracts/jev_thresholds.json" = "horosa_skill/contracts/jev_thresholds.json"
+"contracts/technique_provenance.json" = "horosa_skill/contracts/technique_provenance.json"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -1,0 +1,625 @@
+@import "tailwindcss";
+@import "./cds-tokens.css";
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* 品牌字（侧栏「太卜」）：霞鹜文楷，只子集了这两个字，1KB。 */
+@font-face {
+  font-family: "Taibu Brand";
+  src: url("/fonts/taibu-brand-zh.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/*
+ * TaiBu 全局样式
+ * 支持深色/浅色主题切换
+ *
+ * 令牌层（对齐 Claude cds 实测，2026-10；CSS bundle 提取，非猜测）：
+ * - 色板：中性灰底 page=#fcfcfb / sidebar=#fafaf9 / 卡片=#ffffff；文字三级 #0b0b0b · #52514e · #898781。
+ * - 强调色：clay 家族（实心/选中 #c6613f，悬停 #d97757，浅底 = clay 10%/22% wash）。
+ * - 发丝线/描边/填充一律由 --neutral-900 透明度阶梯派生（alpha：5/7.5/10/15/20/35%），不写字面色值。
+ * - 阴影 = 发丝环（浅色外描 1px、深色内描 1px）+ 柔和投影；弹层用 --shadow-panel-*（环 + 投影）。
+ * - 动效刻度 --duration-*（60/120/200/300/450ms）与 --ease-*（cds ease-out/snap/overshoot）。
+ * - 排印：衬线（--font-display）只用于 h1 与品牌/问候类标题；h2-h4 保持无衬线。
+ * - 字号一律用 rem（ThemeProvider 的字号档位依赖 root font-size）。
+ * - 五行着色统一走 --element-*（:root 级，替代历史高饱和 fallback）。
+ */
+
+/* ===== 主题变量定义 ===== */
+:root {
+  color-scheme: light;
+
+  /* ios 安全区域 */
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --mobile-header-height: calc(4rem + var(--sat));
+
+  --neutral-900: #0b0b0b;
+  --neutral-600: #52514e;
+  --neutral-400: #898781;
+  --background: #fcfcfb;
+  --background-secondary: #fafaf9;
+  --background-tertiary: #f3f3f0;
+  --surface: #ffffff;
+  --sidebar: #fafaf9;
+  --panel: #fafaf9;
+  --foreground: #0b0b0b;
+  --foreground-secondary: #52514e;
+  --foreground-tertiary: #898781;
+  --accent: #c6613f;
+  --accent-hover: #d97757;
+  --accent-light: color-mix(in srgb, var(--clay) 10%, transparent);
+  --accent-soft: color-mix(in srgb, var(--clay) 22%, transparent);
+  --accent-strong: #a84f2f;
+  --clay: #d97757;
+  --on-accent: #ffffff;
+  --success: #44663a;
+  --warning: #85602a;
+  --danger: #a63d2c;
+  /* 危险实色按钮：明暗同值（深色主题的 --danger 是浅粉文字色，不适合作底） */
+  --danger-fill: #a63d2c;
+  --on-danger: #ffffff;
+
+  /* 五行与四化：命盘着色统一从这里取值 */
+  --wx-wood: #44663a;
+  --wx-fire: #a63d2c;
+  --wx-earth: #85602a;
+  --wx-metal: #6e6551;
+  --wx-water: #2f5f86;
+  --wx-wood-soft: #e4ebdd;
+  --wx-fire-soft: #f6e1da;
+  --wx-earth-soft: #f1e6d3;
+  --wx-metal-soft: #ebe8e1;
+  --wx-water-soft: #dfe8f0;
+  --hua-quan: #6b4d9e;
+
+  /* 边框/分隔线 = neutral-900 透明度阶梯（cds-alpha-2 / alpha-3） */
+  --border: hsl(from var(--neutral-900) h s l / 10%);
+  --border-hover: hsl(from var(--neutral-900) h s l / 20%);
+  /* 滚动条滑块：claude 实测 scrollbar-color = hsla(border-300 / 35%) transparent（极淡、轨道透明） */
+  --scrollbar-thumb: color-mix(in srgb, var(--border-hover) 35%, transparent);
+
+  /* 阴影 = cds 阴影层：发丝环（浅色外描 1px / 深色内描 1px）+ 柔和投影 */
+  --ring-outer: 1px;
+  --ring-inner: 0px;
+  --ring-color: var(--border);
+  --shadow-color: hsl(from var(--neutral-900) h s l / 8%);
+  --shadow-sm: 0 1px 2px 0 hsl(from var(--neutral-900) h s l / 6%), 0 2px 8px 0 var(--shadow-color);
+  --shadow-md: 0 2px 4px 0 hsl(from var(--neutral-900) h s l / 7%), 0 6px 16px 0 var(--shadow-color);
+  --shadow-lg: 0 4px 8px 0 hsl(from var(--neutral-900) h s l / 8%), 0 12px 28px -2px var(--shadow-color);
+  --shadow-popover: 0 8px 24px rgba(0, 0, 0, .12), 0 2px 6px rgba(0, 0, 0, .08);
+  --shadow-panel-sm: inset 0 0 0 var(--ring-inner) var(--ring-color), 0 0 0 var(--ring-outer) var(--ring-color), var(--shadow-sm);
+  --shadow-panel-md: inset 0 0 0 var(--ring-inner) var(--ring-color), 0 0 0 var(--ring-outer) var(--ring-color), var(--shadow-md);
+  --shadow-panel-lg: inset 0 0 0 var(--ring-inner) var(--ring-color), 0 0 0 var(--ring-outer) var(--ring-color), var(--shadow-lg);
+  --shadow-panel-popover: inset 0 0 0 var(--ring-inner) var(--ring-color), 0 0 0 var(--ring-outer) var(--ring-color), var(--shadow-popover);
+
+  /* 浮层层级：共享组件按语义取值，不写散落的 z-index */
+  --z-toast: 100;
+  --z-tooltip: 130;
+  --z-popup: 1100;
+  --z-dialog: 1200;
+
+  /* 侧边栏宽度与底色；收起后为图标导轨 */
+  --sidebar-width: 288px;
+  --sidebar-rail-width: 60px;
+  --sidebar-background: var(--sidebar);
+
+  /* 密度刻度（对齐 Claude cds 实测：控件 32px、行 32px、抽屉行 40px） */
+  --control-h: 2rem;
+  --row-h: 2rem;
+  --row-h-drawer: 2.5rem;
+
+  /* 发丝线：宽度 + 颜色（Claude 分隔线/chip 边/卡片描边一律 0.5px） */
+  --hairline: .5px;
+  --hairline-color: hsl(from var(--neutral-900) h s l / 10%);
+
+  /* 交互面填色（cds 实测：ghost 悬停 7.5%、选中 15%、字段底 5%、控件底 10%/20%） */
+  --fill-ghost-hover: hsl(from var(--neutral-900) h s l / 7.5%);
+  --fill-ghost-selected: hsl(from var(--neutral-900) h s l / 15%);
+  --fill-field: hsl(from var(--neutral-900) h s l / 5%);
+  --fill-control: hsl(from var(--neutral-900) h s l / 10%);
+  --fill-control-hover: hsl(from var(--neutral-900) h s l / 20%);
+
+  /* 动效刻度（cds：60ms / 120ms / 200ms / 300ms / 450ms） */
+  --duration-fast: 60ms;
+  --duration-snap: .12s;
+  --duration-base: .2s;
+  --duration-sheet: .3s;
+  --duration-slow: .45s;
+  --ease-out: cubic-bezier(.165, .84, .44, 1);
+  --ease-snap: cubic-bezier(.32, .72, 0, 1);
+  --ease-overshoot: cubic-bezier(.34, 1.3, .64, 1);
+
+  /* 侧栏行度量（Claude dframe comfortable 实测，2026-10）：行 32 / 控制键 24 / 间隙 8 / 前导槽 28
+     图标 20 / 行字 14 / 分组字 13 / 行内衬 2 / 行圆角 8 / 新建圆 22 / 分组上距 16 / 底栏键 32 */
+  --df-row-h: 2rem;
+  --df-row-ctl: 1.5rem;
+  --df-row-px: 2px;
+  --df-row-gap: .5rem;
+  --df-leading-slot: 1.75rem;
+  --df-icon-size: 1.25rem;
+  --df-row-font: 14px;
+  --df-group-font: 13px;
+  --df-group-pt: 1rem;
+  --df-radius-pill: .5rem;
+  --df-radius-card: .5rem;
+  --df-new-circle-size: 1.375rem;
+  --df-footer-btn-size: 2rem;
+  --df-footer-gap: 6px;
+  --df-titlebar-h: 2.75rem;
+  --df-hover: #f0efec;
+  --df-selected: #edece8;
+
+  /* 聚焦环：clay 环 + 微光（内衬 1px 取所在卡片底色，可用 --focus-ring-bg 覆盖） */
+  --focus-ring-clay: inset 0 0 0 1px var(--focus-ring-bg, var(--background)), 0 0 0 1px var(--accent), 0 0 6px 1px color-mix(in srgb, var(--accent) 45%, transparent);
+
+  /* 五行着色（可读性 >= 3.9:1；原 chat-workspace 局部覆盖已上移为全局） */
+  --element-metal: #9a7b1f;
+  --element-wood: #3f7a4a;
+  --element-water: #2f6690;
+  --element-fire: #b23a2e;
+  --element-earth: #8a5a2b;
+
+  /* 浮起的输入框与问题面板（= cds shadow-composer：发丝环 + 0 .25rem 1.25rem 3.5% 投影） */
+  --shadow-raised: inset 0 0 0 var(--ring-inner) var(--ring-color), 0 0 0 var(--ring-outer) var(--ring-color), 0 .25rem 1.25rem color-mix(in srgb, #000 3.5%, transparent);
+  /* 分段控件与标签栏的滑块：发丝内描边 + 1px 投影（明暗通用） */
+  --shadow-thumb: inset 0 0 0 1px var(--border), 0 1px 2px color-mix(in srgb, #000 5%, transparent);
+  --scrim: rgba(0, 0, 0, .45);
+  --chat-background: var(--background);
+  --chat-secondary: var(--background-secondary);
+  --chat-tertiary: var(--background-tertiary);
+  --chat-foreground: var(--foreground);
+  --chat-muted: var(--foreground-secondary);
+  --chat-subtle: var(--foreground-tertiary);
+  --chat-border: var(--border);
+  --chat-raised: var(--surface);
+  --chat-success: #507557;
+  --chat-warning: #946b2d;
+}
+
+/* 安全区域工具类 */
+.safe-top {
+  padding-top: var(--sat);
+}
+
+.safe-top-header {
+  padding-top: var(--sat);
+  min-height: var(--mobile-header-height);
+}
+
+.safe-bottom {
+  padding-bottom: var(--sab);
+}
+
+.safe-area-inset-bottom {
+  padding-bottom: var(--sab);
+}
+
+/* 深色主题 */
+.dark {
+  color-scheme: dark;
+
+  --neutral-900: #ffffff;
+  --neutral-600: #c3c2b7;
+  --neutral-400: #898781;
+  --background: #151515;
+  --background-secondary: #1a1a1a;
+  --background-tertiary: #262626;
+  --surface: #1f201f;
+  --sidebar: #101010;
+  --panel: #1a1a1a;
+  --foreground: #f0efec;
+  --foreground-secondary: #c3c2b7;
+  --foreground-tertiary: #898781;
+  --accent: #d97757;
+  --accent-hover: #e08b6f;
+  --accent-light: color-mix(in srgb, var(--clay) 22%, transparent);
+  --accent-soft: color-mix(in srgb, var(--clay) 30%, transparent);
+  --accent-strong: #efb49c;
+  --clay: #d97757;
+  --on-accent: #1a1a1a;
+  --success: #a4bba0;
+  --warning: #d5b378;
+  --danger: #e39b91;
+  --wx-wood: #9cb98c;
+  --wx-fire: #e5978a;
+  --wx-earth: #d2ad6f;
+  --wx-metal: #bdb4a0;
+  --wx-water: #8fb4d6;
+  --wx-wood-soft: #2f3a2a;
+  --wx-fire-soft: #44302b;
+  --wx-earth-soft: #3d3424;
+  --wx-metal-soft: #36342e;
+  --wx-water-soft: #263443;
+  --hua-quan: #b49ad9;
+  --border: hsl(from var(--neutral-900) h s l / 10%);
+  --border-hover: hsl(from var(--neutral-900) h s l / 20%);
+
+  /* 深色：发丝环改为内描 1px（cds--ring-inner=1px / ring-outer=0） */
+  --ring-outer: 0px;
+  --ring-inner: 1px;
+  --ring-color: var(--border);
+  --shadow-color: rgba(0, 0, 0, .24);
+  --shadow-sm: 0 1px 2px 0 hsl(from var(--neutral-900) h s l / 6%), 0 2px 8px 0 var(--shadow-color);
+  --shadow-md: 0 2px 4px 0 hsl(from var(--neutral-900) h s l / 7%), 0 6px 16px 0 var(--shadow-color);
+  --shadow-lg: 0 4px 8px 0 hsl(from var(--neutral-900) h s l / 8%), 0 12px 28px -2px var(--shadow-color);
+  --shadow-popover: 0 8px 24px rgba(0, 0, 0, .32), 0 2px 6px rgba(0, 0, 0, .2);
+  --sidebar-background: var(--sidebar);
+  --fill-ghost-hover: hsl(from var(--neutral-900) h s l / 15%);
+  --fill-ghost-selected: hsl(from var(--neutral-900) h s l / 22%);
+  --fill-field: hsl(from var(--neutral-900) h s l / 10%);
+  --fill-control: hsl(from var(--neutral-900) h s l / 12%);
+  --fill-control-hover: hsl(from var(--neutral-900) h s l / 20%);
+  --df-hover: rgb(255 255 255 / 8%);
+  --df-selected: rgb(255 255 255 / 14%);
+  --hairline-color: hsl(from var(--neutral-900) h s l / 10%);
+  --element-metal: #d9b85c;
+  --element-wood: #8fbf8f;
+  --element-water: #86b3d9;
+  --element-fire: #e8907c;
+  --element-earth: #c99a6b;
+  --shadow-raised: inset 0 0 0 var(--ring-inner) var(--ring-color), 0 0 0 var(--ring-outer) var(--ring-color), 0 .25rem 1.25rem color-mix(in srgb, #000 7.5%, transparent);
+  --scrim: rgba(0, 0, 0, .6);
+  --chat-background: var(--background);
+  --chat-secondary: var(--background-secondary);
+  --chat-tertiary: var(--background-tertiary);
+  --chat-foreground: var(--foreground);
+  --chat-muted: var(--foreground-secondary);
+  --chat-subtle: var(--foreground-tertiary);
+  --chat-border: var(--border);
+  --chat-raised: var(--surface);
+  --chat-success: #a4bba0;
+  --chat-warning: #d5b378;
+}
+
+/* ===== Tailwind 主题配置 ===== */
+@theme inline {
+  --color-background: var(--background);
+  --color-background-secondary: var(--background-secondary);
+  --color-background-tertiary: var(--background-tertiary);
+  --color-foreground: var(--foreground);
+  --color-foreground-secondary: var(--foreground-secondary);
+  --color-foreground-tertiary: var(--foreground-tertiary);
+  --color-accent: var(--accent);
+  --color-accent-light: var(--accent-light);
+  --color-on-accent: var(--on-accent);
+  --color-border: var(--border);
+  --color-border-hover: var(--border-hover);
+  --color-surface: var(--surface);
+  --color-accent-hover: var(--accent-hover);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-danger-fill: var(--danger-fill);
+  --color-on-danger: var(--on-danger);
+  --color-sidebar: var(--sidebar);
+  --color-panel: var(--panel);
+  --color-clay: var(--clay);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-strong: var(--accent-strong);
+  /* 干支着色统一走 --element-*（工作区概览与命盘共用同一套可读性配色） */
+  --color-wood: var(--element-wood);
+  --color-fire: var(--element-fire);
+  --color-earth: var(--element-earth);
+  --color-metal: var(--element-metal);
+  --color-water: var(--element-water);
+  --color-wood-soft: var(--wx-wood-soft);
+  --color-fire-soft: var(--wx-fire-soft);
+  --color-earth-soft: var(--wx-earth-soft);
+  --color-metal-soft: var(--wx-metal-soft);
+  --color-water-soft: var(--wx-water-soft);
+  --color-hua-quan: var(--hua-quan);
+
+  /* 字体 */
+  /* claude 字体链路：Latin 先落 system-ui（macOS = SF Pro），CJK 回退 PingFang；不把 PingFang 放最前，避免 Latin 也走苹方。 */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-mono: "SFMono-Regular", "JetBrains Mono", "Menlo", "Monaco", "Consolas", "Liberation Mono", monospace;
+  /* claude 的衬线字体只有 Latin（anthropic-serif）；CJK 实际回退到 PingFang 无衬线。这里按同一行为：Latin Georgia，CJK 回退 sans。 */
+  --font-display: Georgia, "Times New Roman", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  /* 品牌名用楷体；子集只含「太卜」，其余字符回退系统楷体再回退衬线。 */
+  --font-brand: "Taibu Brand", "Kaiti SC", "STKaiti", "KaiTi", "TW-Kai", Georgia, "Times New Roman", serif;
+  /* 圆角刻度（Claude cds 实测：chip 5 / 控件 6 / 行 8 / 卡片 10 / 输入框 14） */
+  --radius-md: .375rem;
+  --radius-lg: .5rem;
+  --radius-xl: .625rem;
+  --radius-2xl: .875rem;
+  /* 填色与发丝线工具类 */
+  --color-hairline: var(--hairline-color);
+  --color-fill-ghost-hover: var(--fill-ghost-hover);
+  --color-fill-field: var(--fill-field);
+  --color-fill-control: var(--fill-control);
+
+  /* ---- claude cds 别名（自本地克隆站 @theme 平移）：按 claude 源码逐字搬运的组件直接可用 ---- */
+  --color-surface-0: var(--cds-surface-0);
+  --color-surface-1: var(--cds-surface-1);
+  --color-surface-2: var(--cds-surface-2);
+  --color-surface-3: var(--cds-surface-3);
+  --color-surface-popover: var(--cds-surface-popover);
+  --color-surface-panel: var(--cds-surface-panel);
+  --color-page-bg: var(--cds-page-bg);
+  --color-primary: var(--cds-text-primary);
+  --color-secondary: var(--cds-text-secondary);
+  --color-muted: var(--cds-text-muted);
+  --color-disabled: var(--cds-text-disabled);
+  --color-on-primary: var(--cds-on-primary);
+  --color-accent-text: var(--cds-text-accent);
+  --color-accent-bg: var(--cds-bg-accent);
+  --color-danger-text: var(--cds-text-danger);
+  --color-success-text: var(--cds-text-success);
+  --color-warning-text: var(--cds-text-warning);
+  --color-pro: var(--cds-fill-pro);
+  --color-pro-text: var(--cds-text-pro);
+  --color-clay-emphasized: var(--cds-clay-emphasized);
+  --color-border-strong: var(--cds-border-strong);
+  --color-border-stronger: var(--cds-border-stronger);
+  --color-fill-primary: var(--cds-fill-primary);
+  --color-fill-primary-hover: var(--cds-fill-primary-hover);
+  --color-fill-secondary: var(--cds-fill-secondary);
+  --color-fill-secondary-hover: var(--cds-fill-secondary-hover);
+  --color-fill-ghost-selected: var(--cds-fill-ghost-selected);
+  --color-fill-disabled: var(--cds-fill-disabled);
+  --color-fill-control-hover: var(--cds-fill-control-hover);
+  --color-bg-neutral: var(--cds-bg-neutral);
+  --color-bg-neutral-chip: var(--cds-bg-neutral-chip);
+  --color-bg-neutral-chip-hover: var(--cds-bg-neutral-chip-hover);
+  --color-user-message: var(--cds-bg-user-message);
+  --color-segmented-control-track: var(--cds-segmented-control-track);
+  --color-segmented-control-thumb: var(--cds-segmented-control-thumb);
+  --color-git-added: var(--cds-text-git-added);
+  --color-git-removed: var(--cds-text-git-removed);
+  --color-git-modified: var(--cds-text-git-modified);
+  --color-git-merged: var(--cds-text-git-merged);
+  --radius-xs: var(--cds-radius--xs);
+  --radius-sm: var(--cds-radius--sm);
+  --radius-panel: var(--cds-panel-radius);
+  --radius-composer: var(--cds-radius-composer);
+  --spacing-control: var(--cds-h-control);
+  --spacing-nav: 1.75rem;
+  --text-footnote: var(--cds-font-size-footnote);
+  --text-footnote--line-height: var(--cds-leading-footnote);
+  --text-body: var(--cds-font-size-body);
+  --text-body--line-height: var(--cds-leading-body);
+  --text-heading: var(--cds-font-size-heading);
+  --text-heading--line-height: var(--cds-leading-heading);
+  --text-prose: var(--cds-font-size-prose);
+  --text-prose--line-height: var(--cds-leading-prose);
+  --text-title: 1.5rem;
+  --text-title--line-height: var(--cds-leading-title);
+  --shadow-popover: var(--cds-shadow-popover);
+  --shadow-panel: var(--cds-panel-shadow);
+  --shadow-focus: var(--cds-focus-shadow);
+}
+
+/* ===== 基础样式 ===== */
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: .9375rem;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@layer base {
+  h1 { font-family: var(--font-display); font-weight: 400; line-height: 1.35; }
+  button, a, input, select, textarea, summary { -webkit-tap-highlight-color: transparent; }
+  button:not(:disabled), summary { cursor: pointer; }
+  button:disabled { cursor: not-allowed; }
+  :where(button, a, input, select, textarea, summary, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  input, select, textarea { accent-color: var(--accent); }
+  ::selection { background: var(--accent-light); color: var(--foreground); }
+}
+
+.skip-link { position: fixed; top: .5rem; left: .5rem; z-index: 100; transform: translateY(-150%); padding: .7rem 1rem; background: var(--surface); color: var(--foreground); border: 1px solid var(--border); border-radius: .5rem; }
+.skip-link:focus { transform: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}
+
+/* ===== 滚动条（claude 约定：全局 thin + 极淡滑块 / 透明轨道）=====
+   刻意不写 ::-webkit-scrollbar —— 在 Chromium 里自定义该伪元素会强制关闭 overlay 滚动条，
+   让侧栏会话列表等区域常驻一条 6px 的滚动条（claude 没有；用户反馈「聊天记录那里不要有可以上下滑动的东西」）。 */
+* {
+  scrollbar-width: thin;
+}
+
+html {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+/* ===== 隐藏滚动条 ===== */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* ===== 动画 ===== */
+@keyframes toast-in {
+  from { opacity: 0; translate: 0 16px; }
+  to { opacity: 1; translate: 0 0; }
+}
+@keyframes toast-out {
+  from { opacity: 1; translate: 0 0; scale: 1; }
+  to { opacity: 0; translate: 0 6px; scale: .98; }
+}
+.toast-viewport {
+  height: var(--toast-expanded-height);
+  /* 顶部留足空间，避免收起时裁到仍在移动的卡片。 */
+  clip-path: inset(-100vh -24px -24px -24px);
+}
+.toast-position {
+  height: var(--toast-height);
+  transform: translateY(calc(-1 * var(--toast-expanded-offset)));
+  transform-origin: top center;
+  transition: transform var(--duration-sheet) var(--ease-snap);
+}
+.toast-item {
+  animation: toast-in var(--duration-sheet) var(--ease-snap) backwards;
+  transition: box-shadow var(--duration-base) var(--ease-out);
+}
+.toast-position[data-leaving] { pointer-events: none; }
+.toast-item[data-leaving] { animation: toast-out var(--duration-base) var(--ease-out) forwards; }
+.toast-content {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity .16s var(--ease-out) 60ms, visibility 0s linear 60ms;
+}
+/* 手机底部导航占位：提示条整体上移，避免盖住导航。 */
+@media (max-width: 1023px) { .app-toast-stack { bottom: calc(5rem + var(--sab)); } }
+/* 桌面端只展开最新卡片，旧卡片露出 10px；触屏始终保持完整列表。 */
+@media (hover: hover) {
+  .app-toast-stack:not([data-expanded]):not(:focus-within) .toast-viewport {
+    height: var(--toast-collapsed-height);
+    clip-path: inset(-100vh -24px 0 -24px);
+  }
+  .app-toast-stack[data-single]:not([data-expanded]):not(:focus-within) .toast-viewport { clip-path: inset(-100vh -24px -24px -24px); }
+  .app-toast-stack:not([data-expanded]):not(:focus-within) .toast-position {
+    transform: translateY(calc(-1 * var(--toast-collapsed-offset)));
+  }
+  .app-toast-stack:not([data-expanded]):not(:focus-within) .toast-position:not(:first-child) {
+    transform: translateY(calc(-1 * var(--toast-collapsed-offset))) scale(var(--toast-scale));
+    pointer-events: none;
+  }
+  .app-toast-stack:not([data-expanded]):not(:focus-within) .toast-position:not(:first-child) .toast-item {
+    box-shadow: inset 0 0 0 var(--ring-outer) var(--ring-color);
+  }
+  .app-toast-stack:not([data-expanded]):not(:focus-within) .toast-position:not(:first-child) .toast-content {
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity .08s var(--ease-out), visibility 0s linear 80ms;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .toast-item { animation: none; }
+  .toast-viewport, .toast-position, .toast-content { transition: none; }
+}
+
+@keyframes pulse {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes soundWave {
+  0%, 100% {
+    transform: scaleY(0.25);
+    opacity: 0.4;
+  }
+  50% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+.sound-wave-bar {
+  height: 100%;
+  transform-origin: center;
+  animation: soundWave 1s ease-in-out infinite;
+}
+
+/* ===== 动效体系 =====
+ * 全站共用的入场与反馈，时长与缓动只取上方 --duration-* / --ease-*：
+ * - 浮层（菜单、弹出面板）：snap 120ms，从锚点所在一侧缩放淡入；
+ * - 对话框：base 200ms 轻微上浮放大，遮罩同步淡入；
+ * - 内容进入（新消息、新步骤、切换视图）：base 200ms 淡入并上移几像素；
+ * - 状态反馈（复制成功、按下）：snap 120ms / fast 60ms。
+ * 系统开启「减少动态效果」时，上方的全局规则把动画压到 0.01ms，这里不再单独处理。
+ * 位移一律用 translate/scale 属性而不是 transform，不覆盖元素自身的 transform（定位、居中）。 */
+@keyframes motion-pop-in { from { opacity: 0; scale: .96; } }
+@keyframes motion-fade-up { from { opacity: 0; translate: 0 6px; } }
+@keyframes motion-fade { from { opacity: 0; } }
+@keyframes motion-dialog-in { from { opacity: 0; translate: 0 8px; scale: .98; } }
+@keyframes motion-dialog-out { to { opacity: 0; translate: 0 6px; scale: .98; } }
+@keyframes motion-fade-out { to { opacity: 0; } }
+/* 勾号描线：lucide 的 check 路径长约 22.6，取 24 保证起笔完全隐藏。 */
+@keyframes motion-check-draw { from { stroke-dashoffset: 24; } to { stroke-dashoffset: 0; } }
+/* 进行中文字的流光：高光从右向左扫过，配合 background-clip: text。 */
+@keyframes motion-shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+
+/* 浮层：定位完成（data-placed）才开始播放，变换原点贴着锚点一侧。 */
+.app-modal[open] { animation: motion-dialog-in var(--duration-base) var(--ease-out) backwards; }
+.app-modal[open]::backdrop { animation: motion-fade var(--duration-base) var(--ease-out) backwards; }
+/* 关闭：Modal 先挂 data-closing 播放退场，播完才离开顶层（Modal.tsx）。 */
+.app-modal[data-closing] { animation: motion-dialog-out var(--duration-snap) var(--ease-out) forwards; }
+.app-modal[data-closing]::backdrop { animation: motion-fade-out var(--duration-snap) var(--ease-out) forwards; }
+
+/* 标签栏的滑动选中块（lib/motion/tab-indicator.ts 写入当前标签的位置与尺寸）：
+   --pill 是分段控件式的浮起块（--tab-bg / --tab-shadow / --tab-radius 由各标签栏给出原来的选中样式），
+   --underline 是贴着标签底边的 2px 横线，--result 窄屏为浮起块、桌面为横线。
+   挂上选中块后，标签自身的选中底色、阴影与下划线让位给它；第一次定位不带过渡。 */
+.motion-tabs { position: relative; isolation: isolate; }
+.motion-tabs::before { content: ''; position: absolute; top: 0; left: 0; z-index: -1; width: var(--tab-w, 0px); height: var(--tab-h, 0px); translate: var(--tab-x, 0px) var(--tab-y, 0px); border-radius: var(--tab-radius, 7px); opacity: 0; pointer-events: none; }
+.motion-tabs[data-indicator]::before { opacity: 1; }
+.motion-tabs[data-indicator-ready]::before { transition: translate var(--duration-base) var(--ease-snap), width var(--duration-base) var(--ease-snap), height var(--duration-base) var(--ease-snap); }
+:is(.motion-tabs--pill, .motion-tabs--result)::before { background: var(--tab-bg, var(--surface)); box-shadow: var(--tab-shadow, 0 1px 2px hsl(from var(--neutral-900) h s l / 8%)); }
+.motion-tabs--underline::before { height: 2px; translate: var(--tab-x, 0px) calc(var(--tab-y, 0px) + var(--tab-h, 0px) - 2px); border-radius: 2px; background: var(--foreground); box-shadow: none; }
+@media (min-width: 1024px) {
+  .motion-tabs--result::before { height: 2px; translate: var(--tab-x, 0px) calc(var(--tab-y, 0px) + var(--tab-h, 0px) - 2px); border-radius: 2px; background: var(--foreground); box-shadow: none; }
+}
+.motion-tabs[data-indicator] > [role=tab][aria-selected=true] { background: transparent; box-shadow: none; border-bottom-color: transparent; }
+
+/* 旧的 animate-* 工具类并入动效刻度：整块淡入 base，上浮 sheet，缩放进入 base。 */
+.animate-fade-in { animation: motion-fade var(--duration-base) var(--ease-out) backwards; }
+.animate-slide-up { animation: motion-fade-up var(--duration-sheet) var(--ease-out) backwards; }
+.animate-zoom-in { animation: motion-pop-in var(--duration-base) var(--ease-out) backwards; }
+
+/* 结果页的区块依次上浮：第一块（页头）不动，随换页一起淡入；它常带着手机底部的 fixed 操作条，
+   动画中的祖先会成为 fixed 的包含块、并让后面的区块盖住它。其后的区块每块晚 40ms，第六块起同时。 */
+.motion-stagger > :nth-child(n+2) { animation: motion-fade-up var(--duration-sheet) var(--ease-out) backwards; }
+.motion-stagger > :nth-child(3) { animation-delay: 40ms; }
+.motion-stagger > :nth-child(4) { animation-delay: 80ms; }
+.motion-stagger > :nth-child(5) { animation-delay: 120ms; }
+.motion-stagger > :nth-child(n+6) { animation-delay: 160ms; }
+/* 减少动态效果时全局只压短时长，这里把错开的延迟也去掉，免得区块先空着再出现。 */
+@media (prefers-reduced-motion: reduce) { .motion-stagger > * { animation-delay: 0s !important; } }
+
+/* 折叠块（<details>）展开收起时高度过渡；不支持 ::details-content 的浏览器照旧直接开合。
+   interpolate-size 只在 details 子树内生效，不改变其他元素的 auto 尺寸过渡。 */
+@supports selector(::details-content) {
+  details { interpolate-size: allow-keywords; }
+  details::details-content { block-size: 0; overflow-y: clip; transition: block-size var(--duration-base) var(--ease-out), content-visibility var(--duration-base) allow-discrete; }
+  details[open]::details-content { block-size: auto; }
+}
+
+/* 复制成功：按钮里的勾号一笔画出（claude epitaxy-check-draw：.18s ease-out）。 */
+:is([aria-label*="复制"], [title*="复制"]) svg.lucide-check :is(path, polyline) { stroke-dasharray: 24; animation: motion-check-draw .18s var(--ease-out) both; }
+
+/* ===== 主题切换过渡 ===== */
+body,
+.theme-transition,
+.theme-transition * {
+  transition: background-color 0.3s ease,
+    border-color 0.3s ease,
+    color 0.3s ease;
+}
+
+/* Beta 标记：灰色小字，不占交互。 */
+.beta-badge { display: inline-flex; flex-shrink: 0; align-items: center; font-size: 9px; line-height: 1; font-weight: 500; letter-spacing: .04em; color: var(--foreground-tertiary); transform: translateY(2px); }

@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 520" role="img" aria-label="Animated tarot shuffle">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#17132c"/>
+      <stop offset="0.55" stop-color="#34285d"/>
+      <stop offset="1" stop-color="#153d3f"/>
+    </linearGradient>
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff9e6"/>
+      <stop offset="1" stop-color="#ead59b"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="7" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <style>
+      .title{font:700 42px Arial,"Microsoft YaHei",sans-serif;fill:#fff8df}
+      .sub{font:23px Arial,"Microsoft YaHei",sans-serif;fill:#d8f5ee}
+      .card{fill:#2b2147;stroke:#e6c86e;stroke-width:6}
+      .cardFace{fill:url(#face);stroke:#e6c86e;stroke-width:6}
+    </style>
+  </defs>
+  <rect width="1200" height="520" fill="url(#bg)"/>
+  <circle cx="980" cy="110" r="44" fill="#f2dc8a" filter="url(#glow)">
+    <animate attributeName="opacity" values="0.65;1;0.65" dur="3s" repeatCount="indefinite"/>
+  </circle>
+  <g opacity="0.24">
+    <circle cx="160" cy="390" r="120" fill="none" stroke="#8fd3c7" stroke-width="3"/>
+    <circle cx="160" cy="390" r="72" fill="none" stroke="#e6c86e" stroke-width="3"/>
+    <path d="M160 270v240M40 390h240M75 305l170 170M245 305L75 475" stroke="#fff8df" stroke-width="2"/>
+  </g>
+  <text x="70" y="88" class="title">Immersive Tarot Session</text>
+  <text x="70" y="128" class="sub">Set question · Shuffle · Cut · Lay spread · Reveal story</text>
+  <g transform="translate(452 132)">
+    <g>
+      <rect class="card" x="-150" y="30" width="132" height="210" rx="16"/>
+      <path d="M-84 72c22 28 38 53 38 83s-16 55-38 83c-22-28-38-53-38-83s16-55 38-83z" fill="none" stroke="#8fd3c7" stroke-width="5"/>
+      <animateTransform attributeName="transform" type="translate" values="0 0; 80 -20; 0 0" dur="2.8s" repeatCount="indefinite"/>
+      <animateTransform attributeName="transform" additive="sum" type="rotate" values="-9 -84 135; 4 -84 135; -9 -84 135" dur="2.8s" repeatCount="indefinite"/>
+    </g>
+    <g>
+      <rect class="cardFace" x="-55" y="0" width="132" height="210" rx="16"/>
+      <circle cx="11" cy="88" r="38" fill="none" stroke="#6d5dd3" stroke-width="7"/>
+      <path d="M11 34v108M-43 88h108" stroke="#6d5dd3" stroke-width="6" stroke-linecap="round"/>
+      <animateTransform attributeName="transform" type="translate" values="0 0; -35 18; 0 0" dur="2.4s" repeatCount="indefinite"/>
+      <animateTransform attributeName="transform" additive="sum" type="rotate" values="5 11 105; -5 11 105; 5 11 105" dur="2.4s" repeatCount="indefinite"/>
+    </g>
+    <g>
+      <rect class="card" x="42" y="34" width="132" height="210" rx="16"/>
+      <path d="M108 76l15 46 49 1-40 29 15 47-39-29-40 29 15-47-40-29 50-1z" fill="none" stroke="#e6c86e" stroke-width="5" stroke-linejoin="round"/>
+      <animateTransform attributeName="transform" type="translate" values="0 0; -78 -24; 0 0" dur="3.1s" repeatCount="indefinite"/>
+      <animateTransform attributeName="transform" additive="sum" type="rotate" values="10 108 139; -7 108 139; 10 108 139" dur="3.1s" repeatCount="indefinite"/>
+    </g>
+    <g>
+      <rect class="cardFace" x="135" y="8" width="132" height="210" rx="16"/>
+      <path d="M201 50c28 38 48 68 48 101s-20 63-48 101c-28-38-48-68-48-101s20-63 48-101z" fill="none" stroke="#3b8c86" stroke-width="7"/>
+      <animateTransform attributeName="transform" type="translate" values="0 0; -58 22; 0 0" dur="2.7s" repeatCount="indefinite"/>
+      <animateTransform attributeName="transform" additive="sum" type="rotate" values="-4 201 113; 8 201 113; -4 201 113" dur="2.7s" repeatCount="indefinite"/>
+    </g>
+  </g>
+  <g transform="translate(70 415)">
+    <rect width="560" height="58" rx="14" fill="#ffffff" opacity="0.12" stroke="#e6c86e" stroke-opacity="0.55"/>
+    <text x="24" y="38" class="sub">A visual demo asset for README, onboarding, and test sessions.</text>
+  </g>
+</svg>

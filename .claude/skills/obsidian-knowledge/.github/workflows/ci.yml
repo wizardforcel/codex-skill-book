@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --group dev --python 3.14
+
+      # Runs every gate (hygiene, detect-secrets, ruff, flynt, vulture, dependency integrity,
+      # mypy --strict, custom taste hooks, Codex-sync check, pytest + coverage
+      # ratchet) so CI matches the local prek exactly.
+      - name: Prek (lint, types, complexity, tests, coverage)
+        run: uv run prek run --all-files --stage manual --show-diff-on-failure
+
+  tool-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - run: uv python install 3.14
+      - run: uv build
+      - name: Clean tool install and setup without Ollama
+        run: uv run --no-project python scripts/smoke_tool_install.py dist/*.whl

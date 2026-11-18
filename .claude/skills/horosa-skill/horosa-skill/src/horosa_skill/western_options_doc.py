@@ -1,0 +1,306 @@
+"""西占工具口径词表（上游 v3.11 western 同步）：长词表不进 tools/list，住 `horosa_agent_guidance` 的 `options_keys`。
+
+tools/list 字节预算吃紧（`hsys` 在 47 个工具上重复，多 150 B 就是 +7 KB），所以：
+
+1. 各输入模型 `ADVERTISE_HIDDEN` 字段（照常声明 + 校验、MCP 扁平面顶层照收，只是不进广告层）——说明直接取模型字段
+   description（单源，改描述即改文档）；
+2. BirthInput 上的快照口径键（[信息] 互容接纳过滤 / [埃及历] 七轴 / [古典·显赫计分] 判定项）——同取字段 description；
+3. 引擎词表类长文本（宫制 0–24、卜卦 20 类 / 7 流派、择日 37 用事 / 5 流派、七政宿度制 0–8、印占大运 15 体系 / 6 流派、
+   世运规则集、关系盘 0–4）——写在本模块；键集与中文名由 tests/test_sync311_western.py 对 vendored 引擎源逐键核对
+   （漂移即红），宫制表直接由 astro_rulers.HOUSE_SYSTEM_LABELS（上游 AstroConst.HOUSE_SYSTEM_OPTIONS 镜像）生成。
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from horosa_skill.astro_rulers import HOUSE_SYSTEM_LABELS
+from horosa_skill.engine.registry import (
+    ASTRO_CHART_FAMILY_TOOLS,
+    CHART_DETAILS_TOOLS,
+    EGYPT_AXIS_KEYS,
+    STRONG_RECEPTION_DEFAULT_TOOLS,
+    TOOL_DEFINITIONS,
+)
+from horosa_skill.schemas.tools import BirthInput
+from horosa_skill.western_vocab import CHART_DETAIL_TABLES
+from horosa_skill.schemas.tools.base import advertise_hidden_fields
+
+# 上游 significators.js CATEGORY_DEF（20 类）：(键, quesitedLabel, 事项宫；None = 综合取月亮下一入相/相关宫主)。
+HORARY_CATEGORIES: tuple[tuple[str, str, int | None], ...] = (
+    ("general", "事项", None), ("wealth", "财物", 2), ("family", "兄弟/亲属", 3), ("property", "房产/田宅", 4),
+    ("father", "父亲", 4), ("mother", "母亲", 10), ("pregnancy", "子嗣", 5), ("health", "疾病", 6),
+    ("marriage", "对象/婚姻", 7), ("lawsuit", "对手", 7), ("theft", "盗贼/失物", 7), ("death", "死亡/遗产", 8),
+    ("travel", "旅行/远行", 9), ("career", "职位/事业", 10), ("hope", "愿望/朋友", 11), ("enemy", "私敌", 12),
+    ("message", "消息/书信", 3), ("lost", "失物", 2), ("lost_animal", "走失活物", 6), ("trade", "交易对手", 7),
+)
+# 上游 horarySchools.js HORARY_SCHOOLS（七档，HORARY_SCHOOL_ORDER 序）：(键, 中文名, 起盘字段 horaryBackendFields)。
+HORARY_SCHOOLS: tuple[tuple[str, str, str], ...] = (
+    ("classical", "经典主流", "hsys 2 · 界系 2 · 托勒密三分 · 七政 · 福点不反转"),
+    ("renaissance", "文艺复兴", "hsys 2 · 界系 2 · 托勒密三分 · 七政 · 福点不反转"),
+    ("strict", "当代严谨", "hsys 2 · 界系 0 · 多罗修斯三分 · 七政 · 福点夜反转"),
+    ("sequence", "序列判读", "hsys 2 · 界系 2 · 托勒密三分 · 七政 · 福点不反转"),
+    ("hellenistic", "希腊化", "hsys 0 · 界系 0 · 多罗修斯三分 · 七政 · 福点夜反转"),
+    ("medieval", "中世纪", "hsys 1 · 界系 0 · 多罗修斯三分 · 七政 · 福点夜反转"),
+    ("modern", "现代心理", "hsys 3 · 界系 2 · 托勒密三分 · 含三王星 · 福点不反转"),
+)
+# 上游 topicMaster.js TOPIC_MASTER（37 类）：(topic_id, cn)。
+ELECTION_TOPICS: tuple[tuple[str, str], ...] = (
+    ("marriage", "结婚/订婚"), ("business", "创业/开业/开市"), ("organization", "团体组织成立"), ("move_in", "入宅/迁居"),
+    ("completion", "落成"), ("buy_property", "购屋/租屋"), ("buy_land", "购地"), ("renovation", "整修/动土/破土"),
+    ("trade", "买卖交易"), ("buy_car", "购车(签约付订)"), ("deliver_car", "交车(驶离)"), ("contract", "签约/承诺"),
+    ("registration", "登记"), ("application", "申请"), ("diet", "节食/减肥"), ("quit_habit", "戒烟/戒毒"),
+    ("pursue_love", "追求爱情"), ("job_hunt", "求职"), ("team_departure", "队伍出发/比赛"), ("publishing", "出版/节目开播"),
+    ("medication", "用药"), ("surgery", "手术"), ("banquet", "宴会/盛会"), ("inauguration", "就职典礼"),
+    ("funeral", "葬礼(活人)"), ("bed_setting", "安床"), ("travel", "出行"), ("blessing", "祈福"), ("altar", "安香/安神位"),
+    ("ritual", "法会/建醮"), ("general_day", "大众吉日(简)"), ("planting", "播种/种植/农耕"), ("sailing", "海行/航海"),
+    ("litigation", "诉讼/战阵/竞争"), ("release", "释囚/解约脱身"), ("haircut", "理发/剪甲"), ("talisman", "制作护符"),
+)
+# 上游 westernSchools.js WEST_SCHOOL_ORDER / WEST_SCHOOLS[].cn。
+ELECTION_SCHOOLS: tuple[tuple[str, str], ...] = (
+    ("modern_main", "现代主流"), ("hellenistic", "希腊化"), ("persian", "波斯-阿拉伯"),
+    ("renaissance", "文艺复兴"), ("modern_revival", "古典复兴"),
+)
+# 上游 guolaoData.js SU28_MODE_LABEL（0–8）。
+GUOLAO_SU28_MODES: tuple[tuple[int, str], ...] = (
+    (0, "荀爽距星(19年测)"), (1, "斗柄定房法"), (2, "回归今宿"), (3, "回归古制开禧"), (4, "恒星制"),
+    (5, "恒星制·现代天赤"), (6, "授时历古法"), (7, "赤道回归(元明)"), (8, "赤道回归(实时)"),
+)
+# 上游 IndiaChart.js / indiaConst INDIA_DASHA_SYSTEM_OPTIONS（15 档）与 INDIA_SCHOOL_OPTIONS + INDIA_SCHOOL_DEFAULTS（预设岁差/宫制）。
+INDIA_DASHA_SYSTEMS: tuple[tuple[str, str], ...] = (
+    ("vimshottari", "Vimshottari"), ("yogini", "Yogini"), ("ashtottari", "Ashtottari"), ("tribhagi", "Tribhāgī（÷3）"),
+    ("shodashottari", "Shodashottari"), ("dvadashottari", "Dvadashottari"), ("panchottari", "Panchottari"),
+    ("shatabdika", "Shatabdika"), ("chaturashitiSama", "Chaturashiti"), ("dwisaptatiSama", "Dwisaptati"),
+    ("shashtihayani", "Shashtihayani"), ("shattrimshaSama", "Shattrimsha"), ("chara", "Chara"),
+    ("taraDasha", "Tāra(强度序)"), ("akkg", "AKKG(AK 播种)"),
+)
+INDIA_SCHOOLS: tuple[tuple[str, str, str, int], ...] = (
+    ("parashari", "Parāśarī 帕拉萨拉(默认)", "lahiri", 0), ("jaimini", "Jaimini 贾米尼", "lahiri", 0),
+    ("tajika", "Tājika 塔吉卡(年盘)", "lahiri", 0), ("kp", "KP 系统", "krishnamurti", 3),
+    ("nadi", "Nāḍī 纳迪", "lahiri", 0), ("western_sidereal", "Western Sidereal 西方恒星(对照)", "fagan_bradley", 3),
+)
+# 上游 divination/mundane/ruleset.js MUNDANE_RULESETS。
+MUNDANE_RULESETS: tuple[tuple[str, str], ...] = (
+    ("ptolemaic", "托勒密古典"), ("medieval", "中世纪(Lilly)"), ("modern", "现代(Carter–Campion)"), ("barbault", "Barbault 周期"),
+)
+# 上游 AstroRelative.js hook 表（relative 0–4；「关系量化」页签同 0 另调 /astroextra/relative）。
+RELATIVE_MODES: tuple[tuple[int, str], ...] = (
+    (0, "比较盘"), (1, "组合盘"), (2, "影响盘"), (3, "时空中点盘"), (4, "马克斯盘"),
+)
+# 上游 horarySchools.js HORARY_PARAM_SPEC 键序（卜卦 options 覆写键全表）。
+HORARY_PARAM_KEYS: tuple[str, ...] = (
+    "hsys", "termsVariant", "geminiBoundEmended", "tradition", "tripSystem", "accidentalMode", "partileDef", "lotsSet",
+    "pofReversal", "orbMode", "interferenceTiming", "detectAbscission", "refranationAsDestruction",
+    "refranationIncludeSignChange", "collectionRequireReception", "oppositionVerdict", "cazimiOrb", "combustOrb",
+    "underBeamsOrb", "combustMitigateSameSign", "combustExemptConjAnswer", "vocMode", "vocIncludeOuter",
+    "vocMitigateSigns", "viaCombustaVariant", "antiscia", "fixedStarOrb", "fixedStarOrbMode", "considerationsMode",
+    "ascEarlyDeg", "ascLateDeg", "hourAgreementVariant", "perfectionStrict", "perfectionCandidates",
+    "receptionForHardAspects", "receptionPerfection", "rescueAfterDestruction", "timingStationAware",
+    "backendConditionNotes", "personScope", "querentGender", "moonPromotion", "naturalSignifEnhanced", "verdictProfile",
+    "timingVariant", "timingModifiers", "timingSecondLaw", "onePlanetBoth", "parentHousesVariant", "includeOuter",
+)
+# 卜卦 / 择日判读全局层吃的顶层古典键（上游 judgeLayerOverrides.js JUDGE_KEYS_FROM_CLASSICAL + divinationJudgeGlobals）。
+JUDGE_GLOBAL_KEYS = (
+    "cazimiOrb/combustOrb/underBeamsOrb/vocMode/vocIncludeOuter/viaCombustaVariant/partileDef/antisciaOrb/"
+    "starOrb(=fixedStarOrb)/starOrbMode(=fixedStarOrbMode)/combustMitigateSameSign/antiscia"
+)
+
+# 出 [盘面细节] 段的工具（engine.registry.CHART_DETAILS_TOOLS + 占星地图：acg 的本命盘段在 runner 里按 chart 挂）。
+CHART_DETAILS_DOC_TOOLS = frozenset({*CHART_DETAILS_TOOLS, "acg"})
+
+# BirthInput 上只作用于快照的口径键（send:'never'）按工具挂文档：[埃及历]/[信息] 随 engine.registry.ASTRO_CHART_FAMILY_TOOLS
+# （键表 engine.registry.EGYPT_AXIS_KEYS），[古典·显赫计分] 主宰光体四个全局判定键只 chart。
+_EMINENCE_KEYS = ("busyPlaces", "dynamicalDivisions", "domicileMasterMethod", "rayWeighting")
+
+
+def house_system_doc() -> str:
+    table = " ".join(f"{k}={v}" for k, v in HOUSE_SYSTEM_LABELS.items())
+    return (
+        f"宫制索引 0–{len(HOUSE_SYSTEM_LABELS) - 1}（上游 AstroConst.HOUSE_SYSTEM_OPTIONS 全表）：{table}。"
+        "MCP 扁平面 enum 只广告 0–8（tools/list 预算），9–24 后端照收：客户端按 enum 拦时经 request 整包传。"
+    )
+
+
+# 随盘容许度对（上游 v3.14.0 utils/classicalChartGlobals.js chartOrbOverrides：卜卦 / 择日盘的 /chart 与天星择日的选中时刻盘随盘下发）。
+# 星体与默认度数 = 上游容许度面板 components/astro/AstroOrbSetting.js DEFAULT_ORBS（tests/test_sync314_zeri_orbs.py 逐值锚）。
+CHART_ORB_DEFAULTS: tuple[tuple[str, int], ...] = (
+    ("Sun", 15), ("Moon", 12), ("Mercury", 7), ("Venus", 8), ("Mars", 8), ("Jupiter", 9), ("Saturn", 9),
+    ("Uranus", 5), ("Neptune", 5), ("Pluto", 5), ("North Node", 12),
+)
+_CHART_ORB_DOC = (
+    "随盘容许度（顶层键）：orbs = {星体 id: 度数}，只写要改的星（星阙面板的星体与默认度数："
+    + " ".join(f"{body}={orb}" for body, orb in CHART_ORB_DEFAULTS)
+    + "；id 同盘面 objects[].id），orbScale = 整体倍数（大于 0，缺省 1；星阙面板量程 0.5–2.5）。"
+    "两者互不干扰：没单独给的星 = 默认 × 倍数。认不出的值报 tool.invalid_option；不是本盘星体的 id 进 warnings。"
+)
+
+
+def _static_doc(tool_name: str) -> dict[str, str]:
+    if tool_name == "tianxing":
+        return {
+            "orbs / orbScale": _CHART_ORB_DOC + "天星择日里只改 [选中时刻星盘] 的相位（同上游浮窗盘）；扫描判定不读它——"
+            "每条条件自带容许度（如 aspect 的 orb 参数），判读类条件用引擎固定的星体表。",
+        }
+    if tool_name == "horary":
+        return {
+            "orbs / orbScale": _CHART_ORB_DOC + "卜卦盘的 [相位全览]、成相 / 离相、[月亮的故事]、接纳都按这张盘的相位判，改它结论会变。",
+            "category": "问卜类别（20 类，括号=事项宫；也认中文名，认不出报 tool.invalid_option）："
+            + " ".join(f"{k}={label}({house if house else '月亮下一入相'})" for k, label, house in HORARY_CATEGORIES)
+            + "；father/mother 的 4/10 宫随 options.parentHousesVariant（traditional 4父10母 | modern 反之）。",
+            "school": "判读流派 7 档（缺省 classical），同时定起盘字段（上游 horaryBackendFields）："
+            + "；".join(f"{k} {cn}（{fields}）" for k, cn, fields in HORARY_SCHOOLS)
+            + "。显式 hsys/termsVariant/geminiBoundEmended/tradition 或 options.tripSystem 压过流派。",
+            "options": "判读层覆写 {键: 值}，键 = 引擎 HORARY_PARAM_SPEC 全表：" + "/".join(HORARY_PARAM_KEYS)
+            + "（hsys/termsVariant/geminiBoundEmended/tradition 与 tripSystem 同时改起盘）；认不出的键回执 data.params_ignored。",
+            "判读全局层": f"顶层古典键 {JUDGE_GLOBAL_KEYS} 进判读全局层（内建 < 全局 < 流派差异 < options）；"
+            "顶层 triplicity/lotReversal 不作用于卜卦盘（流派绑定，另出告警）。",
+        }
+    if tool_name == "election":
+        return {
+            "orbs / orbScale": _CHART_ORB_DOC + "只作用于择日盘本身；natal 本命盘、病始盘与日 / 月返盘按默认容许度（同上游）。",
+            "topicId": "用事（37 类；也认中文名，认不出报 tool.invalid_option）：" + " ".join(f"{k}={cn}" for k, cn in ELECTION_TOPICS),
+            "school": "择日流派 5 档：" + " ".join(f"{k}={cn}" for k, cn in ELECTION_SCHOOLS)
+            + "；未显式给 hsys 时宫制随流派（hellenistic/modern_revival=0、persian=1、renaissance=2、modern_main=0）。",
+            "判读全局层": f"顶层古典键 {JUDGE_GLOBAL_KEYS} 进判读全局层（流派口径之下、options 之上）。",
+        }
+    if tool_name == "guolao_chart":
+        return {
+            "doubingSu28": "宿度制 0–8（缺省 0）：" + " ".join(f"{k}={label}" for k, label in GUOLAO_SU28_MODES)
+            + "；子选项只在对应制下生效：4→guolaoAyanamsa，6→guolaoTuibianMethod/guolaoGufaPrecess，7/8→guolaoEqTropicalAnchor。",
+        }
+    if tool_name == "india_chart":
+        return {
+            "dashaSystem": "大运体系 15 档（缺省 vimshottari；决定 [大运Dasha] 段）："
+            + " ".join(f"{k}={label}" for k, label in INDIA_DASHA_SYSTEMS)
+            + "；taraDasha/akkg 为展示体系，不下发后端。",
+            "indiaSchool": "流派 6 档（进 [起盘信息] 流派行；未给 indiaAyanamsa/indiaHsys 时补该派预设）："
+            + "；".join(f"{k}={label}（{ayan}/hsys {hsys}）" for k, label, ayan, hsys in INDIA_SCHOOLS),
+        }
+    if tool_name == "mundane":
+        return {
+            "mundaneRuleset": "规则集 4 档（缺省 modern）：" + " ".join(f"{k}={label}" for k, label in MUNDANE_RULESETS)
+            + "；进快照首段的「规则集」行，右栏卡片段（年盘概要等）、[定局·年主/盘主]（界/三分变体定年主累分）与 [地理分野]"
+            + "（数据集：托勒密古典 / 古典+中世纪 / 现代综合）均随该规则集（上游 describeMundaneVictor / describeChorography）。",
+            "mundaneType=cycles": "行星周期盘型（上游 v3.14.0）：在入宫底盘之外加产 [木土纪元] / [大年时代] / [世运周期表] / [Barbault 聚散指数]。"
+            "[世运周期表] 一次列一张表：cycleTable 选表（14 张，缺省 conjunctions 大中小合），各表只认自己的选项——"
+            "conjunctions: conjKind + cycleVariant（仅大合）；meanConjunctions: meanTable；turns: flood + cycleYear；"
+            "firdaria: firdariaLevel + firdariaYears + cycleYear + cycleVariant（仅小档）；profections: profRate + profBase + cycleVariant（非天顶起点）；"
+            "dawr: dawrStart；era: eraKind；revolution: ingressPoint；weather: weatherMonths + cycleVariant；directions: mpdKey；"
+            "thousands / worldYears / parts / lunations 无选项。区间表（conjunctions / meanConjunctions）认 cycleStartYear + cycleEndYear，"
+            "年表（thousands / worldYears / dawr / era / revolution）只认 cycleStartYear；不给则以盘面年份为准。"
+            "给了对所选表不起作用的键 → 不下发并在 warnings 点名；值认不出 → tool.mundane_invalid_setting（列可选值）。"
+            "[Barbault 聚散指数]：bbSet 慢星组合 + bbHarm 谐波（1–12，缺省 1）。这些键在别的盘型下不起作用（warnings 说明）。",
+            "mundaneType=region": "地区盘：底盘换成 regionKey 指定的预置建置盘（vendored regionCharts.js：london_1066 / philadelphia_1776 / "
+            "paris_1792，多候选时刻用 regionCandidate），快照 = [地区盘] 头 → [世俗宫义] → [定局·年主/盘主] → [地理分野] → "
+            "[地区盘推运]（盘龄 = year − 建置年：小限 + 法达）→ [地区盘·12世俗宫]/[时刻校正] 等卡 → 盘面正文；不出入宫盘诸段。",
+        }
+    if tool_name == "relative":
+        return {
+            "relative": "关系盘 0–4（缺省 0）：" + " ".join(f"{k}={label}" for k, label in RELATIVE_MODES) + "。",
+            "ashtakootaMaleSide": "[八重合]（两人恒星黄道月亮宿 / 月亮座配八项分，满分 36；任何盘型都附）的男方：inner=星盘 A | outer=星盘 B。"
+            "不给 = 按 inner.gender / outer.gender（1 男 0 女）定；两人性别都不明或同性 = 星盘 A。岁差随 siderealAyanamsa（缺省 Lahiri）。",
+        }
+    if tool_name in CHART_DETAILS_DOC_TOOLS:
+        # [盘面细节]（上游 v3.14.0）：五项口径的说明取各字段 description（ADVERTISE_HIDDEN 循环已带出），这里只补 30 张表的全表。
+        place = "重置后的地点" if tool_name == "relocation" else "本命盘参数"
+        return {
+            "detailTable": "[盘面细节] 要取原始明细的表（上游页面「当前表」，缺省 topics）：一张或一组 id / 中文名，30 张——"
+            + " ".join(f"{value}={label}" for value, label in CHART_DETAIL_TABLES)
+            + f"。不改正文（正文恒为 30 张表的结论摘要，按{place}、回归黄道算），只决定 data.chart_details.tables 带哪几张表的后端原值；"
+            "data.chart_details.settings 回显后端实际用的五项口径。",
+        }
+    if tool_name in {"neroman", "bezzafigure", "jayprofection", "michon"}:
+        # 推运图族四法：后端 directed_figures._natal_from_request 强制 zodiacal=0（双黄道用自带 J2000 26°37′18″ 岁差）。
+        note = "不改结果：本法只按回归黄道算（后端强制 zodiacal=0"
+        note += "；双黄道的恒星黄道用其自带岁差 J2000.0 时 26°37′18″）" if tool_name == "michon" else "）"
+        return {"zodiacal": f"{note}；传 1 只改 [起盘信息] 的「黄道」行。", "siderealAyanamsa": f"{note}。"}
+    if tool_name == "transformchart":
+        # 上游 v3.14.0 变换盘：全表与「哪种变换用到哪些选项」= vendored transformCharts.js TRANSFORM_GROUPS（auxlab_vocab 锚定）。
+        from horosa_skill import auxlab_vocab as vocab
+
+        option_fields = {setting: field for field, setting in vocab.TRANSFORM_FIELD_TO_SETTING.items()}
+        groups = "；".join(
+            f"{group}：" + " ".join(
+                f"{value}={label}" + (f"[{'+'.join(option_fields[o] for o in opts)}]" if opts else "") for value, label, opts in kinds
+            )
+            for group, kinds in vocab.TRANSFORM_GROUPS
+        )
+        return {
+            "transformKind": f"变换种类 {len(vocab.TRANSFORM_KINDS)} 种（缺省 {vocab.TRANSFORM_DEFAULTS['kind']}；也认中文名，认不出报 tool.invalid_option）。"
+            f"方括号 = 这种变换用到的选项，没列的选项传了不生效、回执 data.params_ignored：{groups}。"
+            "人格盘 / 受孕盘另找一个时刻起盘（[变换盘] 段写起盘时刻；高纬的受孕盘可能无解 → tool.transformchart_empty）。",
+            "transformPlanet": "基准星（superimposed 叠置盘 / planetCentered 行星中心盘（选 Sun 即日心盘）/ persona 人格盘用）："
+            + " ".join(f"{value}={label}" for value, label in vocab.TRANSFORM_PLANET_LABELS.items())
+            + f"；缺省 {vocab.TRANSFORM_DEFAULTS['planet']}。",
+        }
+    if tool_name == "zodiacsystems":
+        from horosa_skill import auxlab_vocab as vocab
+
+        same = "不改结果：黄道制一律回到回归黄经上分段、四轴与宫制无关（后端 zodiac_systems._body_rows）"
+        return {
+            "zodiacVersion": f"黄道版本 {len(vocab.ZODIAC_VERSIONS)} 种（缺省 {vocab.ZODIAC_VERSION_DEFAULT}；也认中文名，认不出报 tool.invalid_option）："
+            + " ".join(f"{value}={label}" for value, label in vocab.ZODIAC_VERSIONS)
+            + "。版本只换各点的落段行；真实星座、银河黄道、换星座时刻与十三宫（固定按十三星座甲本的座长排）不随版本变。",
+            "hsys": f"{same}。",
+            "zodiacal": f"{same}；恒星黄道盘与回归黄道盘的落段相同（换算回回归黄经时至多差约 1″）。",
+            "siderealAyanamsa": f"{same}。",
+        }
+    if tool_name == "timelords":
+        # 时主轮转：后端 timelord_tables.build_timelords 走同一个 _natal_from_request（强制 zodiacal=0）。
+        from horosa_skill.western_vocab import (
+            TIMELORD_EVENT_METHODS,
+            TIMELORD_METHOD_FIELDS,
+            TIMELORD_PERIOD_METHODS,
+            timelord_method_label,
+        )
+
+        def reads(method: str) -> str:
+            year_field, fields = TIMELORD_METHOD_FIELDS[method]
+            keys = [*([year_field] if year_field else []), *fields]
+            return f"{method} {timelord_method_label(method)}（{' '.join(keys) if keys else '无口径键'}）"
+
+        note = "不改结果：本法只按回归黄道算（后端强制 zodiacal=0）"
+        return {
+            "zodiacal": f"{note}；传 1 只改 [起盘信息] 的「黄道」行。",
+            "siderealAyanamsa": f"{note}。",
+            "tlMethod": "十二法各读哪些键（别的键给了也不下发，回执 data.settings_ignored + 一条告警；方法 / 选项的中文名也认）。"
+            "期表类（出 [当前时段] 当前段与子段 + [后续]）：" + "；".join(reads(m) for m in TIMELORD_PERIOD_METHODS)
+            + "。事件类（出最近一件与后续事件；月亮日只列生后三个时刻，不看 targetDate）：" + "；".join(reads(m) for m in TIMELORD_EVENT_METHODS)
+            + "。发展年龄按星座分段（tlDevBasis=sign）时两档算法同值，tlVariant 不下发。南北交随 westNodeType（平 / 真交点）。",
+        }
+    return {}
+
+
+def western_options_doc(tool_name: str) -> dict[str, str]:
+    """{键: 说明}；无文档返回 {}。键名即请求键（顶层按名传，或走 request 整包）。"""
+    definition = TOOL_DEFINITIONS.get(tool_name)
+    if definition is None:
+        return {}
+    model = definition.input_model
+    fields: dict[str, Any] = model.model_fields
+    doc: dict[str, str] = {}
+    # 中式/神数工具虽继承 BirthInput.hsys，但不起西占宫——宫制表只给西占/推运/卜卦择日这几域。
+    if "hsys" in fields and not tool_name.startswith("india") and definition.domain in {"astro", "predict", "chart"}:
+        doc["hsys"] = house_system_doc()
+    for name in sorted(advertise_hidden_fields(model)):
+        field = fields.get(name)
+        if field is not None and field.description:
+            doc[name] = field.description
+    if isinstance(model, type) and issubclass(model, BirthInput):
+        if tool_name in ASTRO_CHART_FAMILY_TOOLS:
+            doc["showOnlyRulExaltReception"] = str(BirthInput.model_fields["showOnlyRulExaltReception"].description)
+            for name in EGYPT_AXIS_KEYS:
+                doc[name] = str(BirthInput.model_fields[name].description)
+        if tool_name == "chart":
+            for name in _EMINENCE_KEYS:
+                doc[name] = str(BirthInput.model_fields[name].description)
+        # v3.13.1 日出 / 日没口径：上游古典全局设置（ChartDisplaySelector / 卜卦择日盘 DivinationChartShell 热同步 / 七政），
+        # 后端各西占盘端点均收；印占不随此项（IndiaChartKernel 恒按视日出）→ 印度工具不挂说明。
+        if definition.domain in {"astro", "predict", "chart"} and not tool_name.startswith("india"):
+            doc["sunriseMode"] = str(BirthInput.model_fields["sunriseMode"].description)
+        # wave 3b：本命四盘的严格接纳缺省 0（BirthInput 字段不进 tools/list 广告层，说明只在这里出；日界两键是各家族模型的
+        # ADVERTISE_HIDDEN 字段，上面的隐藏旋钮循环已自动带出）。service 侧消费点：`_apply_chart_request_defaults` / `_chart_family_snapshot_fields`。
+        if tool_name in STRONG_RECEPTION_DEFAULT_TOOLS:
+            doc["strongRecption"] = str(BirthInput.model_fields["strongRecption"].description)
+    doc.update(_static_doc(tool_name))
+    return doc

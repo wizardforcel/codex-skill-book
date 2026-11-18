@@ -1,0 +1,165 @@
+from __future__ import annotations
+
+from horosa_skill.agent_guidance import (
+    PREFLIGHT_EXEMPT_TOOLS,
+    TOOL_GUIDANCE,
+    assert_guidance_covers_registered_tools,
+    build_tool_docstring,
+    build_tool_input_contract,
+    build_validation_recovery,
+    build_agent_guidance,
+    validate_agent_preflight,
+)
+from horosa_skill.engine.registry import TOOL_DEFINITIONS
+
+
+def test_agent_guidance_covers_every_registered_tool() -> None:
+    assert_guidance_covers_registered_tools()
+    assert set(TOOL_GUIDANCE) == set(TOOL_DEFINITIONS)
+
+
+def test_liureng_guidance_requires_clarification_before_call() -> None:
+    guidance = build_agent_guidance(tool_name="liureng_gods")
+    policy = guidance["tools"]["liureng_gods"]
+
+    fields = {item["field"] for item in policy["ask_if_missing"]}
+    assert {"date/time", "location", "question", "guirengType", "isDiurnal"} <= fields
+    assert any(default["field"] == "guirengType" and default["value"] == 2 for default in policy["safe_defaults"])
+    assert any("Do not hand-calculate" in rule for rule in guidance["global_rules"])
+    assert "horosa_cn_liureng_gods" == policy["mcp_name"]
+
+
+def test_guidance_accepts_mcp_tool_name_alias() -> None:
+    guidance = build_agent_guidance(tool_name="horosa_cn_qimen")
+
+    assert guidance["ok"] is True
+    assert list(guidance["tools"]) == ["qimen"]
+    assert any(item["field"] == "question" for item in guidance["tools"]["qimen"]["ask_if_missing"])
+
+
+def test_guidance_all_includes_all_tools_and_report_memory_notes() -> None:
+    guidance = build_agent_guidance(include_all=True)
+
+    assert guidance["ok"] is True
+    assert set(guidance["tools"]) == set(TOOL_DEFINITIONS)
+    assert "horosa_report_render" in guidance["report_and_memory"]
+    assert "horosa_memory_query" in guidance["report_and_memory"]
+    assert guidance["tools"]["solarreturn"]["input_contract"]["required_for_real_call"] == [
+        "date",
+        "time",
+        "zone",
+        "lat",
+        "lon",
+        "datetime",
+        "dirZone",
+        "dirLat",
+        "dirLon",
+    ]
+
+
+def test_all_enforced_tools_have_user_questions() -> None:
+    guidance = build_agent_guidance(include_all=True)
+
+    missing = [
+        tool_name
+        for tool_name, policy in guidance["tools"].items()
+        if tool_name not in PREFLIGHT_EXEMPT_TOOLS and not policy["ask_if_missing"]
+    ]
+    assert missing == []
+
+
+def test_agent_preflight_blocks_unconfirmed_calculation_tools() -> None:
+    gate = validate_agent_preflight("liureng_gods", {"date": "2026-05-18"})
+
+    assert gate["ok"] is False
+    assert gate["code"] == "agent_guidance.required"
+    assert "agent_confirmed_settings" in gate["confirmation_fields"]
+    assert any(item["field"] == "guirengType" for item in gate["ask_if_missing"])
+    assert gate["agent_recovery"]["must_ask_user"] is True
+    # v0.50：技法用中文正名、每个问题「中文 / English」。
+    assert "调用「大六壬」前需要先确认" in gate["agent_recovery"]["prompt_to_user"]
+    assert "Before running 「大六壬」" in gate["agent_recovery"]["prompt_to_user"]
+
+
+def test_predictive_input_contracts_are_explicit_for_agents() -> None:
+    solarreturn = build_tool_input_contract("solarreturn")
+    pd = build_tool_input_contract("pd")
+    pdchart_doc = build_tool_docstring("pdchart")
+
+    assert solarreturn["schema"] == "horosa.skill.input_contract.v1"
+    assert solarreturn["confirmation_required"] is True
+    assert {"datetime", "dirZone", "dirLat", "dirLon"} <= set(solarreturn["required_for_real_call"])
+    # 上游 v50 段结构：本命盘配置 / 起盘信息 / 时段盘配置 / 相位（旧的「返照盘X」前缀名走 legacy 迁移）。
+    assert "时段盘配置" in solarreturn["output_contract"]
+    assert "agent_confirmed_settings" not in solarreturn["example_payload"]   # 审计 S-09：对外示例不带确认位
+
+    assert {"pdtype", "pdMethod", "pdTimeKey", "pdaspects"} <= set(pd["required_for_real_call"])
+    assert "主限表格" in pd["output_contract"]
+    # docstring 双语化：必填清单标记为「真实调用必填 / Required input」。
+    assert "真实调用必填" in pdchart_doc and "Required input" in pdchart_doc
+    assert "主限法盘星体表格" in pdchart_doc
+
+
+def test_agent_preflight_allows_confirmed_calculation_tools() -> None:
+    gate = validate_agent_preflight("qimen", {"agent_confirmed_settings": True})
+
+    assert gate["ok"] is True
+    assert gate["mode"] == "agent_confirmed_settings"
+
+
+def test_agent_preflight_exempts_registry_tools() -> None:
+    gate = validate_agent_preflight("knowledge_registry", {})
+
+    assert gate["ok"] is True
+    assert gate["enforced"] is False
+
+
+def test_agent_preflight_blocks_unconfirmed_dispatch() -> None:
+    # v0.50：先路由。「帮我起一个盘」没说哪一派 → 闸门放行给 dispatch 自己的「请挑技法」拒绝，不先问四个起盘问题。
+    vague = validate_agent_preflight("dispatch", {"query": "帮我起一个盘"})
+    assert vague["ok"] is True and vague["mode"] == "routing_refusal"
+    # 路由选中了八字 → 问的是八字在这份载荷上真正开着的问题，不是写死的「用哪种技法」。
+    birth = {"date": "1990-05-03", "time": "08:00:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28"}
+    gate = validate_agent_preflight("dispatch", {"query": "帮我看看八字", "birth": birth})
+    assert gate["ok"] is False and gate["code"] == "agent_guidance.required"
+    fields = [item["field"] for item in gate["ask_if_missing"]]
+    assert "target technique" not in fields and "gender" in fields and "birth data" not in fields
+
+
+def test_validation_recovery_returns_prompt_for_incomplete_payload() -> None:
+    recovery = build_validation_recovery(
+        operation_name="tool.chart",
+        tool_name="chart",
+        errors=[{"loc": ("date",), "msg": "Field required", "type": "missing"}],
+    )
+
+    assert recovery["must_ask_user"] is True
+    assert "「本命盘」" in recovery["prompt_to_user"]
+    # v0.50：只问校验卡住的字段，不拿空载荷重放整份问卷。
+    assert [item["field"] for item in recovery["ask_if_missing"]] == ["date"]
+
+
+def test_options_keys_never_leak_onto_tools_that_share_a_policy_dict() -> None:
+    # v0.41.1：好几组工具共用同一个策略 dict（chart / chart12 / chart13 / draconic / hellen_chart 等）。
+    # options_keys 若原地写进 TOOL_GUIDANCE[tool]，会悄悄挂到同组所有工具上；注入改为写时复制，这里锁住结果。
+    from collections import defaultdict
+
+    owners: dict[int, list[str]] = defaultdict(list)
+    for tool, entry in TOOL_GUIDANCE.items():
+        owners[id(entry)].append(tool)
+    leaked = {tool: owners[id(entry)] for tool, entry in TOOL_GUIDANCE.items()
+              if entry.get("options_keys") is not None and len(owners[id(entry)]) > 1}
+    assert not leaked, f"options_keys sits on a dict shared by several tools: {leaked}"
+
+
+def test_tool_docstring_keeps_a_sentence_output_contract_whole() -> None:
+    # 择日族等策略的 output_contract 是一整句；旧实现按字符逗号拼接，`__doc__` 里成了「按, 条, 件, …」。
+    from horosa_skill.agent_guidance import TOOL_GUIDANCE
+
+    sentence_tools = [name for name, policy in TOOL_GUIDANCE.items() if isinstance(policy.get("output_contract"), str)]
+    assert sentence_tools, "expected at least one sentence-form output_contract"
+    for name in sentence_tools:
+        contract = TOOL_GUIDANCE[name]["output_contract"]
+        doc = build_tool_docstring(name)
+        assert contract in doc, name
+        assert ", ".join(contract[:3]) not in doc, name

@@ -1,0 +1,10 @@
+/* Skills (admin and members): the list's description and name, the editor's SKILL.md and its file list. The list and
+   the dialog otherwise share the MCP settings' rules (mcp-settings.css). */
+.settings-list-item-text .skill-description { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: .8125rem; line-height: 1.6; color: var(--foreground-secondary); }
+.skill-name { font-family: var(--font-mono); font-size: .875rem; }
+
+.app-modal.skill-editor { width: min(560px, calc(100vw - 32px)); }
+.skill-upload { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; }
+.skill-upload-summary { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .5rem 1rem; margin: 0; padding: .875rem 1rem; border: 1px solid var(--border); border-radius: .75rem; background: var(--surface); font-size: .8125rem; line-height: 1.55; }
+.skill-upload-summary dt { color: var(--foreground-tertiary); }
+.skill-upload-summary dd { margin: 0; overflow-wrap: anywhere; color: var(--foreground); }

@@ -1,0 +1,104 @@
+{
+  "manifest_version": "0.4",
+  "name": "horosa-skill",
+  "display_name": "Horosa 星阙 — 术数 / 占星",
+  "version": "0.51.0",
+  "description": "Local-first Horosa (星阙) metaphysics: 119 real technique tools over MCP, fully offline.",
+  "long_description": "Horosa Skill exposes 119 real 术数/占星 techniques — Western natal & predictive astrology (returns, progressions, 13-method primary directions, horary 卜卦, election 择日, astrocartography), 八字 / 紫微斗数 / 大六壬 / 奇门遁甲 / 太乙 / 金口诀 / 三式合一 / 六爻 / 河洛理数 / 一掌经, the full 14 神数 family, tarot and 天文地占 — as MCP tools that run entirely on your machine. Every result carries a Xingque-compatible export snapshot, every call is stored in a local searchable archive, and a runtime gate forces the assistant to confirm result-changing settings with you instead of inventing them.",
+  "author": {
+    "name": "Horace Maxwell",
+    "url": "https://github.com/Horace-Maxwell"
+  },
+  "homepage": "https://github.com/Horace-Maxwell/horosa-skill",
+  "documentation": "https://github.com/Horace-Maxwell/horosa-skill#readme",
+  "support": "https://github.com/Horace-Maxwell/horosa-skill/issues",
+  "license": "AGPL-3.0-only",
+  "privacy_policies": [
+    "https://horosa.org/privacy"
+  ],
+  "keywords": [
+    "astrology",
+    "metaphysics",
+    "horosa",
+    "xingque",
+    "offline",
+    "local-first"
+  ],
+  "server": {
+    "type": "uv",
+    "entry_point": "src/horosa_skill/surfaces/mcp_server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "${__dirname}",
+        "horosa-skill",
+        "serve",
+        "--transport",
+        "stdio"
+      ],
+      "env": {
+        "HOROSA_RUNTIME_ROOT": "${user_config.runtime_root}",
+        "HOROSA_SKILL_DATA_DIR": "${user_config.data_dir}",
+        "HOROSA_INSTALL_CONTEXT": "mcpb",
+        "HOROSA_PLUGIN_ROOT": "${__dirname}",
+        "HOROSA_JEV": "${user_config.jev_mode}",
+        "HOROSA_JEV_API_KEY": "${user_config.jev_api_key}",
+        "HOROSA_OUTPUT_SCRIPT": "${user_config.traditional_chinese}",
+        "HOROSA_MCP_COMPACT": "${user_config.compact_tools}"
+      }
+    }
+  },
+  "user_config": {
+    "jev_mode": {
+      "type": "string",
+      "title": "Cloud decision layer (TypeSafe Jev) — off / shadow / enforce",
+      "description": "Optional. Leave 'off' (default) to keep everything on this machine. 'shadow' sends redacted request text to TypeSafe Jev and only records what it would decide; 'enforce' lets it fill explicitly stated settings and route otherwise-unmatched requests. Requires the API key below.",
+      "default": "off",
+      "required": false
+    },
+    "jev_api_key": {
+      "type": "string",
+      "title": "TypeSafe Jev API key (optional)",
+      "description": "Only used when the decision layer is not 'off'. Stored by the client, never written into Horosa files, logs, or results.",
+      "sensitive": true,
+      "required": false
+    },
+    "runtime_root": {
+      "type": "directory",
+      "title": "Offline runtime directory",
+      "description": "Where the ~2 GB Horosa offline runtime lives. Leave empty for the default (~/.horosa/runtime, or %LOCALAPPDATA%\\Horosa\\runtime on Windows).",
+      "required": false
+    },
+    "data_dir": {
+      "type": "directory",
+      "title": "Local runs & reports directory",
+      "description": "Where run records, report artifacts and the SQLite index are stored. Leave empty for ~/.horosa-skill.",
+      "required": false
+    },
+    "compact_tools": {
+      "type": "boolean",
+      "title": "精简工具面 / Compact tool surface",
+      "description": "默认勾选：只广告门面工具（horosa_tool_run 按名调任意技法），工具定义开场约 7,500 token；取消勾选 = 平铺全部技法工具（约 9 万 token 的工具定义进上下文）。Ticked (default): the facade tools only (horosa_tool_run reaches any technique by name), about 7,500 tokens of tool definitions; untick to list every technique tool (about 90,000 tokens).",
+      "default": true,
+      "required": false
+    },
+    "traditional_chinese": {
+      "type": "boolean",
+      "title": "繁體中文輸出 / Traditional Chinese output",
+      "description": "勾选后，排盘结果、提示与报告里给人读的文字改用繁体（台湾字形）；不勾 = 简体，与原来逐字相同。香港字形：环境变量 HOROSA_OUTPUT_SCRIPT=zh-Hant-HK。Ticked: readable text in results, prompts and reports is converted to Traditional Chinese (Taiwan forms). Unticked = Simplified, unchanged.",
+      "default": false,
+      "required": false
+    }
+  },
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "win32"
+    ],
+    "runtimes": {
+      "python": ">=3.12"
+    }
+  }
+}

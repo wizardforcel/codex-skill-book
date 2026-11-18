@@ -1,0 +1,55 @@
+/**
+ * 连接器：用户自己接入的 MCP 服务，只对自己生效，在开启联网的 Agent 任务中使用。
+ *
+ * 'use client' 标记说明：
+ * - 需要会话状态；列表与编辑交给 McpServerManager
+ *
+ * 能否添加、能加几个由管理员的扩展策略决定，列表接口随列表返回当前额度。
+ */
+'use client';
+
+import { useSessionSafe } from '@/components/providers/ClientProviders';
+import { SettingsLoginRequired } from '@/components/settings/SettingsLoginRequired';
+import { McpServerManager } from '@/components/settings/mcp/McpServerManager';
+import { BuiltinConnectors } from '@/components/settings/mcp/BuiltinConnectors';
+import { SoundWaveLoader } from '@/components/ui/SoundWaveLoader';
+import type { ExtensionAllowanceView } from '@/lib/agent/extensions/config';
+import type { McpServerListing } from '@/lib/agent/mcp/client';
+
+function AllowanceNotice({ allowance }: { allowance?: ExtensionAllowanceView }) {
+  if (!allowance) return null;
+  if (!allowance.enabled) {
+    return <p className="mcp-notice"><strong>管理员已关闭个人连接器。</strong>已添加的连接器会保留，但暂不会在任务中使用。</p>;
+  }
+  if (allowance.limit === 0) {
+    return <p className="mcp-notice"><strong>个人连接器暂未开放。</strong>已添加的连接器会保留，但暂不会在任务中使用。</p>;
+  }
+  if (allowance.limit > 0 && allowance.used >= allowance.limit) {
+    return <p className="mcp-notice">已启用 {allowance.used} / {allowance.limit} 个连接器；新增会自动停用最早添加的一个。</p>;
+  }
+  return null;
+}
+
+const canAdd = ({ allowance }: McpServerListing) => !!allowance && allowance.enabled && allowance.limit > 0;
+
+export default function ConnectorsPanel() {
+  const { user, loading } = useSessionSafe();
+  if (loading) {
+    return <div className="flex min-h-[240px] items-center justify-center"><SoundWaveLoader variant="inline" /></div>;
+  }
+  if (!user) return <SettingsLoginRequired title="请先登录后管理连接器" />;
+  return (
+    <div className="flex flex-col gap-6">
+      <McpServerManager
+        key={user.id}
+        scope="user"
+        userId={user.id}
+        addLabel="添加连接器"
+        canAdd={canAdd}
+        notice={listing => <AllowanceNotice allowance={listing.allowance} />}
+        empty={{ title: '还没有连接器', detail: '接入支持 Streamable HTTP 的 MCP 服务后，Agent 在开启联网的任务中可以调用它的工具。' }}
+      />
+      <BuiltinConnectors />
+    </div>
+  );
+}

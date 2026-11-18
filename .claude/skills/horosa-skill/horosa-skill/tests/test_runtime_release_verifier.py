@@ -1,0 +1,210 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+import tarfile
+import zipfile
+from pathlib import Path
+
+import pytest
+
+
+SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "verify_runtime_release.py"
+SPEC = importlib.util.spec_from_file_location("verify_runtime_release", SCRIPT_PATH)
+assert SPEC and SPEC.loader
+verify_runtime_release = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(verify_runtime_release)
+
+
+def _payload_manifest(*, version: str, platform: str) -> bytes:
+    return (
+        json.dumps(
+            {
+                "schema_version": 1,
+                "version": version,
+                "runtime_payload_version": version,
+                "platform": platform,
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _write_tar(path: Path, *, version: str, platform: str) -> None:
+    manifest = _payload_manifest(version=version, platform=platform)
+    with tarfile.open(path, "w:gz") as archive:
+        info = tarfile.TarInfo("runtime-payload/runtime-manifest.json")
+        info.size = len(manifest)
+        archive.addfile(info, fileobj=__import__("io").BytesIO(manifest))
+
+
+def _write_zip(path: Path, *, version: str, platform: str) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("runtime-payload/runtime-manifest.json", _payload_manifest(version=version, platform=platform))
+
+
+def test_assert_payload_manifest_accepts_matching_version(tmp_path: Path) -> None:
+    archive = tmp_path / "runtime.tar.gz"
+    _write_tar(archive, version="0.5.9", platform="darwin-arm64")
+
+    verify_runtime_release._assert_payload_manifest(archive, "darwin-arm64", "0.5.9")
+
+
+def test_assert_payload_manifest_rejects_stale_version(tmp_path: Path) -> None:
+    archive = tmp_path / "runtime.zip"
+    _write_zip(archive, version="0.5.6", platform="win32-x64")
+
+    with pytest.raises(SystemExit, match="stale or mismatched embedded runtime manifest"):
+        verify_runtime_release._assert_payload_manifest(archive, "win32-x64", "0.5.9")
+
+
+_WIN_FILE_ENTRIES = [
+    "runtime-payload/runtime-manifest.json",
+    "runtime-payload/Horosa-Web/start_horosa_local.ps1",
+    "runtime-payload/Horosa-Web/stop_horosa_local.ps1",
+    "runtime-payload/Horosa-Web/astropy/__init__.py",
+    "runtime-payload/Horosa-Web/vendor/kinqimen/__init__.py",
+    "runtime-payload/Horosa-Web/vendor/kintaiyi/__init__.py",
+    "runtime-payload/Horosa-Web/vendor/kinjinkou/__init__.py",
+    "runtime-payload/Horosa-Web/vendor/kinwangji/__init__.py",
+    "runtime-payload/Horosa-Web/vendor/kinwuzhao/__init__.py",
+    "runtime-payload/Horosa-Web/vendor/taixuanshifa/__init__.py",
+    "runtime-payload/Horosa-Web/vendor/jingjue/__init__.py",
+    "runtime-payload/Horosa-Web/vendor/shenyishu/__init__.py",
+    "runtime-payload/Horosa-Web/vendor/kin_year_domain.py",
+    "runtime-payload/Horosa-Web/astropy/astrostudy/geomancy/data/ifa_odu.json",
+    "runtime-payload/Horosa-Web/astropy/astrostudy/qizheng_election_scan.py",
+    "runtime-payload/Horosa-Web/astropy/astrostudy/india_election_scan.py",
+    "runtime-payload/Horosa-Web/astropy/astrostudy/xuanshi/data/public_data.sqlite",
+    "runtime-payload/Horosa-Web/astropy/astrostudy/xuanshi/data/editorial.sqlite",
+    "runtime-payload/Horosa-Web/vendor/kinastro/astro/__init__.py",
+    "runtime-payload/Horosa-Web/vendor/kinastro/astro/shaozi/data/shaozi_tiaowen_6144.json",
+    "runtime-payload/runtime/windows/python/python.exe",
+    "runtime-payload/runtime/windows/java/bin/java.exe",
+    "runtime-payload/runtime/windows/node/node.exe",
+    "runtime-payload/runtime/windows/bundle/astrostudyboot.jar",
+    "runtime-payload/horosa-core-js/bin/cli.mjs",
+    "runtime-payload/horosa-core-js/node_modules/lunar-javascript/package.json",
+    "runtime-payload/horosa-core-js/node_modules/astronomy-engine/package.json",   # 上游 v3.13.0 月相推运
+    "runtime-payload/horosa-core-js/node_modules/moment/package.json",
+    "runtime-payload/horosa-core-js/node_modules/tz-lookup/package.json",          # v0.48.0 地名检索
+    "runtime-payload/horosa-core-js/src/vendor/place/data/citiesFull.json",
+    "runtime-payload/horosa-core-js/dist/app-charts.cjs",  # 报告盘图：星阙 app 原版绘图代码
+]
+_SWEFILES_DIR = "runtime-payload/Horosa-Web/flatlib-ctrad2/flatlib/resources/swefiles/"
+
+
+_LAUNCHERS = (
+    "runtime-payload/Horosa-Web/start_horosa_local.ps1",
+    "runtime-payload/Horosa-Web/stop_horosa_local.ps1",
+)
+
+
+def _write_full_win_zip(path: Path, *, swefiles_empty: bool, launcher_bom: bool = True) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        for name in _WIN_FILE_ENTRIES:
+            if name in _LAUNCHERS:
+                # 真实形态：UTF-8 BOM 打头（Windows PowerShell 5.1 才会按 UTF-8 解码）
+                archive.writestr(name, (b"\xef\xbb\xbf" if launcher_bom else b"") + b"Write-Host 'x'\n")
+            else:
+                archive.writestr(name, b"x")
+        if swefiles_empty:
+            archive.writestr(_SWEFILES_DIR, b"")  # bare directory-marker entry, no files inside
+        else:
+            archive.writestr(_SWEFILES_DIR + "seas_18.se1", b"ephemeris")
+
+
+def test_assert_entries_rejects_empty_required_directory(tmp_path: Path) -> None:
+    # Regression: a zip whose required dir (swefiles) is only a bare marker must FAIL — previously
+    # `startswith(required)` matched the marker against itself and greenlit a broken runtime.
+    archive = tmp_path / "runtime.zip"
+    _write_full_win_zip(archive, swefiles_empty=True)
+    with pytest.raises(SystemExit, match="missing required entries"):
+        verify_runtime_release._assert_entries(archive, "win32-x64")
+
+
+def test_assert_entries_accepts_required_directory_with_a_real_file(tmp_path: Path) -> None:
+    archive = tmp_path / "runtime.zip"
+    _write_full_win_zip(archive, swefiles_empty=False)
+    verify_runtime_release._assert_entries(archive, "win32-x64")  # must not raise
+
+
+_PLACE_ENTRIES = (
+    "runtime-payload/horosa-core-js/node_modules/tz-lookup/package.json",
+    "runtime-payload/horosa-core-js/src/vendor/place/data/citiesFull.json",
+    "runtime-payload/horosa-core-js/dist/app-charts.cjs",  # 报告盘图：星阙 app 原版绘图代码
+)
+
+
+def test_place_search_dependencies_are_required_on_every_platform() -> None:
+    """v0.48.0：tz-lookup 与城市库被 core-js 懒加载——缺了别的技法照常跑，只有地名检索在运行时才报错，所以发布闸必须查。
+    Windows ARM 装的是 win32-x64 载荷（contracts/release_platforms.json 的 alias），三个键覆盖全部平台。"""
+    for platform, entries in verify_runtime_release.REQUIRED_ENTRIES.items():
+        for entry in _PLACE_ENTRIES:
+            assert entry in entries, (platform, entry)
+
+
+@pytest.mark.parametrize("missing", _PLACE_ENTRIES)
+def test_a_payload_without_the_place_search_dependency_is_rejected(tmp_path: Path, missing: str) -> None:
+    archive = tmp_path / "runtime.zip"
+    with zipfile.ZipFile(archive, "w") as out:
+        for name in _WIN_FILE_ENTRIES:
+            if name == missing:
+                continue
+            out.writestr(name, (b"\xef\xbb\xbf" if name in _LAUNCHERS else b"") + b"x")
+        out.writestr(_SWEFILES_DIR + "seas_18.se1", b"ephemeris")
+    with pytest.raises(SystemExit, match="missing required entries"):
+        verify_runtime_release._assert_entries(archive, "win32-x64")
+
+
+def test_windows_launchers_must_carry_a_utf8_bom(tmp_path: Path) -> None:
+    """无 BOM 的 .ps1 会被 Windows PowerShell 5.1 按 ANSI 解码 —— 一个非 ASCII 字符就能打成 parse
+    error，启动器未跑先死（v0.25.0 Windows 补建时真炸过）。发布闸必须拦在上传之前。"""
+    archive = tmp_path / "runtime.zip"
+    _write_full_win_zip(archive, swefiles_empty=False, launcher_bom=False)
+    with pytest.raises(SystemExit, match="lack a UTF-8 BOM"):
+        verify_runtime_release._assert_windows_launchers_are_bom_encoded(archive)
+
+
+def test_windows_launchers_with_a_bom_pass(tmp_path: Path) -> None:
+    archive = tmp_path / "runtime.zip"
+    _write_full_win_zip(archive, swefiles_empty=False)
+    verify_runtime_release._assert_windows_launchers_are_bom_encoded(archive)  # must not raise
+
+
+# --- v0.38.0 A3: manifest `size` and an exact platform set ---------------------------------------
+
+
+def _release_manifest(tmp_path: Path, platforms: dict) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    path = tmp_path / "runtime-manifest.json"
+    path.write_text(json.dumps({"version": "0.38.0", "platforms": platforms}), encoding="utf-8")
+    return path
+
+
+def test_manifest_size_must_be_a_positive_int_and_match_the_archive(tmp_path: Path) -> None:
+    archive = tmp_path / "horosa-runtime-darwin-arm64-v0.38.0.tar.gz"
+    _write_tar(archive, version="0.38.0", platform="darwin-arm64")
+    entry = {"url": "https://x/y.tar.gz", "sha256": "abc", "archive_type": "tar.gz"}
+    manifest = verify_runtime_release._validate_manifest(_release_manifest(tmp_path, {"darwin-arm64": {**entry, "size": archive.stat().st_size}}))
+    verify_runtime_release._assert_manifest_size(manifest, "darwin-arm64", archive)
+    with pytest.raises(SystemExit):
+        verify_runtime_release._assert_manifest_size({"platforms": {"darwin-arm64": {**entry, "size": archive.stat().st_size + 1}}}, "darwin-arm64", archive)
+    with pytest.raises(SystemExit):
+        verify_runtime_release._validate_manifest(_release_manifest(tmp_path, {"darwin-arm64": {**entry, "size": "big"}}))
+    with pytest.raises(SystemExit):
+        verify_runtime_release._validate_manifest(_release_manifest(tmp_path, {"darwin-arm64": {**entry, "size": 0}}))
+    # no `size` at all stays valid (pre-A3 manifests)
+    verify_runtime_release._assert_manifest_size(verify_runtime_release._validate_manifest(_release_manifest(tmp_path, {"darwin-arm64": entry})), "darwin-arm64", archive)
+
+
+def test_expect_platforms_demands_the_exact_set(tmp_path: Path) -> None:
+    entry = {"url": "https://x/y", "sha256": "abc", "archive_type": "tar.gz"}
+    path = _release_manifest(tmp_path, {"darwin-arm64": entry})
+    verify_runtime_release._validate_manifest(path, expect_platforms={"darwin-arm64"})
+    with pytest.raises(SystemExit):
+        verify_runtime_release._validate_manifest(path, expect_platforms={"darwin-arm64", "win32-x64"})
+    both = _release_manifest(tmp_path / "b", {"darwin-arm64": entry, "win32-x64": {**entry, "archive_type": "zip"}})
+    with pytest.raises(SystemExit):
+        verify_runtime_release._validate_manifest(both, expect_platforms={"darwin-arm64"})

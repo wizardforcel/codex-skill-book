@@ -1,0 +1,548 @@
+"""`client config` / setup 生成的配置载荷：按客户端形状出 horosa 条目（启动器、钉版本 wheel 缓存、Codex env 根）。"""
+from __future__ import annotations
+
+import json
+import re
+import shlex
+from pathlib import Path, PureWindowsPath
+from typing import Any
+
+import typer
+
+from horosa_skill import __version__, clients_extra
+from horosa_skill.client_config import claude_cli, env_carry
+from horosa_skill.client_config.locations import (
+    _CLIENT_COMPACT_DEFAULT,
+    _CLIENT_COMPACT_REASON,
+    _CLIENT_NAMES,
+    _codex_env_roots,
+    _preferred_config_path,
+)
+from horosa_skill.client_config.openclaw import _build_openclaw_config
+from horosa_skill.client_tools import (
+    resolve_uv_command,
+    resolve_uvx_command,
+    wheel_asset_name,
+    zero_install_wheel_url,
+)
+from horosa_skill.engine.registry import (
+    COMPACT_SURFACE_TOOL_COUNT,
+    FULL_SURFACE_TOOL_COUNT,
+    TOOL_DEFINITIONS,
+)
+
+
+def _resolve_skill_root(path: Path) -> Path:
+    candidate = path.expanduser().resolve()
+    if (candidate / "pyproject.toml").exists():
+        return candidate
+    nested = candidate / "horosa-skill"
+    if (nested / "pyproject.toml").exists():
+        return nested
+    raise typer.BadParameter("Path must point to the horosa-skill package directory or the repo root that contains it.")
+
+
+def _quote_cli_arg(value: str) -> str:
+    # 方括号要引：zsh 把未加引号的 `horosa-skill[vectors]@…` 当通配符，直接 `no matches found`。
+    return f'"{value}"' if any(char.isspace() or char in "[]*?" for char in value) else value
+
+
+def _format_cli_command(parts: list[str]) -> str:
+    return " ".join(_quote_cli_arg(part) for part in parts)
+
+
+# VS Code 在 Windows 上的 `code` 是批处理 code.cmd：粘进去的一行先被终端拆，再被 cmd.exe 照 code.cmd 的 %* 拆，最后 Code.exe 按
+# C 运行库拆。JSON 里必有双引号，cmd 与 PowerShell 没有共同写法（不像 claude_cli.shell_text），各给一条，内部都按 C 运行库转义
+# （引号前的反斜杠加倍、引号写成 \"）：cmd 整段双引号括起；PowerShell 放进单引号字面量（' 写成 ''；5.1 与 7 调 .cmd 都走旧式传参）。
+# cmd 的引号状态在每个 " 处翻转（不看反斜杠），JSON 字符串的内容正好落在引号外：路径里有 & | < > ^ % 时两条都会被 cmd 拆坏，
+# 这时不给命令。v0.50.2-dev 本机实测：cmd / Windows PowerShell 5.1 / pwsh 7.6 × 九种路径（空格、中文、'、&、%、$、^、括号、尾随 \）。
+_CMD_SPLITS_INSIDE_JSON = frozenset("&|<>^%")
+
+
+def _vscode_windows_commands(config_json: str) -> dict[str, str]:
+    if any(char in _CMD_SPLITS_INSIDE_JSON for char in config_json):
+        return {"cli_command_windows_note": "路径里有 & | < > ^ % 之一，cmd / PowerShell 都会把 `code --add-mcp` 拆坏：点 install_link，"
+                                            "或跑 `horosa-skill setup --client vscode` 直接写 mcp.json，或把 servers 合并进用户级 mcp.json。"}
+    escaped = re.sub(r'(\\*)"', lambda match: match.group(1) * 2 + '\\"', config_json)
+    return {
+        "cli_command_windows": f'code --add-mcp "{escaped}"',
+        "cli_command_powershell": "code --add-mcp '" + escaped.replace("'", "''") + "'",
+    }
+
+
+def _wheel_cache_dir() -> Path:
+    return Path.home() / ".horosa" / "wheels"
+
+
+def _wheel_looks_valid(path: Path, version: str) -> bool:
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+            metadata = f"horosa_skill-{version}.dist-info/METADATA"
+            if metadata not in names or "horosa_skill/__init__.py" not in names:
+                return False
+            return f"Version: {version}" in archive.read(metadata).decode("utf-8", errors="replace")
+    except (OSError, zipfile.BadZipFile):
+        return False
+
+
+def _original_digest(sums_url: str, name: str, *, fetch_text: Any | None = None) -> str | None:
+    """原站发布页 SHA256SUMS.txt 里这个文件的摘要；取不到 → None（审计 PF-02：镜像给的 wheel 要对照可信值）。"""
+    import httpx
+
+    try:
+        if fetch_text is not None:
+            text = fetch_text(sums_url)
+        else:
+            with httpx.Client(timeout=5.0, follow_redirects=True) as http:
+                response = http.get(sums_url)
+                response.raise_for_status()
+                text = response.text
+    except (httpx.HTTPError, OSError, ValueError):  # 探针：原站不通 / 读不出就是「没法对照」，由调用方写告警
+        return None
+    for line in str(text).splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1].lstrip("*") == name:
+            return parts[0].lower()
+    return None
+
+
+def _cache_wheel(url: str, *, version: str | None = None, dest_dir: Path | None = None, fetch: Any | None = None,
+                 sums_url: str | None = None, fetch_text: Any | None = None) -> tuple[Path | None, str | None]:
+    """把发布页的 wheel 预下载到 ~/.horosa/wheels/（v0.38.1 C15），返回 (本地路径 | None, 警告 | None)。
+
+    🔴 为什么：`uvx --from <URL>` 按 URL 缓存环境，但 uv 对直链依赖「尊重 HTTP 缓存头」——每次客户端冷启动都可能
+    发一次再验证请求，离线时不保证能起。配置里写本地 wheel 路径 → 冷启动零网络、离线可用；升级 = 换文件名。
+    校验：zip 结构 + dist-info 的 Version 必须等于本包版本（wheel 没有单独签名；sha256 记在旁边的 .sha256）。
+    """
+    import hashlib
+
+    version = version or __version__
+    dest_dir = dest_dir or _wheel_cache_dir()
+    dest = dest_dir / wheel_asset_name(version)
+    if dest.is_file() and _wheel_looks_valid(dest, version):
+        return dest, None
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        part = dest.with_name(dest.name + ".part")
+        if fetch is not None:
+            fetch(url, part)
+        else:
+            import httpx
+
+            with httpx.Client(timeout=120.0, follow_redirects=True) as http, http.stream("GET", url) as response:
+                response.raise_for_status()
+                with part.open("wb") as handle:
+                    for chunk in response.iter_bytes():
+                        handle.write(chunk)
+        if not _wheel_looks_valid(part, version):
+            part.unlink(missing_ok=True)
+            return None, f"下载到的文件不是 horosa_skill {version} 的 wheel（结构或版本不符），配置里保留 URL。"
+        digest = hashlib.sha256(part.read_bytes()).hexdigest()
+        note = None
+        if sums_url:
+            trusted = _original_digest(sums_url, dest.name, fetch_text=fetch_text)
+            if trusted is not None and trusted != digest:
+                part.unlink(missing_ok=True)
+                return None, (f"下载到的 wheel 与原站 SHA256SUMS.txt 的摘要不一致（{digest[:12]}… ≠ {trusted[:12]}…）：已丢弃，"
+                              "不写进配置。镜像可能被篡改或缓存了别的文件。")
+            if trusted is None and url != sums_url.rsplit("/", 1)[0] + "/" + dest.name:
+                note = "wheel 来自镜像，原站的 SHA256SUMS.txt 取不到、没能对照摘要（只核了结构与版本）。"
+        part.replace(dest)
+        dest.with_name(dest.name + ".sha256").write_text(f"{digest}  {dest.name}\n", encoding="utf-8")
+        return dest, note
+    except Exception as exc:  # noqa: BLE001 - 预下载失败不阻断 setup：配置回退到 URL 形态
+        return None, f"wheel 预下载失败（{type(exc).__name__}: {exc}）；配置里保留 URL，客户端冷启动时再取。"
+
+
+VECTORS_EXTRA = "vectors"
+# uvx 按 requires-python 自动换解释器的那段逻辑认不出带 extra 的包：`horosa-skill[vectors]@…` 碰上 PATH 里排第一的 3.11
+# 直接报 No solution，而不带 extra 的同一个 wheel 能起（v0.47.2 公开 wheel 冒烟抓到）。所以这一支显式钉解释器。
+VECTORS_PYTHON = "3.12"
+_WINDOWS_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def vectors_source(source: str) -> str:
+    """`uvx --from` 的值带上 `[vectors]`：PEP 508 直接引用 `horosa-skill[vectors]@<URL>`（2026-11-06 用 uv 0.10.7 实测）。
+
+    整段没有空格：本地 wheel 转成百分号编码的 file URI。`@` 两边的空格可写可不写，不写才经得起按空格拆命令的客户端、
+    和 home 目录带空格的机器（`C:\\Users\\John Doe`）。
+    """
+    if "://" not in source and not source.startswith("git+"):
+        source = (PureWindowsPath(source) if _WINDOWS_DRIVE_PATH.match(source) else Path(source)).as_uri()
+    return f"horosa-skill[{VECTORS_EXTRA}]@{source}"
+
+
+ENTRY_CHOICES = ("auto", "script", "module")
+
+
+def resolve_entry(entry: str) -> tuple[str, str]:
+    """配置里用哪种入口起 server：`script` = `horosa-skill serve`，`module` = `python -m horosa_skill serve`。
+
+    `auto`：Windows 的 Smart App Control 处于「开」时选 module，其余一律 script（与 v0.43.0 及以前逐字节相同）。
+    原因：uv / uvx 给每个环境现生成的 `Scripts\\horosa-skill.exe`（trampoline）内容随安装路径变，永远没有云端信誉，
+    Smart App Control 可能拒绝执行它（`os error 4551`，Windows 原生复验撞到）；环境里的 `python.exe` 是解释器
+    自带的那份，不受影响。两种入口跑的是同一个 Typer app（`horosa_skill/__main__.py`）。
+    """
+    key = (entry or "auto").strip().lower()
+    if key not in ENTRY_CHOICES:
+        raise typer.BadParameter("`--entry` must be `auto`, `script` or `module`.")
+    if key == "module":
+        return key, "用户指定"
+    if key == "script":
+        return key, "用户指定（Smart App Control 开着的 Windows 上可能被拦，见 --entry module）"
+    from horosa_skill.runtime.manager import smart_app_control_state
+
+    if smart_app_control_state() == "on":
+        return "module", (
+            "本机 Smart App Control 已开启：uv 现生成的 horosa-skill.exe 可能被拦（os error 4551），改用 python -m horosa_skill"
+        )
+    return "script", "缺省入口 horosa-skill"
+
+
+def module_entry_command(command: list[str]) -> list[str]:
+    """把 stdio 命令里 `serve` 前面那个 `horosa-skill` 换成 `python -m horosa_skill`，其余参数原样。
+
+    `uv run --directory <pkg> python …` 用该项目 venv 的解释器；`uvx --from <src> python …` 用该工具环境的解释器——
+    两者都已装好 horosa_skill。只认 `serve` 前一位：uvx-git 的 URL、`--directory` 的路径里也含 horosa-skill 字样。
+    """
+    if "serve" not in command:
+        return list(command)
+    index = command.index("serve") - 1
+    if index < 0 or command[index] != "horosa-skill":
+        return list(command)
+    return [*command[:index], "python", "-m", "horosa_skill", *command[index + 1:]]
+
+
+def _build_client_config_payload(
+    *, format_name: str, skill_root: Path, server_name: str, launcher: str, surface: str,
+    wheel_source: str | None = None, output_script: str = "zh-Hans", entry: str = "auto", vectors: bool = False,
+) -> tuple[dict[str, Any], list[str], dict[str, str]]:
+    """`client config` 的产物，也是 `setup` 第 3 步（v0.38.0 B4）。返回 (payload, stdio 命令, 工具面 env)。
+
+    源码 checkout 只在 `uv` 启动器与 mcporter/openclaw 形态下才需要：uvx 形态是给**没有 checkout** 的机器
+    用的（wheel 装出来的包旁边没有 pyproject.toml），此前一律先 `_resolve_skill_root` → 零安装用户跑
+    `client config --launcher uvx-wheel` 直接 BadParameter。
+
+    `vectors=True`：启动器带上 `[vectors]` extra——依赖必须进**客户端起 server 的那个环境**，跑 setup 的进程装没装都没用。
+    """
+    launcher_key = launcher.strip().lower()
+    if launcher_key not in {"uv", "uvx", "uvx-git", "uvx-wheel"}:
+        raise typer.BadParameter("`--launcher` must be `uv`, `uvx-wheel`, `uvx-git` or `uvx`.")
+    resolved_skill_root: Path | None = None
+    if launcher_key == "uv" or format_name.strip().lower() in {"mcporter", "openclaw"}:
+        resolved_skill_root = _resolve_skill_root(skill_root)
+    warnings: list[str] = []
+    launcher_info: dict[str, Any] = {"kind": launcher_key}
+    if launcher_key in {"uvx", "uvx-git", "uvx-wheel"}:
+        # 🔴 写绝对路径（v0.38.0 B2）：GUI 客户端在 Windows 上不继承 shell PATH，裸 `uvx` = file not found。
+        try:
+            uvx_command = resolve_uvx_command()
+        except FileNotFoundError as exc:
+            uvx_command = ["uvx"]
+            warnings.append(f"uvx 未找到，配置里只能写裸 `uvx`（GUI 客户端可能起不来）：{exc}")
+        if vectors:
+            uvx_command = [*uvx_command, "--python", VECTORS_PYTHON]
+    if launcher_key == "uvx-wheel":
+        # 🔴 免 git、免 PyPI 的零安装（v0.38.0 B3）：每个 Release 都附带纯 Python wheel，`uvx --from <URL>` 直接起；
+        # URL 走 HOROSA_RUNTIME_MIRROR 的前缀改写（github.com:443 不通的机器只需一个开关，issue #14）。
+        # uvx 按 `--from` 的 URL 缓存环境：钉版本的 URL 稳定，升级 = 换 URL（重跑 client config / setup）。
+        from horosa_skill.runtime.mirrors import mirror_candidates, preferred_mirror_url
+
+        wheel_url = zero_install_wheel_url()
+        # `wheel_source`（setup 预下载到 ~/.horosa/wheels 的本地文件）优先：冷启动零网络、离线可用。
+        # 审计 PF-02：配置里只写本地已核过的 wheel 或原站 https 地址——写镜像 URL = 客户端每次冷启动从镜像取可执行文件。
+        from_value = wheel_source or wheel_url
+        if not wheel_source and len(mirror_candidates(wheel_url)) > 1:
+            warnings.append("配了镜像而 wheel 没有预下载到本机：配置里写的是原站地址（客户端冷启动不从镜像取可执行文件）。"
+                            "github.com 不通时先跑 setup（会经镜像预下载并对照摘要），或按 docs/INSTALL_RESTRICTED_NETWORK.md 离线搬运。")
+        stdio_command = [*uvx_command, "--from", vectors_source(from_value) if vectors else from_value,
+                         "horosa-skill", "serve", "--transport", "stdio"]
+        launcher_info.update({
+            "wheel_url": wheel_url,
+            **({"wheel_cached_path": wheel_source} if wheel_source else {}),
+            "alternatives": mirror_candidates(wheel_url),
+            "pinned_version": __version__,
+            "install_hint": f"uvx --from \"{preferred_mirror_url(wheel_url)}\" horosa-skill install",
+            "refresh_hint": f"uvx --refresh --from \"{preferred_mirror_url(wheel_url)}\" horosa-skill --version",
+            "docs": "docs/INSTALL_RESTRICTED_NETWORK.md（镜像 / API 直链 / 离线搬运）",
+        })
+    elif launcher_key == "uvx":
+        # PyPI 分发（v0.36.0 C4）：不需要源码 checkout；离线 runtime 仍由 `uvx horosa-skill install` 装到默认目录。
+        stdio_command = [*uvx_command, *(("--from", f"horosa-skill[{VECTORS_EXTRA}]") if vectors else ()),
+                         "horosa-skill", "serve", "--transport", "stdio"]
+    elif launcher_key == "uvx-git":
+        # 🔴 PyPI 尚未开通（`pip install horosa-skill` 现在是 404），所以 `uvx` 那条今天还跑不通。
+        # 直接从 Git 装是**当下唯一可用的零安装路径**；钉当前版本 tag 让配置可复现。
+        git_source = f"git+https://github.com/Horace-Maxwell/horosa-skill@v{__version__}#subdirectory=horosa-skill"
+        stdio_command = [
+            *uvx_command, "--from", vectors_source(git_source) if vectors else git_source,
+            "horosa-skill", "serve", "--transport", "stdio",
+        ]
+    else:
+        uv_command = resolve_uv_command()
+        stdio_command = [
+            *uv_command,
+            "run",
+            "--directory",
+            str(resolved_skill_root),
+            *(("--extra", VECTORS_EXTRA) if vectors else ()),
+            "horosa-skill",
+            "serve",
+            "--transport",
+            "stdio",
+        ]
+    entry_key, entry_reason = resolve_entry(entry)
+    if entry_key == "module":
+        stdio_command = module_entry_command(stdio_command)
+    launcher_info["entry"] = {"mode": entry_key, "reason": entry_reason, "override": "--entry script / --entry module"}
+    if vectors:
+        launcher_info["vectors"] = True
+    key = format_name.strip().lower()
+    surface_key = surface.strip().lower()
+    if surface_key not in {"auto", "full", "compact"}:
+        raise typer.BadParameter("`--surface` must be `auto`, `full` or `compact`.")
+    use_compact = _CLIENT_COMPACT_DEFAULT.get(key, False) if surface_key == "auto" else surface_key == "compact"
+    from horosa_skill.textscript import SIMPLIFIED, parse_script
+
+    script = parse_script(output_script)
+    if script is None:
+        raise typer.BadParameter("`--output-script` must be `zh-Hans`, `zh-Hant` or `zh-Hant-HK`.")
+    # 输出文字、工具面、以及终端里显式设着的「用哪套引擎 / 哪份数据」变量走同一条 env 通道：每家客户端写 env 的方式
+    # （JSON env / TOML 表 / CLI -e）已经在下面分好了。🔴 客户端不会把你终端里的 HOROSA_* 交给 server——不写进条目，
+    # server 就在默认目录找 runtime、连默认端口（哪些写、哪些不写、为什么：client_config/env_carry.py）。
+    carried_env = env_carry.carried_env()
+    shell_only_env = env_carry.shell_only()
+    surface_env = {
+        # 有上限的客户端上显式选全量：写 HOROSA_MCP_COMPACT=0 作「知情」标记，client check 不再报超上限（审计 PF-08）。
+        **({"HOROSA_MCP_COMPACT": "1"} if use_compact else {"HOROSA_MCP_COMPACT": "0"} if surface_key == "full" and _CLIENT_COMPACT_DEFAULT.get(key) else {}),
+        **({"HOROSA_OUTPUT_SCRIPT": script} if script != SIMPLIFIED else {}),
+        **carried_env,
+    }
+    tool_surface = {
+        "mode": "compact" if use_compact else "full",
+        "tools": COMPACT_SURFACE_TOOL_COUNT if use_compact else FULL_SURFACE_TOOL_COUNT,
+        "reason": (
+            _CLIENT_COMPACT_REASON.get(key, "该客户端对工具总数敏感")
+            if use_compact
+            else f"该客户端能吃下全量平铺面（{FULL_SURFACE_TOOL_COUNT} 个工具）"
+        ),
+        "override": "--surface full / --surface compact",
+    }
+    if key in {"mcporter", "openclaw"}:
+        payload: dict[str, Any] = _build_openclaw_config(
+            skill_root=resolved_skill_root,
+            server_name=server_name,
+            format_name=key,
+            isolate_home=None,
+        )
+    elif key == "claude-code":
+        payload = {
+            "note": "运行下面这一条命令即可把 Horosa 注册进 Claude Code（stdio 直连，无需常驻 serve）；或把 mcpServers 合并进项目的 .mcp.json / ~/.claude.json。",
+            # 🔴 必须走 claude_cli.shell_text（与 setup 同一个）：checkout / uv 路径里有空格（`C:\Users\John Doe\…`、
+            # `/Users/x/My Projects`）时，裸 join 出来的命令会把路径拆成两个参数 —— README 教的就是这条复制粘贴命令；
+            # Windows 上光写的 `--` 会被 npm 装的 claude.ps1 吃掉（v0.50.2-dev 前这里还是光写）。精简面顺带带上
+            # `-e HOROSA_MCP_COMPACT=1`，与 setup 的写法一致。
+            "command": claude_cli.shell_text(
+                ["claude", "mcp", "add", server_name]
+                + [item for key, value in (surface_env or {}).items() for item in ("-e", f"{key}={value}")]
+                + ["--", *stdio_command]
+            ),
+            "config_path": str(_preferred_config_path("claude-code")),
+            "mcpServers": {
+                server_name: {
+                    "command": stdio_command[0],
+                    "args": stdio_command[1:],
+                    **({"env": surface_env} if surface_env else {}),
+                }
+            },
+            "tool_surface": tool_surface,
+            **({"env_note": "精简面：给这条命令加 `-e HOROSA_MCP_COMPACT=1`"} if use_compact else {}),
+            "alternative_http": {
+                # 跟随 launcher：uvx/uvx-git 用户没有 checkout，`uv run` 那条对他们不成立。
+                # stdio_command 以 `serve --transport stdio` 结尾：去掉后两个就是 HTTP 的 serve（v0.50.2-dev 前多拼了一个 serve）。
+                "note": ("或先 `" + (claude_cli.shell_text(stdio_command[:-2]) if launcher_key != "uv"
+                                     else "uv run --directory <checkout>/horosa-skill horosa-skill serve")
+                         + "` 再注册 HTTP 端点："),
+                # 回环 HTTP 也要令牌（审计 PF-05）：serve 第一次起时生成在数据目录的 mcp-token，这里引用变量名、不印令牌本身。
+                "command": claude_cli.shell_text(["claude", "mcp", "add", server_name, "--transport", "http", "http://127.0.0.1:8765/mcp"]),
+                # 命令里不放 $变量（cmd / PowerShell 的展开规则各不同，粘贴守卫要求三种 shell 读出同一条）
+                "token_note": ("回环 HTTP 也要令牌：serve 横幅写着令牌文件（数据目录下的 mcp-token）；给上面这条命令加 "
+                               "--header \"Authorization: Bearer <文件里那串>\"，或 serve 时显式 --allow-unauthenticated。"),
+            },
+        }
+    elif key == "claude-desktop":
+        payload = {
+            "note": "合并进 Claude Desktop 的 claude_desktop_config.json（mcpServers 键下）。",
+            "config_path": str(_preferred_config_path("claude-desktop")),
+            "tool_surface": tool_surface,
+            "mcpServers": {
+                server_name: {
+                    "command": stdio_command[0],
+                    "args": stdio_command[1:],
+                    **({"env": surface_env} if surface_env else {}),
+                }
+            },
+        }
+    elif key == "codex":
+        # Codex 硬约束（examples/clients/codex.md 有全文）：RawMcpServerConfig deny_unknown_fields
+        # （字段写错=整段拒收）；env 不转发 shell 环境 → HOROSA_* 必须显式写进 env 表；
+        # 启动超时默认 10 s < 首次冷启动（runtime 预热 ~45s）→ 显式 120s；工具默认 60s < 长盘
+        # （tianxing 跨月扫描）→ 600s。首轮工具目录只等 1s（mcp_optional_startup_grace_ms=1000）：
+        # 冷启动时第一轮对话可能看不到 horosa 工具，第二轮即恢复——要首轮即见就解开 required 注释
+        # （代价：server 起不来时 Codex 启动直接报错）。
+        payload = {
+            "note": (
+                "追加到 ~/.codex/config.toml（或用 --write 原位合并，只动 [mcp_servers." + server_name + "] 表并先备份）。"
+                "HTTP 变体需先 `uv run horosa-skill serve`。"
+            ),
+            "config_path": str(_preferred_config_path("codex")),
+            "toml_stdio": (
+                f"[mcp_servers.{server_name}]\n"
+                # command 必须与 args/cwd 一样走 json.dumps：JSON 转义 ⊂ TOML 基本字符串转义。
+                # 裸插值在 Windows 上会把路径里的反斜杠原样写进 TOML → 整个文件不可解析
+                # （tomllib: Unescaped '\'；mac/Linux 路径无反斜杠故恒绿，windows-smoke 才炸）。
+                f"command = {json.dumps(stdio_command[0])}\n"
+                f"args = {json.dumps(stdio_command[1:])}\n"
+                # 🔴 cwd 只在 uv（源码 checkout）形态写。uvx 形态是给**没有 checkout** 的机器用的，
+                # 写死本机路径 → 对方 Codex 起不来（cwd 不存在即 spawn 失败）。
+                + (f"cwd = {json.dumps(str(resolved_skill_root))}\n" if launcher_key == "uv" else "")
+                + (
+                "# 冷启动（首次装 runtime/预热）可超 Codex 默认 10 s；长盘（择日扫描）可超默认工具 60 s。\n"
+                "startup_timeout_sec = 120\n"
+                "tool_timeout_sec = 600\n"
+                "# 首轮即见工具（否则冷启动首轮目录里可能没有 horosa，第二轮恢复）；\n"
+                "# 代价：server 启动失败时 Codex 直接报错。按需解开：\n"
+                "# required = true\n"
+                "\n"
+                f"[mcp_servers.{server_name}.env]\n"
+                + ("HOROSA_MCP_COMPACT = \"1\"          # " + tool_surface["reason"] + "\n" if use_compact else "")
+                + (f"HOROSA_OUTPUT_SCRIPT = {json.dumps(script)}   # 结果里给人读的文字用繁体\n" if script != SIMPLIFIED else "")
+                # 🔴 v0.38.1 C6：Codex 不转发你 shell 里的 HOROSA_*。runtime 根与数据目录显式写成绝对路径
+                # （与 MCPB / 插件的 user_config 一致），否则 Codex 起的 server 会算出另一个 runtime 根。
+                # 不写 `env_vars`：老版本 Codex 对未知键 deny_unknown_fields，会整块拒收这个 server。
+                + f"HOROSA_RUNTIME_ROOT = {json.dumps(str(_codex_env_roots()['HOROSA_RUNTIME_ROOT']))}\n"
+                + f"HOROSA_SKILL_DATA_DIR = {json.dumps(str(_codex_env_roots()['HOROSA_SKILL_DATA_DIR']))}\n"
+                # 终端里显式设着的其余「哪套引擎 / 哪份数据」变量（两个根上面恒写）：
+                + "".join(
+                    f"{name} = {json.dumps(value)}\n" for name, value in carried_env.items()
+                    if name not in {"HOROSA_RUNTIME_ROOT", "HOROSA_SKILL_DATA_DIR"}
+                )
+                + "# Codex 不把 shell 环境交给 server——任何 HOROSA_* 必须在这里显式声明才可见，例如：\n"
+                f"# HOROSA_MCP_COMPACT = \"1\"          # {COMPACT_SURFACE_TOOL_COUNT} 个门面工具的精简面（Codex 无工具搜索，{len(TOOL_DEFINITIONS)} 技法全量较重）\n"
+                "# HOROSA_TOOLSETS = \"astro,cn\"      # 或按域裁剪\n"
+                )
+            ),
+            "toml_http": (
+                f"[mcp_servers.{server_name}]\n"
+                "url = \"http://127.0.0.1:8765/mcp\"\n"
+                "startup_timeout_sec = 120\n"
+                "tool_timeout_sec = 600\n"
+            ),
+            "docs": "examples/clients/codex.md（含 exec 模式文本回落、enabled_tools 高频入口集、排障清单）",
+            "tool_surface": tool_surface,
+        }
+    elif key == "cursor":
+        # Cursor 官方 install deep link：config = base64({"command","args"})，点击即装。
+        import base64
+
+        cursor_entry = {"command": stdio_command[0], "args": stdio_command[1:]}
+        if surface_env:
+            cursor_entry["env"] = surface_env
+        cursor_config = json.dumps(cursor_entry, ensure_ascii=False)
+        encoded = base64.b64encode(cursor_config.encode("utf-8")).decode("ascii")
+        payload = {
+            "note": "点击 deep_link 一键安装进 Cursor；或把 mcpServers 合并进 ~/.cursor/mcp.json。",
+            "config_path": str(_preferred_config_path("cursor")),
+            "deep_link": f"cursor://anysphere.cursor-deeplink/mcp/install?name={server_name}&config={encoded}",
+            "mcpServers": {server_name: cursor_entry},
+            "tool_surface": tool_surface,
+        }
+    elif key == "vscode":
+        # VS Code 官方安装链接（vscode:mcp/install?<url-encoded JSON>）+ CLI 等价命令。
+        from urllib.parse import quote
+
+        vscode_entry = {"name": server_name, "command": stdio_command[0], "args": stdio_command[1:]}
+        if surface_env:
+            vscode_entry["env"] = surface_env
+        vscode_config = json.dumps(vscode_entry, ensure_ascii=False)
+        # mcp.json 形状（`servers` 根键 + `type: stdio`）：让 --write / setup 能合并进用户级 mcp.json，
+        # 而不是把 install_link/cli_command 这些说明写成配置（v0.38.0 B2）。
+        vscode_file_entry: dict[str, Any] = {"type": "stdio", "command": stdio_command[0], "args": stdio_command[1:]}
+        if surface_env:
+            vscode_file_entry["env"] = surface_env
+        payload = {
+            "note": "点击 install_link 一键安装进 VS Code；或在终端运行 cli_command（Windows：cmd 用 cli_command_windows，"
+                    "PowerShell 用 cli_command_powershell）；或把 servers 合并进用户级 mcp.json。",
+            "config_path": str(_preferred_config_path("vscode")),
+            "servers": {server_name: vscode_file_entry},
+            "install_link": f"vscode:mcp/install?{quote(vscode_config, safe='')}",
+            # 单引号只在 POSIX shell 里成立；cmd.exe / PowerShell 各有一条（见 _vscode_windows_commands）。
+            "cli_command": "code --add-mcp " + shlex.quote(vscode_config),
+            **_vscode_windows_commands(vscode_config),
+            "tool_surface": tool_surface,
+        }
+    elif key in {"gemini", "windsurf", "cline", "zed"}:
+        # 四家都是「一个 JSON 文件里挂一个 stdio server」，只是根键与个别字段不同。
+        entry: dict[str, Any] = {"command": stdio_command[0], "args": stdio_command[1:]}
+        if surface_env:
+            entry["env"] = surface_env
+        if key == "gemini":
+            # Gemini CLI 的 per-server `timeout` 是毫秒；默认 600000（10 分钟）已够长盘扫描。
+            # `trust: false` = 每次工具调用仍走确认，别替用户放开。
+            entry.update({"timeout": 600000, "trust": False})
+            root_key = "mcpServers"
+        elif key == "windsurf":
+            root_key = "mcpServers"
+        elif key == "cline":
+            # Cline 的 per-server `timeout` 是**秒**（源码 sdk/packages/shared/src/mcp.ts：默认 60，范围 1–3600）。
+            entry.update({"type": "stdio", "timeout": 600})
+            root_key = "mcpServers"
+        else:  # zed：context_servers 下直接 command/args/env（zed.dev/docs/ai/mcp，2026-09 核对）；无 `source` 字段
+            # Zed 的 ContextServerCommand 也有 per-server `timeout`（秒，默认 60）——这才是 Zed 的真缺口。
+            entry["timeout"] = 600
+            root_key = "context_servers"
+        config_path = str(_preferred_config_path(key))
+        payload = {
+            "note": f"合并进 {config_path}（{root_key} 键下）。",
+            "config_path": config_path,
+            root_key: {server_name: entry},
+            "tool_surface": tool_surface,
+        }
+    elif key in clients_extra.EXTRA_CLIENTS:
+        # v0.41.0：16 家的条目形状 / 根键 / 超时字段都在 clients_extra 一行里；这里只补启动器与工具面。
+        payload = clients_extra.build_payload(
+            key, server_name=server_name, stdio_command=stdio_command, surface_env=surface_env,
+            env_roots=_codex_env_roots(), config_path=_preferred_config_path(key),
+        )
+        payload["tool_surface"] = tool_surface
+        warnings.extend(payload.pop("warnings", []))
+    else:
+        raise typer.BadParameter(
+            "format must be one of: " + " / ".join((*_CLIENT_NAMES, "mcporter", "openclaw"))
+        )
+    payload["launcher"] = launcher_info
+    if script != SIMPLIFIED and key in {"mcporter", "openclaw"}:
+        warnings.append(f"{key} 的配置不带 env：繁体输出请在启动 serve 的环境里设 HOROSA_OUTPUT_SCRIPT={script}。")
+    if vectors and key in {"mcporter", "openclaw"}:
+        warnings.append(f"{key} 的配置走源码 checkout，不带 [vectors]：在该 checkout 里跑 `uv sync --extra vectors` 后依赖才在。")
+    if carried_env and key in {"mcporter", "openclaw"}:
+        # 这两种格式的条目没有 env 字段（走 HTTP 网关 / 现有 serve）：变量只能设在启动 serve 的那个环境里。
+        warnings.append(
+            f"{key} 的配置不带 env：{'、'.join(carried_env)} 没有写进配置，请在启动 serve 的环境里设同样的值，"
+            "否则 server 用默认目录 / 默认端口。"
+        )
+    elif carried_env:
+        # 只给名字：值就在上面的条目里。
+        payload["carried_env"] = list(carried_env)
+    if shell_only_env:
+        payload["shell_only_env"] = shell_only_env
+        warnings.append(
+            f"当前终端里设着 {'、'.join(shell_only_env)}：它们会改变 server 的行为，但**没有**写进配置"
+            "（客户端起的 server 看不到）。要它生效，请自己加进该客户端条目的 env 表。"
+        )
+    if warnings:
+        payload["warnings"] = warnings
+    return payload, stdio_command, surface_env

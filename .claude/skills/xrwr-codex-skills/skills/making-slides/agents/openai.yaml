@@ -1,0 +1,6 @@
+interface:
+  display_name: "Slides"
+  short_description: "Make one-message-per-slide decks with a fixed style and Lucide icons"
+  default_prompt: "Use $making-slides to explain this as a short slide deck."
+policy:
+  allow_implicit_invocation: true

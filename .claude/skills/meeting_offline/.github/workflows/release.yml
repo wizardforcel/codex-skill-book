@@ -1,0 +1,76 @@
+# Publishes a GitHub Release with both zips whenever main carries a MANIFEST version that has no
+# release yet (or a vX.Y.Z tag is pushed, or the workflow is run by hand). The tag is created here.
+# When that version is already released, only its notes are refreshed from CHANGELOG.md.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: ['MANIFEST.json']
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Read version
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('MANIFEST.json'))['version'])")
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME != MANIFEST v$version"; exit 1
+          fi
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "Release v$version already exists; only its notes are refreshed."
+            echo "SKIP=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Run tests
+        if: env.SKIP != '1'
+        working-directory: skills/meeting-offline
+        env:
+          MEETING_OFFLINE_DEVICE_ID: ci
+        run: python3 -m unittest discover -s tests
+
+      - name: Build packages
+        if: env.SKIP != '1'
+        run: |
+          python3 build_package.py --out dist
+          git diff --exit-code MANIFEST.json .claude-plugin/plugin.json || { echo "MANIFEST.json or plugin.json is stale; run build_package.py and commit"; exit 1; }
+
+      - name: Release notes from CHANGELOG
+        run: |
+          awk -v v="## $VERSION" '$0==v{f=1;next} /^## /{f=0} f' CHANGELOG.md > notes.md
+          test -s notes.md || { echo "CHANGELOG.md has no '## $VERSION' section"; exit 1; }
+          cat >> notes.md <<'EOF'
+
+          ### 下载哪个包
+
+          - `meeting_offline-*-local.zip`：Codex、Claude Code、WorkBuddy、CodeBuddy。解压后运行 `python3 install.py`（Windows：`py -3 install.py`）。
+          - `meeting_offline-*-upload.zip`：直接上传到 ChatGPT、Claude.ai，或在 WorkBuddy 里导入。
+
+          详细说明见 [README](https://github.com/${{ github.repository }}#readme)。
+          EOF
+
+      - name: Refresh notes of the existing release
+        if: env.SKIP == '1'
+        run: gh release edit "v$VERSION" --notes-file notes.md
+
+      - name: Publish release
+        if: env.SKIP != '1'
+        run: |
+          # --latest: the newest release is the latest one, whatever older tags exist
+          gh release create "v$VERSION" dist/*.zip --target "$GITHUB_SHA" --latest \
+            --title "meeting_offline $VERSION" --notes-file notes.md

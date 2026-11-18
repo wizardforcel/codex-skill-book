@@ -1,0 +1,86 @@
+properties:
+  file.name:
+    displayName: 文件
+  file.folder:
+    displayName: 文件夹
+  type:
+    displayName: 类型
+  status:
+    displayName: 状态
+  truth_status:
+    displayName: 可信状态
+  area:
+    displayName: 区域
+  summary:
+    displayName: 摘要
+  route_target:
+    displayName: 建议位置
+  project_status:
+    displayName: 项目状态
+  review:
+    displayName: 审核
+  confidence:
+    displayName: 置信度
+  file.mtime:
+    displayName: 修改时间
+views:
+  - type: table
+    name: 待确认
+    filters:
+      and:
+        - 'file.inFolder("02_入库处理区/02_入库候选")'
+        - 'file.hasTag("入库/待确认")'
+    order:
+      - file.name
+      - type
+      - status
+      - truth_status
+      - area
+      - summary
+      - route_target
+      - review
+      - confidence
+      - file.mtime
+  - type: table
+    name: 允许入库
+    filters:
+      and:
+        - 'file.hasTag("入库/允许")'
+    order:
+      - file.name
+      - file.folder
+      - type
+      - status
+      - truth_status
+      - area
+      - summary
+      - route_target
+      - file.mtime
+  - type: table
+    name: 待归类
+    filters:
+      and:
+        - 'file.inFolder("02_入库处理区/03_待归类")'
+        - 'file.hasTag("归类/待归类")'
+    order:
+      - file.name
+      - type
+      - status
+      - truth_status
+      - area
+      - summary
+      - route_target
+      - file.mtime
+  - type: table
+    name: 拒绝入库
+    filters:
+      and:
+        - 'file.hasTag("入库/拒绝")'
+    order:
+      - file.name
+      - file.folder
+      - type
+      - status
+      - truth_status
+      - review
+      - file.mtime

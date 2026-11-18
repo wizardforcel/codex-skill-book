@@ -1,0 +1,27 @@
+# Gradle and native build outputs
+.gradle/
+build/
+.cxx/
+.externalNativeBuild/
+app/release/
+*.apk
+*.aab
+*.aar
+*.ap_
+*.dex
+*.class
+*.hprof
+
+# Machine configuration, signing keys and logs
+local.properties
+*.iml
+*.jks
+*.keystore
+*.log
+
+# Generated Capacitor plugins, web assets and configuration
+capacitor-cordova-android-plugins/
+app/src/main/assets/public/
+app/src/main/assets/capacitor.config.json
+app/src/main/assets/capacitor.plugins.json
+app/src/main/res/xml/config.xml

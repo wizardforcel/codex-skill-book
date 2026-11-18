@@ -1,0 +1,199 @@
+// 六爻流派体系:7 预设 + 独立开关并存。预设套默认开关组,改单项→school 标「自定义」。
+// 分歧点全做成可切换设置(土长生/月破/卦身/世身/飞伏/变卦装法/变爻作用范围/神煞/六神起法/长生用法/天时法/进退神土路径),不自裁。
+// 新增开关默认值一律=既有行为等价 → 升级零回归;「断诀/应期」为纯新增面,默认开。
+import { DEFAULT_SHENSHA_SET } from './liuyaoShenSha.js';
+import { safeLocalStorageGet, safeLocalStorageSet } from './safeStorage.js';
+
+export const DEFAULT_LIUYAO_SETTINGS = {
+	school: 'default',
+	askType: 'self',            // 占测事项 → 用神取用(liuyaoYongShen)
+	yongOverride: '',           // 手动指定用神六亲(''=跟占测事项自动;父母/兄弟/子孙/妻财/官鬼/世/应)
+	yuepoMode: 'inMonth',       // 月破:当月有效 / 'always' 长期标破
+	tuChangsheng: 'water',      // 土长生:水土同宫(申)/'fire' 火土同宫(寅)/'off' 关
+	bianyaoScope: 'traditional', // 变爻作用范围:传统(回头本位)/'blind' 盲派扩展
+	guashen: true,              // 月卦身显示
+	fushen: 'missing',          // 飞伏:'missing' 仅缺用神取 / 'all' 逐爻全标
+	biangua: 'full',            // 变卦:'full' 全装变卦表(=旧版恒显之卦,零回归默认) / 'movingOnly' 仅显变爻行
+	shensha: { on: true, set: DEFAULT_SHENSHA_SET.slice(), base: 'day' }, // 基础神煞(既有 10 种)
+	guirenFa: 'standard',       // 贵人歌诀:standard 甲戊庚牛羊(默认=现状,庚丑未) / 'geng_ma_hu' 庚辛逢马虎(庚寅午)
+	sixGods: true,              // 六神显示
+	yearBoundary: 'lichun',     // 定年界线(年支类神煞):'lichun' 立春 / 'lunar' 正月初一
+	coinFace: 'standard',       // 摇钱字背口径:'standard' 背为阳 / 'alt' 字为阳(手动录入与寻物盘用)
+	randomAlgo: 'coins',        // 随机起卦概率源:'coins' 三钱(老阳老阴各1/8,默认=现状) / 'yarrow' 大衍蓍草(3/16·1/16)
+	randomConfirm: false,       // 随机前确认:开=当前卦为手动来源时,整卦/逐爻随机先弹确认防误覆盖
+	defaultYaoState: 'shaoyang', // 手动录入默认爻态:'shaoyang' 少阳(默认=现状) / 'shaoyin' 少阴
+	bianguaSimplify: false,     // 之卦简显:开=之卦装卦表仅动爻位标五行六亲(非动爻只留爻象地支)
+	relatedCards: null,         // 关联卦显隐:null=全显(之/互/伏/综/错,默认) / ['bian','hu','fu','zong','cuo'] 子集
+	wangShuaiCol: true,         // 装卦表「旺衰」列显示
+	showTips: true,             // 悬停提示(藏干/卦身/世身/状态断语等 title 族)总开关
+	yaoHotkeys: false,          // 改爻快捷键:开=键盘 1-6 翻对应爻动/静(输入框聚焦时不响应)
+	titleAlign: 'center',       // 盘顶信息区对齐:'center' 居中(默认) / 'right' 靠右
+	writeDir: 'bottomUp',       // 装卦表行序:'bottomUp' 上爻在上(默认)/'topDown' 初爻在上
+	// —— 扩展(断易天机/古法/断诀/应期) ——
+	shenshaEx: { on: false, set: null }, // 扩展神煞:set=null 表示启用时全选
+	shishen: 'off',             // 世身:'off'/'standard'(子午持世身居初)/'lichunfeng'(亥子持世身居初)
+	yueLiushen: false,          // 月建六神并注(不替代日干六神)
+	jinTuiTu: 'chain',          // 进退神土路径:'chain' 丑辰未戌连环(含戌→丑)/'break' 戌丑断开
+	changshengYinYang: 'ziping', // 开局信息卡生旺墓:'ziping' 分阴阳 / 'classic' 古法不分
+	changshengUse: 'full12',    // 长生显示口径:'full12' 十二宫全用 / 'four' 只标生旺墓绝
+	tianshiSchool: 'fumu',      // 天时占法:'fumu' 父母雨子孙晴(通行)/'ancient' 古法多套
+	yuqi: false,                // 四墓月余气加强附标
+	yingqi: true,               // 应期卡
+	doctrine: true,             // 断诀命中/占类断语 总开关
+	gufa: false,                // 古法进阶组(三限/十六变/升降/卦生/直符/八节卦气)
+	benming: '',                // 占者本命年支(随官入墓·命式用;空则跳过)
+};
+
+export const LIUYAO_PRESETS = {
+	// 「卜筮正宗」预设覆盖集与缺省逐项相同(60/60 样本 0 差异)→ 通用即卜筮正宗口径,
+	// 标签写明;bushi 档保留键(旧记录 / 快照 school=bushi 仍解析、结果与通用逐字同)但不再单列在选择器里(hidden)。
+	default: { label: '通用（卜筮正宗口径）', overrides: {} },
+	zengshan: { label: '增删卜易(野鹤)', overrides: { guashen: false, fushen: 'missing', shensha: { on: false }, changshengUse: 'four' }, note: '重用神旺衰、删繁就简、弃卦身、几弃神煞;长生只取生旺墓绝' },
+	bushi: { label: '卜筮正宗（＝通用）', hidden: true, overrides: { guashen: true, shensha: { on: true, set: DEFAULT_SHENSHA_SET.slice() } }, note: '重卦身、用神生克、神煞中等(与通用缺省逐项相同)' },
+	yiyin: { label: '易隐', overrides: { guashen: true, fushen: 'all', shensha: { on: true, set: DEFAULT_SHENSHA_SET.concat(['文昌']) }, shenshaEx: { on: true, set: null } }, note: '重卦身、逐爻全标飞伏、神煞极繁' },
+	xinpai: { label: '邵伟华新派', overrides: { guashen: false, shensha: { on: false }, askType: 'self', changshengUse: 'four' }, note: '先世爻旺衰再定喜忌、弱化神煞、不用卦身;附旺衰量化' },
+	mangpai: { label: '盲派', overrides: { bianyaoScope: 'blind', guashen: false, shensha: { on: false } }, note: '重象、扩大变爻作用范围(变爻可作用本卦他爻)' },
+	tianji: { label: '断易天机(古法)', overrides: { guashen: true, shishen: 'standard', fushen: 'all', shensha: { on: true, set: DEFAULT_SHENSHA_SET.slice() }, shenshaEx: { on: true, set: null }, yueLiushen: true, changshengUse: 'full12', tianshiSchool: 'ancient', gufa: true, doctrine: true }, note: '火珠林古法:全神煞+飞伏生克+卦身世身并用+月建六神+十六变升降三限' },
+};
+
+export const LIUYAO_SCHOOL_OPTIONS = Object.keys(LIUYAO_PRESETS).filter((k) => !LIUYAO_PRESETS[k].hidden).map((k) => ({ value: k, label: LIUYAO_PRESETS[k].label }));
+
+function deepMergeShensha(base, ov){
+	if(!ov){ return { ...base }; }
+	return { on: ov.on != null ? ov.on : base.on, set: ov.set ? ov.set.slice() : base.set.slice(), base: ov.base || base.base };
+}
+function deepMergeShenshaEx(base, ov){
+	if(!ov){ return { on: base.on, set: base.set ? base.set.slice() : null }; }
+	return { on: ov.on != null ? ov.on : base.on, set: ov.set === undefined ? (base.set ? base.set.slice() : null) : (ov.set ? ov.set.slice() : null) };
+}
+
+// 不属「流派口径」的键:输入键(逐问题输入:占测事项/用神手选/本命年支)与显示、起卦体验键。
+//   ① sameAsPreset 不比对它们 —— 增删卜易下选「求财」或拨书写方向,流派不再被打成「自定义」;
+//   ② applyPreset(presetKey, current) 切派时保留其当前值(此前以出厂缺省为底一并重置);
+//      例外:预设自己点名写了的键以预设为准(邵伟华新派「占测事项归自身」)。
+//   缺省流派 + 未改这些键时输出逐字节不变。
+export const LIUYAO_NON_SCHOOL_KEYS = [
+	'askType', 'yongOverride', 'benming',
+	'coinFace', 'randomAlgo', 'randomConfirm', 'defaultYaoState', 'bianguaSimplify', 'relatedCards',
+	'wangShuaiCol', 'showTips', 'yaoHotkeys', 'titleAlign', 'writeDir',
+];
+
+export function applyPreset(presetKey, current){
+	const p = LIUYAO_PRESETS[presetKey] || LIUYAO_PRESETS.default;
+	const ov = p.overrides || {};
+	const merged = { ...DEFAULT_LIUYAO_SETTINGS, ...ov, school: presetKey };
+	merged.shensha = deepMergeShensha(DEFAULT_LIUYAO_SETTINGS.shensha, ov.shensha);
+	merged.shenshaEx = deepMergeShenshaEx(DEFAULT_LIUYAO_SETTINGS.shenshaEx, ov.shenshaEx);
+	if(current && typeof current === 'object'){
+		LIUYAO_NON_SCHOOL_KEYS.forEach((k)=>{
+			if(current[k] !== undefined && ov[k] === undefined){ merged[k] = current[k]; }
+		});
+	}
+	return merged;
+}
+
+// 「恢复默认设置」:全部键回出厂默认(含占测事项、用神手选、本命年支与显示 / 起卦习惯),流派回「通用」。
+//   出厂神煞表复制一份,不与 DEFAULT_LIUYAO_SETTINGS 共享数组引用。
+export function factoryLiuyaoSettings(){
+	return normalizeLiuyaoSettings(null);
+}
+
+// 多选「改一项」的增量:用户点击那一刻看到的一组(prevArr)→ 点完的一组(nextArr),加了谁、去了谁。
+// 盘面那一组可能是载入事盘带来的,与本机记住的那一组不同 —— 落盘时只把这一下叠到记住的那一组上,不把盘面整组写进去。
+export function selectionDelta(prevArr, nextArr){
+	const prev = Array.isArray(prevArr) ? prevArr : [];
+	const next = Array.isArray(nextArr) ? nextArr : [];
+	const prevSet = new Set(prev);
+	const nextSet = new Set(next);
+	return {
+		add: next.filter((x)=>!prevSet.has(x)),
+		remove: prev.filter((x)=>!nextSet.has(x)),
+	};
+}
+
+// 把增量叠到一组上:base ∪ add − remove。顺序按 universe(选项表顺序,与多选框 onChange 的顺序同一口径;
+// 不在表里的旧名排在后面、保持原序),否则「去掉再勾回」会因顺序不同被当成改了流派。
+export function applySelectionDelta(baseArr, delta, universe){
+	const base = Array.isArray(baseArr) ? baseArr : [];
+	const d = delta || {};
+	const removeSet = new Set(Array.isArray(d.remove) ? d.remove : []);
+	const out = base.filter((x)=>!removeSet.has(x));
+	(Array.isArray(d.add) ? d.add : []).forEach((x)=>{ if(out.indexOf(x) < 0 && !removeSet.has(x)){ out.push(x); } });
+	if(!Array.isArray(universe) || !universe.length){ return out; }
+	const rank = (x)=>{ const i = universe.indexOf(x); return i < 0 ? universe.length : i; };
+	return out.map((x, i)=>({ x, i })).sort((a, b)=>(rank(a.x) - rank(b.x)) || (a.i - b.i)).map((o)=>o.x);
+}
+
+export function setOption(settings, key, value){
+	const next = { ...(settings || DEFAULT_LIUYAO_SETTINGS) };
+	if(key === 'shensha'){ next.shensha = { ...next.shensha, ...value }; }
+	else if(key === 'shenshaEx'){ next.shenshaEx = { ...next.shenshaEx, ...value }; }
+	else { next[key] = value; }
+	const presetKey = next.school === 'custom' ? null : next.school;
+	if(presetKey && !sameAsPreset(next, presetKey)){ next.school = 'custom'; next.schoolBase = presetKey; }
+	if(next.school === 'custom'){ rematchPreset(next); }
+	return next;
+}
+
+// 自定义态下改回到偏离前流派(schoolBase)的组合 → 归回该流派;此前 custom 只进不出,改一项再改回仍显示「自定义(已偏离预设)」。
+// 凑成别的预设不改标(仍是自定义组合,齿轮 / 回放链同此语义)
+function rematchPreset(next){
+	const hit = next.schoolBase && LIUYAO_PRESETS[next.schoolBase] && sameAsPreset(next, next.schoolBase) ? next.schoolBase : null;
+	if(hit){ next.school = hit; delete next.schoolBase; }
+}
+
+function sameAsPreset(settings, presetKey){
+	const base = applyPreset(presetKey);
+	const keys = Object.keys(DEFAULT_LIUYAO_SETTINGS).filter((k) => k !== 'school' && LIUYAO_NON_SCHOOL_KEYS.indexOf(k) < 0); // 输入/体验键非流派口径
+	return keys.every((k) => {
+		if(k === 'shensha'){
+			return base.shensha.on === settings.shensha.on && base.shensha.base === settings.shensha.base
+				&& JSON.stringify(base.shensha.set) === JSON.stringify(settings.shensha.set);
+		}
+		if(k === 'shenshaEx'){
+			return base.shenshaEx.on === settings.shenshaEx.on && JSON.stringify(base.shenshaEx.set) === JSON.stringify(settings.shenshaEx.set);
+		}
+		return base[k] === settings[k];
+	});
+}
+
+export function normalizeLiuyaoSettings(raw){
+	if(!raw || typeof raw !== 'object'){
+		return { ...DEFAULT_LIUYAO_SETTINGS, shensha: { ...DEFAULT_LIUYAO_SETTINGS.shensha, set: DEFAULT_LIUYAO_SETTINGS.shensha.set.slice() }, shenshaEx: { ...DEFAULT_LIUYAO_SETTINGS.shenshaEx } };
+	}
+	const out = { ...DEFAULT_LIUYAO_SETTINGS, ...raw };
+	out.shensha = deepMergeShensha(DEFAULT_LIUYAO_SETTINGS.shensha, raw.shensha);
+	out.shenshaEx = deepMergeShenshaEx(DEFAULT_LIUYAO_SETTINGS.shenshaEx, raw.shenshaEx);
+	if(!LIUYAO_PRESETS[out.school] && out.school !== 'custom'){ out.school = 'default'; }
+	return out;
+}
+
+// 选项键(任一变 → 重算中右栏 + AI 快照)
+export function getLiuyaoOptionsKey(settings){
+	const s = normalizeLiuyaoSettings(settings);
+	// 🔴 键清单须含全部会改变判读的设置:曾漏 yongOverride → 压测「每设置改变必触发重算」
+	// 的断言对它空转(运行时缓存键走 JSON.stringify(settings) 无实害,oracle 面必须补齐)。
+	return [s.school, s.askType, s.yongOverride, s.yuepoMode, s.tuChangsheng, s.bianyaoScope, s.guashen, s.fushen, s.biangua,
+		s.shensha.on, s.shensha.base, (s.shensha.set || []).join('|'), s.guirenFa, s.sixGods, s.yearBoundary, s.coinFace, s.writeDir,
+		s.shenshaEx.on, (s.shenshaEx.set || ['ALL']).join('|'), s.shishen, s.yueLiushen, s.jinTuiTu,
+		s.changshengYinYang, s.changshengUse, s.tianshiSchool, s.yuqi, s.yingqi, s.doctrine, s.gufa, s.benming,
+		// [G 批] 起卦体验+显示新键:与 writeDir/coinFace 先例同律全入 key——右栏读 analysis.settings,
+		// key 不变则 analysis 不重建,新键即死开关(显示键重算一次成本可忽略,快照文本不消费它们=字节稳)。
+		s.randomAlgo, s.randomConfirm, s.defaultYaoState,
+		s.bianguaSimplify, (s.relatedCards || ['ALL']).join('|'), s.wangShuaiCol, s.showTips, s.yaoHotkeys, s.titleAlign].join(',');
+}
+
+// ── 跨会话持久化(独立轻量,不依赖 AI 存储;走 safeStorage=配额满自动清理重试,FL-4 治理口径) ──
+const LS_KEY = 'horosa.liuyao.settings.v1';
+export function loadPersistedLiuyaoSettings(){
+	try{
+		const raw = safeLocalStorageGet(LS_KEY);
+		return raw ? normalizeLiuyaoSettings(JSON.parse(raw)) : null;
+	}catch(e){ return null; }
+}
+export function persistLiuyaoSettings(s){
+	try{
+		const o = normalizeLiuyaoSettings(s);
+		safeLocalStorageSet(LS_KEY, JSON.stringify({ ...o, benming: o.benming || '' }));
+	}catch(e){ /* 配额/隐私模式静默忽略 */ }
+}

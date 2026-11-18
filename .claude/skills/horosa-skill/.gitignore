@@ -1,0 +1,60 @@
+.DS_Store
+Thumbs.db
+
+.env
+.python-version
+
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.venv/
+
+.idea/
+# 🔴 目录整体忽略时，`!.vscode/mcp.json` 这类反选是**无效**的 —— git 不会下降到一个被忽略的
+# 目录里去看有没有例外。必须写成 `.vscode/*`（忽略其中的条目而非目录本身），反选才生效。
+.vscode/*
+!.vscode/mcp.json
+
+horosa-skill/.coverage
+horosa-skill/dist/
+horosa-skill/build/
+
+# horosa-core-js JS deps (lunar-javascript) — a build artifact. The runtime builders run
+# `npm install --omit=dev` and bundle node_modules into the payload; package-lock.json IS committed.
+horosa-skill/horosa-core-js/node_modules/
+
+vendor/runtime-source/
+# Offline-packaging node cache consumed by package_runtime_payload.sh (first-priority source).
+horosa-skill/vendor/
+
+# Local report QA artifacts generated during manual audits.
+HOROSA_IO_AUDIT_*/
+ds_technique_reports/
+all_technique_reports/
+horosa_*_report.json
+horosa_*_report.docx
+horosa_*_report.pdf
+.tmp_report_preview/
+
+# java instances launched with the repo as cwd write log4j logs under a literal
+# "${env:HOME:-...}" directory (unexpanded property path) — never commit runtime logs.
+${env:HOME*
+.horosa-logs/
+
+# local agent/session state — never upload
+.claude/
+.cursor/*
+!.cursor/mcp.json
+!.cursor/rules/
+.editorconfig
+# .gitattributes is repo policy (eol=lf + binary rules), NOT local state: ignoring it (0d98f4b) meant GitHub's
+# Windows checkouts never saw `eol=lf` and came out CRLF (v0.38.0 A5 lesson) — it is tracked again.
+*.local.md
+notes-local*
+.horosa-cache/
+
+# changelog kept local-only — never upload (full git history purged)
+CHANGELOG.md
+.upstream/

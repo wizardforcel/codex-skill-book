@@ -1,0 +1,178 @@
+# Report & memory workflow
+
+> 读者：AI 客户端。何时读：用户要结构化报告/文件，或要回查历史运行时。策略总纲：[`../SKILL.md`](../SKILL.md)。
+
+## 两种报告，别混
+
+| | 技法依据报告 | 咨询报告 |
+| --- | --- | --- |
+| 工具 | `horosa_technique_report` | `horosa_report_render` |
+| 内容 | 用了什么技法 / 什么口径 / 谁算的 / 段落全不全 / 版本链 | 你写的解盘结论 |
+| 需要 AI 正文 | **不需要**（确定性元数据） | **必须**（没有 `ai_report` 就不出终稿） |
+| 机器元数据 | 就是正文 | 正文里**禁止**出现 |
+| 格式 | markdown / json / docx / pdf | json / docx / pdf |
+
+## 每次输出都要带的技法尾注（必做）
+
+每个技法响应的 `data.technique_card` 是一张确定性的「这盘怎么来的」卡片。**给出结论后，把它原样转述
+成一段尾注**——技法名、口径（含 `排盘规则` 那两个晚子时开关）、算源、段数与导出契约是否干净、版本。
+
+- 不要改写、不要挑着说，尤其不要省略口径行：用户换过晚子时开关时，尾注缺这一行就是**静默错解**。
+- `compute.matches_declaration` 为 `false` 时必须明说「实测算源与声明不符，结果请谨慎采信」——
+  那正是 ken 端点静默回退本地脚手架的形状（HTTP 200 也可能是失败）。
+- `sections.contract_clean` 为 `false` 时如实说缺了哪几段，别把缺段说成「该技法就这些」。
+- 用户要文件时再调 `horosa_technique_report`（单次给 `run_id`，整场问答给 `group_id`）。
+  会话态会额外检出**跨技法口径冲突**（例如两个技法用了不同的晚子时开关 —— 它们的结论不可互证）。
+- `HOROSA_TECHNIQUE_CARD=0` 时卡片不出现，此时照常回答，不要编造一段尾注。
+
+```bash
+uv run horosa-skill report technique --group-id <group_id> --format markdown
+```
+
+## 合参（多技法交叉印证，v0.28.0；v0.50.0 重做）
+
+一问需要多技法互证时用 `horosa_hecan`（`query` + 出生数据 `birth` / 起课时刻 `context`，可显式 `tools`，上限 `max_tools`）。与 `horosa_dispatch` 同闸：闸门问的是所选技法问题的并集——设置问题按用户回答带 `agent_confirmed_settings` / `defaults_accepted`；事实（性别、起课时刻、对方出生数据）只能放进载荷，确认标记代替不了。
+
+- **选技法**：`tools` 写技法名，也可以写此前某次运行的 `run_id`（32 位十六进制；那次的结果原样复用、不重算，闸门不再问它）。
+  不给 `tools` 时按问题领域缺省配一对并在 `warnings` 披露（命理 八字 + 紫微 / 起课 六壬 + 奇门 / 运势 八字直断 + 紫微 / 卜卦 六爻 + 卜卦占星；
+  点名了一种就补同领域的另一种）；择日不配对，请点名两种择日法。
+- **少于两个技法算成 = 不是合参**：`cross_validation: false`、`consistency.all_clear: null`、`warnings` 明说——照单技法解读作答，并告诉用户没有交叉印证。
+- 它返回**合参模板**，不是终稿：
+
+1. 逐技法读段落：`techniques[].evidence` 是正文节选（上限 4000 字 / 技法，`evidence.note` 说放了几段、`read_rest` 是续读调用）；
+   MCP 返回的 `results.<tool>` 是各技法的阅读视图（节选正文此时不重复，`evidence.text_in` 指过去）；被预算裁掉的段按 `warnings` 续读。
+   CLI / 存档也带节选；全文 `horosa_memory_show(run_id=合参 run)` —— 合参 run 会把复用的子结果从原 run 接上（`child_runs` 列出每个技法的 run_id）。
+2. 填 `synthesis_contract.ai_fillable`：每技法一条结论（必须绑定该技法真实段落）、
+   `convergence`（仅多技法独立同判）、`divergence`（**逐条披露，不许平均、不许只挑一边**）、
+   `final_answer`（先直答，再依据与边界）。
+3. `consistency.setting_conflicts` 非空时先声明口径冲突（例如两技法晚子时开关不同 = 结论不可互证）。复用的本命盘出生时刻与这次不同会有警告——先与用户确认是不是同一个人。
+4. 要文件：`horosa_technique_report --group-id` 出方法报告；解读终稿走 `horosa_report_render`。
+
+## Structured report flow (MCP)
+
+```call
+horosa_report_render {"run_id": "<run_id>", "tool_name": "bazi_birth", "format": "docx", "ai_report": {"executive_summary": "日主……（只写盘面支持的结论）", "answer_text": "先直答，再引段落 [E2]……", "analysis_sections": [{"title": "四柱", "content": "见 [E2] 四柱与三元……"}], "recommendations": ["……"], "limitations": ["出生时刻按用户所给；只依据本次返回的段落"]}}
+```
+
+1. Call the calculation tool.
+2. Call `horosa_report_template` with the `run_id` and `tool_name`. It is a skeleton: six rules (`ai_instructions`), the section
+   list (`source_export_sections`: `cite_id` / `title` / `chars`) and `ai_fillable`. It does not repeat the chart text you already
+   read; if you no longer have it, make the `source_context.text_with` call (or pass `include_text: true`). Explain only the
+   sections the question needs.
+3. Fill the AI analysis fields **from the actual exported sections**: `answer_text`, `direct_answer`,
+   `executive_summary`, `analysis_sections`, `evidence`, `recommendations`, `limitations`.
+4. Passing `ai_report` to `report_render`/`report_from_tool` auto-writes the answer back to the run —
+   only call `horosa_memory_record_answer` when you store an answer WITHOUT rendering a report.
+5. Call `horosa_report_render` with `format` = `json`, `docx`, or `pdf` (`png` = the chart picture, `ics` = a calendar of
+   the dates stated in the result — both need no `ai_report`; see SKILL.md「盘图 / 日历」). The result's `file` card has the
+   absolute path, a `file://` URI, MIME type, size and sha256; clients on MCP 2025-06-18 or newer also get a
+   `resource_link` block — hand the user that link / path instead of pasting the file.
+6. Confirm the returned artifact exists and is retrievable via `horosa_memory_show` /
+   `horosa_memory_query`.
+
+**Checking a JSON report.** `report_index.ready_to_deliver` is measured on what you wrote, not on the deterministic
+text the report fills in. It is `false` until you supply `direct_answer` (or `answer_text`), `executive_summary`,
+`analysis_sections`, `recommendations` and `evidence`; `delivery_checklist.missing` names what is absent.
+`section_coverage_matrix` shows which chart sections you actually explained. A targeted answer that skips sections
+is still deliverable, so report those gaps rather than padding them.
+
+**Markdown in what you write is rendered** (v0.50.0): CommonMark plus pipe tables and `~~strike~~` — emphasis, links (real
+hyperlinks), lists (nested / ordered), quotes, code blocks, tables; a single newline is a line break; raw HTML is printed
+as text (only `<br>` is a break). Numbers you write are printed as written. The 核心结论 box is your `direct_answer`; when
+you pass only `ai_answer_text` it is the first real sentence of the reading (headings, tables and labels skipped) — no
+sentence, no box. Your `#` / `##` headings go into the table of contents. Everything you pass in one call
+(`ai_report` fields + `ai_answer_text`) is capped at 200,000 characters: above that `report.ai_report_too_large`
+(`details.largest_fields`), nothing written. The result's `answer_source` says whether the reading printed is the one you
+passed (`request`) or one stored on the run earlier (`stored`).
+
+**PDF and DOCX print only what you wrote.** Nothing is filled in for you: a section you leave out does not appear under
+「AI 解读」. The chart data is always there under 完整盘面, so write the reading itself and do not restate the chart. Only the
+JSON report carries deterministic text, for section coverage.
+
+**Reading runs back.** `horosa_memory_query` returns summaries (`run_id`, question, tools, artifact paths); pass
+`include_payload: true` only when you need stored payloads in the result. `horosa_memory_show` returns the run with
+each technique result in the reading view (reader text + section index, same budget as a fresh call); page a long
+text with `response_tool` + `response_sections` (+ `response_offset`), and pass `response_view: "full"` for the stored
+raw engine data. In the full view a result stays inside one MCP message: past about 900 KB the largest raw engine
+subtrees become `{"omitted": "too_large_for_mcp", ...}` placeholders and a line appears in `warnings`; the full copy
+stays on disk (`horosa-skill memory show <run_id>`).
+
+`text` searches what a person would search (question, answer, technique names, person names, chart text); words
+separated by spaces must all match; Simplified and Traditional match each other. After an upgrade of an old memory
+store the chart text of older runs is indexed gradually: `not_scanned: N` means N matching runs were not yet searched
+for chart text (their questions and answers were). Other filters: `entity` (a `name` you passed or a profile name /
+alias), `tool` (key, MCP name or Chinese name), `after` / `before` (a date = that whole day in `zone`; ISO date-time;
+"昨天" is refused with `memory.query.invalid_time` — convert it yourself), `group_id`, `limit` ≤ 100. Before saying a
+run does not exist, narrow with these filters and search again. Writing a second answer with
+`horosa_memory_record_answer` keeps the earlier one in `answer_history`. Deleting, exporting and rebuilding the store
+are CLI commands the user runs (`horosa-skill memory delete` — lists only, deletes with `--yes` —
+/
+`memory export` / `memory rebuild`).
+
+**Cite the chart by section number.** Every exported section has a `cite_id` (`E1`, `E2`, …) in the
+template's `source_export_sections`; the report prints it in front of that section's heading, and in the
+PDF a `[E3]` in your text is a link to it. End each judgement with the section it rests on
+(「……日主偏弱 [E3]」); a sentence with no `[E…]` must read as background or as uncertainty. Cite the
+user's own notes as 「（用户笔记《标题》第几行）」. `executive_summary` goes at the front of the report
+(at most four paragraphs, each with a citation); the topic-by-topic reading (`analysis_sections`) comes
+after the full chart; `limitations` is printed as 「不确定处与限制」 — birth-time sensitivity, school
+differences, questions the chart does not cover. The report labels your part as AI interpretation, separate
+from the engine text.
+
+**Human-facing DOCX/PDF reports read as consulting reports.** Do not put machine metadata, run IDs,
+schema names, raw JSON, or provenance tables into the visible body unless the user asks — those belong
+in JSON artifacts and memory metadata. Keep the `排盘规则: …` line quoted (see
+[`late-zi.md`](./late-zi.md)).
+
+## One-command CLI report (AI answer already written)
+
+```bash
+uv run horosa-skill report from-tool liureng_gods \
+  --format docx \
+  --question "用户的问题" \
+  --ai-answer-file answer.txt \
+  --input payload.json
+```
+
+- `--ai-answer-text` — short inline answer.
+- `--ai-answer-file` — full prose answer.
+- `--ai-report-file` — structured JSON with `direct_answer`, `analysis_sections`, `evidence`,
+  `recommendations`, `limitations`.
+
+## Interpretation style (detail)
+
+- Start with the direct conclusion; then the supporting sections (cite actual 四课/三传/宫位/相位
+  content, not generic theory).
+- Separate 机会 / 风险 / 时机 / 建议行动.
+- No specific question → comprehensive overall reading; specific question → prioritize it, avoid
+  textbook filler.
+- State limitations honestly (e.g. a conditional section absent, a switch not threaded) without
+  hiding behind them.
+
+## 语言（v0.51.0）
+
+`language`：`zh-CN` / `zh-TW` / `zh-HK` 定中文简繁；`en` = **英文界面 + 原文盘面**——封面、目录、章节名、基本信息的项目名、页脚是英文，
+盘面段（引擎输出）保持中文原文不译，封面注明；`ai_report` 用英文写（模板的 `ai_instructions` 会多一条）。其余值回 warnings 说未生效。
+
+## 输出路径（v0.40.0）
+
+三个报告工具的 `output_path` 只许落在报告输出目录（`HOROSA_SKILL_OUTPUT_DIR`，缺省 `<数据目录>/runs`）内：省略 = 存储层缺省产物路径；
+相对路径按输出目录解析；绝对路径必须在输出目录或 `HOROSA_REPORT_OUTPUT_ROOTS`（`os.pathsep` 分隔的白名单根，由用户在环境里配）之内，
+否则 `report.output_path_not_allowed`（`details.allowed_roots` 列出可写根，不写任何文件）。这三个工具的 MCP annotations 标 `destructiveHint=true`
+（`overwrite:true` 时会替换星阙自己写过的同名报告），客户端可能要求确认。
+
+v0.51.0 起点名的文件已在时**缺省不替换**（`overwrite:false`）：不管是谁写的，都另存 `名字-2.pdf`，结果
+`output_path_adjustment.reason = "exists_kept"`（带 `requested` / `saved_as`）。用户明说「覆盖原来那份」才传 `overwrite:true`：
+只替换星阙写过的报告，结果带 `replaced_existing: true` 与旧文件 `replaced_sha256`；用户自己的文件、存档、manifest 仍回 `existing_file`。
+排盘报告（`style:"chart"`）缺省不附这条记录已存的解读；要附传 `include_answer:true`。
+
+v0.50.0 起 `output_path` 在起盘、写回解读**之前**整体检查（`report_from_tool` 被拒时不起盘、不存档）：给目录 → 缺省文件名写在里面；
+没写扩展名 → 补上，结果 `output_path_adjustment` 写明；下面这些回 `report.output_path_unusable`，`details.reason` 说是哪一种、什么都没写：
+`existing_file`（只在 `overwrite:true` 时：点名的文件已在、又不是星阙写过的报告——这条 run 的存档 / manifest、用户自己的文件一律不替换）、
+`store_area`（记忆库、trace、档案、自备知识库、runtime 目录）、`extension_mismatch`（`.docx` 配 `format:"pdf"` 这类）、`name_too_long`、
+`path_refused_by_system`、`parent_not_directory`、`not_writable`、`no_free_name`；写盘时才暴露的问题是 `write_failed`。
+缺省文件名带样式（`_chart_report_` / `_analysis_report_`），同一秒内的调用各得各的名字（`-2`、`-3`）。不认识的 `format` 回 `report.format_unsupported`（`details.accepted` 列出可选值）。
+run 取到之后的每个错误都带 `details.run_id`。
+
+结果里出现下面的字段时**必须告诉用户**，不要只报「已生成」：`requested_output_path` = 目标正被别的程序占用（多半开着上一版），新报告另存到 `artifact_path`，旧文件没动；`degraded_from` + `degrade_reason` = 没能生成该格式，已退化成纯文本（`format` 是 `txt`；内容就是那份 PDF / DOCX 的人读内容，开头一句说明）；
+`figure_gaps` = 哪张盘图没画出来、为什么；`warnings` = 例如本机没有可嵌入的中文字体（PDF 的中文由阅读器字体显示，封面也写明）。

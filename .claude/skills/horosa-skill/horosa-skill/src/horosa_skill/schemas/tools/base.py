@@ -1,0 +1,416 @@
+"""所有技法输入的地基：FlexibleModel（extra=allow）、出生信息 BirthInput、不进广告层的旋钮标记、本命盘日界开关。"""
+from __future__ import annotations
+
+from typing import Any, ClassVar
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from horosa_skill.astro_rulers import (
+    HOUSE_SYSTEM_LABELS,
+    SUNRISE_MODE_DEFAULT,
+)
+from horosa_skill.western_vocab import CLASSICAL_DECLARED_FIELDS, CLASSICAL_UNDECLARED_FIELDS, classical_vocabulary_options
+
+
+def advertise_hidden_fields(model: type[Any]) -> frozenset[str]:
+    """输入模型可声明 `ADVERTISE_HIDDEN: ClassVar[frozenset[str]]`：这些字段**照常声明**（校验层照收、MCP 扁平签名
+    照收顶层键——未声明的键会被 FastMCP 的 arg model 静默丢掉，见 test_mcp_flat_surface_keys），只是不进广告层，
+    计入 `request` 描述里的「另 N 个高级旋钮」、全表与词表见 horosa_agent_guidance。
+    为什么（v0.40.0 tools/list 预算）：长尾口径旋钮每个广告出去 ~100 B，一个技法补齐上游几十个就是几 KB，
+    而全量面硬顶 256 KB 已近满；声明而不广告 = 零字节、功能与类型校验全保留。"""
+    hidden: set[str] = set()
+    for cls in getattr(model, "__mro__", ()):
+        hidden |= set(vars(cls).get("ADVERTISE_HIDDEN", ()) or ())
+    return frozenset(hidden)
+
+
+class FlexibleModel(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    agent_confirmed_settings: bool | None = None
+    defaults_accepted: bool | None = None
+    clarification_notes: str | None = None
+    # 自备知识库点名（knowledge/user.py）：条目 id / 标题 / `#标签` / `auto`。run_tool 在校验**之前**就把它取走——
+    # 不进 input_normalized、不进引擎请求、不进存档的 subject；只决定 data.knowledge_context 带哪些条目。
+    # 声明在这里是为了 MCP 顶层按名可传（FastMCP 丢未声明键），不进广告层（预算），用法见 SKILL.md 与 server_profile。
+    knowledge: list[str] | str | None = Field(default=None, json_schema_extra={"x-horosa-hidden": True})
+    # 命主档案名 / 别名（horosa_skill/profiles.py）：run_tool 在校验**之前**把档案里存的出生字段并进载荷（显式字段逐键优先），
+    # 本键不进 input_normalized / 引擎请求。与 knowledge 同理：声明只为 MCP 顶层按名可传，不进广告层（零字节），用法见 SKILL.md。
+    # 自己声明了 `profile` 的技法模型（天文地占的传本流派）照旧按它自己的意思（profiles.owns_profile_key）。
+    profile: str | None = Field(default=None, json_schema_extra={"x-horosa-hidden": True})
+
+    # v0.50.0：宫制 / 黄道在校验层就判（input_fields.parse_house_system / parse_zodiacal，`Vocabulary` 机制的同族）：
+    # 名称（Placidus / 整宫制 / whole sign / 整宮制…）→ 索引并进 warnings，越出引擎表的索引拒（tool.invalid_house_system，
+    # options 是全表）。印占模型的索引表不同（3=KP/Placidus、8=Alcabitus）：类上设 HSYS_FAMILY = "india"。
+    HSYS_FAMILY: ClassVar[str] = "astro"
+
+    @field_validator("hsys", "indiaHsys", mode="before", check_fields=False)
+    @classmethod
+    def _house_system_vocabulary(cls, value: Any, info: Any) -> Any:
+        from horosa_skill.input_fields import field_validator_for, parse_house_system
+
+        family = "india" if info.field_name == "indiaHsys" else ("india-hsys" if cls.HSYS_FAMILY == "india" else cls.HSYS_FAMILY)
+        return field_validator_for(lambda v: parse_house_system(v, family=family), info.field_name)(value)
+
+    @field_validator("zodiacal", mode="before", check_fields=False)
+    @classmethod
+    def _zodiac_vocabulary(cls, value: Any, info: Any) -> Any:
+        from horosa_skill.input_fields import field_validator_for, parse_zodiacal
+
+        return field_validator_for(parse_zodiacal, info.field_name)(value)
+
+
+def _unadvertised() -> Any:
+    """已声明（MCP 顶层按名可传、进 pydantic 校验层）但不进 tools/list 广告层的旋钮（长词表 → 预算）。
+
+    键表与取值由 horosa_agent_guidance 的 options_keys 给（agent_guidance/tool_table.py），广告层只在 `request`
+    描述里计数「另 N 个高级旋钮」（surfaces/mcp_schema.py 的 x-horosa-hidden）。
+    """
+    return Field(default=None, json_schema_extra={"x-horosa-hidden": True})
+
+
+class BirthInput(FlexibleModel):
+    date: str = Field(description="公历日期 YYYY-MM-DD（如 1995-06-03）；公元前配 ad=-1。")
+    time: str = Field(description="时间 HH:mm 或 HH:mm:ss（24 小时制，如 05:30）。")
+    zone: str = Field(description="时区：+08:00 这类固定偏移，或 IANA 名（如 Asia/Shanghai，按盘面日期自动折算）。")
+    # F17（上游 utils/timezone.js:124-151 unifyCnZone）：IANA Asia/Urumqi 且日期 ≥ 1949-10-01 时按北京时间
+    # （Asia/Shanghai）折算，载荷留 geoZone/zoneAdvisory 并进 warnings/技法卡。false=保留新疆地理时区（+06:00）；
+    # 直接给偏移（如 "+06:00"）也不归并。非 BirthInput 族模型经 request 逃生舱传。
+    cnUnifiedZone: bool | None = Field(default=None, description="北京时间统一（false=保留新疆时区）")
+    lat: str = Field(description="纬度：31n13（31°13'N）或十进制 31.2167（会自动归一）；南纬用 s。")
+    lon: str = Field(description="经度：121e28（121°28'E）或十进制 121.4667（会自动归一）；西经用 w。")
+    ad: int | None = Field(default=1, description="纪元：1=公元后（默认），-1=公元前。")
+    # 响应视图（所有技法工具通用，FlexibleModel 均接受）。MCP 面在进工具之前就取走它、自己整形（horosa_skill/result_view.py）；
+    # CLI / 服务层只认 "sections" / "titles"（service/envelope._apply_response_view）。完整快照照常存档（memory_show 可取回）。
+    response_view: str | None = Field(
+        default=None,
+        description="返回体视图：MCP 缺省 reading=正文+段索引+依据卡；sections=分段正文；titles=只给段索引；full=带原始引擎树（CLI 缺省即完整）。完整结果始终已存档。",
+    )
+    # 全表 0–24 由 astro_rulers.HOUSE_SYSTEM_LABELS（上游 AstroConst.HOUSE_SYSTEM_OPTIONS 镜像）生成——校验层描述，
+    # 不进 tools/list（广告层 hsys 走 mcp_schema.CORE_DOC + 0–8 enum，预算所限）。
+    # 缺省 1 = 星阙 DefaultHouseSystem（models/astro.js:29；无头挂载 aiAnalysisContext.js:494 `record.hsys ?? 1`、
+    # techniqueMountSettings.js:828 default 1）。v0.40.0 起随上游（此前 skill 缺省 0 整宫，与上游分叉）；
+    # 上游页面硬钉 0 的技法（七政 / 节气 / 择日 / 世运 / 印占）在各自模型显式覆盖回 0。
+    hsys: int | None = Field(
+        default=1,
+        description=(
+            "宫制：索引 0–24 或名称（Placidus / 整宫制 / whole sign…，按下表换成索引）："
+            + " ".join(f"{k}={v}" for k, v in HOUSE_SYSTEM_LABELS.items())
+            + "。缺省 1=Alcabitus（星阙 DefaultHouseSystem；七政 / 节气 / 择日 / 世运 / 印占等技法缺省 0=整宫）。注意 1 不是 Placidus（Placidus=3）。"
+        ),
+    )
+    # 地点显示名：进 [起盘信息]/配置段与搜索请求（样例载荷一直带它，此前 MCP 扁平面静默丢弃）。
+    pos: str | None = None
+    # 当事人显示名：随请求透传到后端并进盘头（样例载荷一直带它，此前 MCP 扁平面静默丢弃）。
+    name: str | None = None
+    tradition: bool | None = False
+    predictive: bool | None = True
+    southchart: bool | None = False
+    zodiacal: int | bool | None = Field(default=0, description="黄道：0=回归 tropical（默认），1=恒星 sidereal（配 siderealAyanamsa）。")
+    # 恒星黄道 ayanāṃśa (星阙 v2.6.4)：仅在 zodiacal=1(恒星) 时生效，选 47 个岁差模式之一
+    # (lahiri/raman/krishnamurti/fagan_bradley/…，见 astro_sidereal.SIDEREAL_AYANAMSA_LABELS)。
+    # 缺省(不传) == Lahiri，向后兼容回归黄道盘不受影响。贯穿全西洋技法盘(命占/合盘/中点/卜卦/三式/节气)。
+    siderealAyanamsa: Any | None = None
+    # 方向类型（上游 primaryDirectionSync.js:13-20，v3.13.0 起三值）：整数——后端按 `in (0, 1, 4)` 严格比较，字符串 '4'
+    # 会落进旧 flatlib 分支（vendored 实例实测）；声明 int 让 pydantic 把 "4" 归一成 4，2 / 3（界推运内部值）由
+    # service 值域闸拒收（pd_zr._pd_validate_options）。
+    pdtype: int | None = Field(default=None, description="主限方向类型：0 In Zodiaco（缺省）/ 1 In Mundo / 4 Field Plane。")
+    pdMethod: Any | None = None
+    pdTimeKey: Any | None = None
+    pdaspects: list[int | str] | None = None
+    # 主限法（星阙 v3.6.0 大改版）：顺/逆向、映点(antiscia)、界(terms) promissor 开关 + 年限上限。
+    # pdMethod 现为**方位法全谱 13 法**（旧「核5」注记已过期两代）；pdTimeKey（v3.13.0：38 项）含每盘常数
+    # Simmonite/生日黄经日行/Kepler/Brahe（及「经典」档）+ 动态 TrueSolarArc/VanDam/SymbolicSolarArc + 上升弧/垂直弧计时 + 自定义率；
+    # pdYears 上限 3000（>360 出多圈复发行）。仅在显式设置时透传（model_dump(exclude_none=True)），
+    # 缺省走后端默认（顺逆都开/映点界关/100 年）。白名单在上游 astropy/astrostudy/perchart.py。
+    pdDirect: Any | None = None
+    pdConverse: Any | None = None
+    pdAntiscia: Any | None = None
+    pdTerms: Any | None = None
+    pdYears: Any | None = None
+    # v3.6.0 正交解耦：弧算法(投影) × 盘面宫制(分宫) 拆成两个独立轴，不再由 pdMethod 一个键决定。
+    # 这些字段此前已能经 FlexibleModel extra 透传到后端并真实生效，但没有 schema 描述 = agent 发现不了，
+    # 等于事实上不可用。声明出来即解锁（零 service 改动）。
+    # 词表 = 上游 primaryDirectionSync.js SUPPORTED_PD_PROJECTIONS / SUPPORTED_PD_FRAMES（v3.13.0：14 / 12）；值域闸
+    # pd_zr._pd_validate_options（后端白名单外静默丢弃、改由 pdMethod 推导，快照却会照抄传入名）。
+    pdProjection: Any | None = Field(
+        default=None,
+        description="弧算法/投影（14 种：ptolemy 缺省/placidus/regiomontanus/campanus/topocentric/zodiacal/ra_direct/in_zodiaco_lon/in_zodiaco_abs/horosa_legacy/placidus_under_pole/morinus/horizontal/koch）：与 pdFrame 正交，决定弧与应期日期。",
+    )
+    pdFrame: Any | None = Field(
+        default=None,
+        description="盘面宫制/分宫（12 种：alcabitius 缺省/placidus/regiomontanus/campanus/topocentric/meridian/porphyry/equal/wholesign/morinus/koch/equal_hour_circle）：只改宫头不改弧。",
+    )
+    pdFramework: Any | None = Field(default=None, description="界行框架：aspect | bounds | release（hyleg/anareta 判读层）。")
+    pdSignificators: Any | None = Field(default=None, description="应星扩展：Desc/IC/Syzygy/Spirit/Cusps/Stars/Lots 等。")
+    pdPromissorTypes: Any | None = Field(default=None, description="迫星类型扩展：cusps / stars / lots。")
+    pdTimeKeyCustom: Any | None = Field(default=None, description="自定义时间钥匙速率（0.001–30 度/年）。")
+    pdParallel: Any | None = Field(default=None, description="赤纬平行是否计入（三类被限星之一）。")
+    pdRaptParallel: Any | None = Field(default=None, description="周日运动平行（rapt parallel）是否计入。")
+    # ── 主限法设置项登记表（星阙 v3.13.0，上游 primaryDirectionSync.js:69-95 PD_EXTRA_SETTING_SPECS，十键与后端
+    # perchart.PD_EXTRA_SETTING_KEYS、Java PdWire.SETTING_KEYS 同名同序）。后端 /predict/pd、/predict/pdchart、/chart
+    # 按名解析并在 params 回显归一值；skill 侧消费者 = pd_zr（值域闸 + [主限法设置] 自陈行 / [主限法盘设置] 日期年长行）。
+    # 全部 None = 不下发 = 后端缺省（= 上游缺省请求体），零回归。
+    pdGeometry: str | None = Field(default=None, description="几何口径：improved 改进（缺省，严格球面几何）| classic 经典（传统程序写法；只在部分方向×弧算法组合有差别）。")
+    pdAspectSide: int | None = Field(default=None, description="相位侧：0 两侧都出（缺省）| 1 只出右旋 | 2 只出左旋。")
+    pdTradConverse: int | bool | None = Field(default=None, description="传统逆向：1 开（缺省，应星被周日运动带到迫星相位点）| 0 新式逆向。")
+    pdIgnoreSigLat: int | bool | None = Field(default=None, description="忽略应星黄纬：0 否（缺省）| 1 是。")
+    pdIgnorePromLat: int | bool | None = Field(default=None, description="忽略迫星黄纬：0 否（缺省）| 1 是。")
+    pdLunarParallax: int | bool | None = Field(default=None, description="月亮视差（月亮作迫星取站心位置）：0 否（缺省）| 1 是。")
+    pdTruePosition: int | bool | None = Field(default=None, description="真位置（不计光行时、光行差）：0 否（缺省）| 1 是。")
+    pdSolarArcRegressive: int | bool | None = Field(default=None, description="逆向弧用出生前太阳（只对真太阳弧/Van Dam）：0 否（缺省）| 1 是。")
+    pdYearDays: int | None = Field(default=None, description="日期年长：0 实际天数（缺省）| 1 365/366 定长年（只改日期，弧不变）。")
+    pdPromAspectLat: int | None = Field(default=None, description="相位点黄纬（只对黄道制）：0 在黄道上（缺省）| 1 合冲带黄纬 | 2 余弦递减 | 3 线性递减 | 4 按宫位。")
+    # 古典参数全局化（星阙 v3.6.0）：以下 16 键由后端 webmodernsrv 统一透传给古典判读层，
+    # 影响 [古典] / [古典格局] 段的逐值结果（容许度、空亡口径、界表流派、交点性质…）。
+    # 与主限法同理：本仓早已能经 extra 透传，声明只为可发现性。
+    westNodeType: Any | None = Field(default=None, description="交点取法：真交点 / 平交点。")
+    sectBuffer: Any | None = Field(default=None, description="同异宗(sect)判定的地平缓冲角。")
+    # v3.13.1 日出 / 日没口径（classicalParamSpec.js:104-112；后端白名单 helper.py:245 / webchartsrv.py:116 / webmodernsrv.py:58 /
+    # Java 四 controller + astrostudycn ChartController:567-570）。缺省 center 不下发（上游 send:'nonDefault' = 缺省请求体零变）：
+    # 校验器把显式 'center' 归一成 None；值域外报 tool.invalid_payload。BirthInput 字段不在域核心 → 自动不进广告层（计入隐藏旋钮数）。
+    sunriseMode: str | None = Field(
+        default=None,
+        description="日出 / 日没口径：center=日心·不计折射（缺省）| apparent=日面上缘·含大气折射（历书）；影响七政日出安命 / 报时星 / 星盘信息日出日没。",
+    )
+
+    @field_validator("sunriseMode", mode="after")
+    @classmethod
+    def _sunrise_mode_non_default(cls, value: Any) -> Any:
+        # 词表（下面的 _classical_vocabulary）先把写法读成规范值；缺省档不下发（上游 send:'nonDefault' = 缺省请求体零变）。
+        return None if value == SUNRISE_MODE_DEFAULT else value
+
+    # v0.50.0：古典口径键（classicalParamSpec.js send:'nonDefault' 全表 + 恒星轨两键）一键一张词表（western_vocab）：
+    # 认得的写法（大小写 / 中文名 / 布尔）→ 规范值，认不出 → tool.invalid_option。此前 `ptolemaic` / `托勒密` / `True` 原样
+    # 下发，后端不认按缺省算，[起盘信息] 的「古典口径（非默认项）」行却照抄原值——行与盘不一致。
+    @field_validator(*CLASSICAL_DECLARED_FIELDS, mode="before")
+    @classmethod
+    def _classical_vocabulary(cls, value: Any, info: Any) -> Any:
+        from horosa_skill.western_vocab import parse_classical
+
+        return parse_classical(info.field_name, value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _classical_frontend_names(cls, data: Any) -> Any:
+        """恒星轨的前端名 fixedStarOrb / fixedStarOrbMode 未声明（走 extra，键名保留），同一张词表在这里判。"""
+        if not isinstance(data, dict) or not any(name in data for name in CLASSICAL_UNDECLARED_FIELDS):
+            return data
+        from horosa_skill.input_fields import FieldIssue, is_blank, note_parsed, pydantic_field_error
+        from horosa_skill.western_vocab import classical_vocabulary
+
+        out = dict(data)
+        for name in CLASSICAL_UNDECLARED_FIELDS:
+            if name not in out:
+                continue
+            if out[name] is None or is_blank(out[name]):
+                out.pop(name)
+                continue
+            try:
+                out[name] = note_parsed(classical_vocabulary(name).parse(out[name]), name)
+            except FieldIssue as issue:
+                raise pydantic_field_error(issue, name) from None
+        return out
+
+    @model_validator(mode="after")
+    def _custom_terms_need_tables(self) -> Any:
+        """termsVariant=4（自定义界表）要随盘 12 座表体：后端缺表静默回落埃及界，口径行却写「界系=自定义界表」。
+        上游回落本机编辑器仓；headless 没有仓 → 缺 customTermsDay 就拒（不替用户换回埃及界）。"""
+        if getattr(self, "termsVariant", None) != 4 or (isinstance(self.customTermsDay, list) and len(self.customTermsDay) == 12):
+            return self
+        from horosa_skill.input_fields import FieldIssue, pydantic_field_error
+
+        issue = FieldIssue(
+            "tool.invalid_option",
+            "termsVariant=4（自定义界表）要同时给 customTermsDay（12 座界表；夜表 customTermsNight 可缺）：缺表时后端按埃及界算。",
+            "termsVariant=4 (custom terms) needs customTermsDay (the 12-sign table; customTermsNight optional); without it the backend uses the Egyptian terms.",
+            expected_zh="0 埃及界 / 1 托勒密·校勘本 / 2 托勒密·经典传本 / 3 迦勒底；或 4 + customTermsDay",
+            expected_en="0 Egyptian / 1 Ptolemaic (critical) / 2 Ptolemaic (classical) / 3 Chaldean; or 4 with customTermsDay",
+            example=0, options=classical_vocabulary_options("termsVariant"),
+        )
+        raise pydantic_field_error(issue, "termsVariant")
+
+    cazimiOrb: Any | None = Field(default=None, description="核心内(cazimi)容许度。")
+    combustOrb: Any | None = Field(default=None, description="燃烧(combust)容许度。")
+    underBeamsOrb: Any | None = Field(default=None, description="日光下(under the beams)容许度。")
+    vocMode: Any | None = Field(default=None, description="月空(void of course)判定口径（六种之一）。")
+    vocIncludeOuter: Any | None = Field(default=None, description="月空判定是否计入外行星。")
+    starOrb: Any | None = Field(default=None, description="恒星触发容许度。")
+    antisciaOrb: Any | None = Field(default=None, description="映点(antiscia)容许度。")
+    viaCombustaVariant: Any | None = Field(default=None, description="燃烧之路(via combusta)区间口径。")
+    termsVariant: Any | None = Field(default=None, description="界(terms)表流派：埃及 / 托勒密 等。")
+    leoBoundFirst: Any | None = Field(default=None, description="狮子座界首主星口径。")
+    geminiBoundEmended: Any | None = Field(default=None, description="双子界表勘误（v3.6.0 修订）。")
+    triplicity: Any | None = Field(default=None, description="三分主星体系（Dorotheus / Ptolemy 等）。")
+    # saturnExalt20 已随上游 v3.9.3 删档（2026-08-18 上游拍板：degree 位全仓零消费者=真死开关，
+    # push_request_exalt_variants 签名 2→1 参）。typed 字段保留只会向 agent 广告一个死开关。
+    nodeExaltation: Any | None = Field(default=None, description="交点是否参与旺弱(exaltation)判定。")
+    # ── 古典参数 typed 化（v0.33.0 批 I-6：上游 WP-2~8 30 键补全声明；描述照 classicalParamSpec.js
+    # 标签逐条对齐，helper.py 45 键白名单为回显权威。全部 None=不发送=后端默认，零回归。──
+    dignityDebilities: Any | None = Field(default=None, description="弱陷计负分（陷 −5 · 落 −4；缺省开）。")
+    almutenTripMode: str | None = Field(default=None, description="Almuten 三分计分：all=三主全计（缺省）| sectRulerOnly=仅当值主。")
+    planetaryHourMethod: str | None = Field(default=None, description="行星时制式：sunrise=日出起算等长时（缺省）| unequal=昼夜不等时（传统）| equal24=廿四时等分。")
+    combustOwnChariotExempt: Any | None = Field(default=None, description="界内三分内免燃烧 own chariot（Porphyry；缺省关）。")
+    westLilithType: str | None = Field(default=None, description="黑月莉莉丝：mean=平均远地点（缺省）| true=真实远地点(osculating)。")
+    topocentricMoon: Any | None = Field(default=None, description="月亮站心视差修正（影响月亮黄经 ≤1°，福点随动；印占各盘恒用地心月；缺省关）。")
+    lotReversal: Any | None = Field(default=None, description="福点按昼夜反转（缺省开；关则恒昼式）。")
+    lotsDocReverse: Any | None = Field(default=None, description="婚·子·友·疾四点用文档序公式（缺省关）。")
+    hermeticLotsReversal: Any | None = Field(default=None, description="六星点按昼夜反转（福点另设；批判本校勘；缺省开，关则恒同式）。")
+    erosConstruction: str | None = Field(default=None, description="爱欲点构成：paulus=金星·水星系（缺省）| valens=福点·精神系。")
+    lotFortuneVariant: str | None = Field(default=None, description="福点公式变体：standard=标准昼夜式（缺省）| moonAboveNight=月在地平上恒夜式。")
+    lotFatherCombustAlt: Any | None = Field(default=None, description="父点土星伏时替代式（Dorotheus 系；缺省关）。")
+    lotProjection: str | None = Field(default=None, description="希腊点点度计数法：portion=度数投射（缺省）| sign=整星座。")
+    orbSystem: str | None = Field(default=None, description="容许度判据体系：perObject=星体轨任一覆盖（缺省）| byAspect=按相位名(合冲刑拱8°/六合4°) | wholeSign=整星座位相 | wholeSignMoiety=整星座内两轨半距和。")
+    luminaryOrbBonus: int | None = Field(default=None, description="发光体·四轴轨加成：0（缺省）/10/20/30（%）。")
+    orbs: dict[str, Any] | None = Field(default=None, description="逐星容许度覆盖（星体 id → 度；缺省用默认表）。")
+    orbScale: float | None = Field(default=None, description="容许度全局倍数（缺省 1.0）。")
+    aspectIncludeCusps: Any | None = Field(default=None, description="宫头参与相位（≤3°；缺省关）。")
+    aspectIncludeLots: Any | None = Field(default=None, description="希腊点参与相位（点为受体 ≤3°；缺省关）。")
+    aspectIncludeMidpoints: Any | None = Field(default=None, description="中点参与相位（日月四轴硬相 ≤1.5°；缺省关）。")
+    starOrbMode: str | None = Field(default=None, description="恒星轨档：school=按流派平轨（缺省）| byMagnitude=按星等。")
+    stationMarking: str | None = Field(default=None, description="留驻判定（盘面 S·D 标）：off=仅逆行R标（缺省）| exactWindow=距留点≤1日 | distance=距留点黄经≤2′ | absSpeed=日速<1′ | relSpeed=日速<3%均速。")
+    solarReturnVariant: str | None = Field(default=None, description="太阳返照法：precise=精确回归（缺省，现代）| hellenistic=希腊式（月定上升）。")
+    returnLatitudeMode: str | None = Field(default=None, description="返照落宫投影：ecliptic=黄道度（缺省）| withLatitude=计入黄纬（Umar al-Tabari 法）。")
+    houseCuspAdvance: int | None = Field(default=None, description="行星落宫宫头前移：5°（缺省，传统）/3/1/0（整宫制豁免）。")
+    vulcanCalc: str | None = Field(default=None, description="祝融星（推算行星）：off（缺省）| weston=轨道根数法 | baker=水星系推算。")
+    customTermsDay: Any | None = Field(default=None, description="自定义界表·昼表（termsVariant=4 时生效；非法整表回落埃及界）。")
+    customTermsNight: Any | None = Field(default=None, description="自定义界表·夜表（可缺=昼夜同表）。")
+    userAyanT0: float | None = Field(default=None, description="自定义恒星黄道参考历元 JD（siderealAyanamsa='user' 配套）。")
+    userAyanDeg: float | None = Field(default=None, description="自定义恒星黄道在 T0 历元的岁差度（'user' 配套）。")
+    # 快照口径键（send:'never'——不进 /chart，只改导出段；BirthInput 字段不进 tools/list 广告层）：
+    # [古典·显赫计分] 主宰光体判定四键（classicalParamSpec.js）+ [信息]/[古典格局] 互容接纳过滤 + [埃及历] 七轴（egypt_*）。
+    busyPlaces: str | None = Field(default=None, description="有利宫位集：'1,4,5,7,10,11'（缺省）| '1,4,7,10' | '1,2,4,5,7,9,10,11' | '1,3,4,5,7,9,10,11'。")
+    dynamicalDivisions: Any | None = Field(default=None, description="动力学区分（象限强度分区）：0（缺省）/1。")
+    domicileMasterMethod: str | None = Field(default=None, description="主宰主星判法：domicile 庙主派（缺省）| bound 界主派。")
+    rayWeighting: str | None = Field(default=None, description="七射线权重：off（缺省）| equal | weighted。")
+    showOnlyRulExaltReception: Any | None = Field(default=None, description="仅按本垣/擢升计算互容接纳（[信息] 接纳互容行与 [古典格局] 格局速览·先验权力同口径）：0（缺省）/1。")
+    # 埃及历七轴取值 = egyptianSchools.EGYPT_SCHOOL_AXES（首项默认档；认不出的值报 tool.egypt_invalid_setting）。
+    egypt_decanRuler: str | None = Field(default=None, description="埃及历·旬主星制：chaldean 迦勒底外貌（缺省）| triplicity 三分性旬星。")
+    egypt_decanAnchor: str | None = Field(default=None, description="埃及历·旬序锚定：greek 希腊化回归（缺省）| ancient 古代恒星。")
+    egypt_decanNaming: str | None = Field(default=None, description="埃及历·旬名录传统：egypt 埃及本名（缺省）| coptic 科普特-希腊名 | hermes 赫尔墨斯名。")
+    egypt_starClock: str | None = Field(default=None, description="埃及历·星钟法：diagonal 对角星钟·升起法（缺省）| transit 过中天星钟。")
+    egypt_calendarAnchor: str | None = Field(default=None, description="埃及历·历法锚点：ce139 公元 139 年重合点（缺省）| nabonassar 那波那萨尔纪元 | philip 腓力纪元。")
+    egypt_petosirisMod: int | None = Field(default=None, description="埃及历·Petosiris 模数：29（缺省）| 30。")
+    egypt_godEdition: str | None = Field(default=None, description="埃及历·众神版本：seamless 无缺口自洽版（缺省）| variant 通行变体。")
+    gpsLat: float | None = None
+    gpsLon: float | None = None
+    includePrimaryDirection: bool | None = None
+    simpleAsp: bool | None = None
+    # wave 3b：本命 / 十三分 / 十二分 / 希腊分盘缺省随上游发 0（models/astro.js:105-108、aiAnalysisContext.js:567 buildFieldObject
+    # `record.strongRecption ?? 0`）；不发则 perchart.py:814 缺省严格 → [信息] 接纳/互容与上游缺省盘不同（service._apply_chart_request_defaults）。
+    strongRecption: bool | None = Field(
+        default=None,
+        description="严格接纳开关：false/0（缺省，随上游本命/十三分/十二分/希腊分盘请求）=五种尊贵任一即算接纳；true/1=只认本垣/擢升。"
+        "调波/龙盘/重置盘不带该键（后端缺省严格），显式传值永远优先。",
+    )
+    virtualPointReceiveAsp: bool | None = None
+    doubingSu28: bool | None = None
+    nodeRetrograde: bool | None = None
+    asporb: float | None = 1.0
+    datetime: str | None = None
+    dirLat: str | None = None
+    dirLon: str | None = None
+    dirZone: str | None = None
+    startSign: str | None = None
+    stopLevelIdx: int | None = None
+
+
+class _AscRaModeKnob(BaseModel):
+    """赤道类盘「上升取法」两档（上游 v3.14.0 utils/ascRaMode.js）：improved 上升点真赤经（缺省）| classic 旧版取的东点黄经。
+    后端四轴赤经 v3.14.0 起是真值，旧值作为上升点的 eastPointLon 单独下发；经典档只把上升点一个对象的 ra 换成它（vendored
+    withAscRaMode）。各技法只在读上升赤经的口径下生效：宿占 / 节气盘宿盘 = ASC 起盘；七政 = 赤仪宿度制；三式合一 = 外圈赤道分宫。
+    声明而不广告（tools/list 预算），说明进 horosa_agent_guidance 的 options_keys。mixin 而不进 BirthInput：同 _ChartDayBoundaryKnobs。"""
+
+    ADVERTISE_HIDDEN: ClassVar[frozenset[str]] = frozenset({"ascRaMode"})
+    ascRaMode: str | None = Field(
+        default=None,
+        description="上升取法：improved 改进·上升点真赤经（缺省）| classic 经典·东点黄经（旧版口径，命宫 / 上升落宿可能换位）。"
+        "只在读上升赤经的口径下生效：宿占与节气盘 [X宿盘] = houseStartMode 1（ASC 起盘）；七政 = 赤仪宿度制（doubingSu28 0/1/5/7/8）；"
+        "三式合一 = outerCoord equatorial。其余口径下给 classic 不改结果并进 warnings；生效时快照写明「上升取法：…」。",
+    )
+
+    @field_validator("ascRaMode", mode="before")
+    @classmethod
+    def _asc_ra_mode_vocabulary(cls, value: Any) -> Any:
+        from horosa_skill.input_fields import parse_with
+        from horosa_skill.western_vocab import ASC_RA_MODE
+
+        return parse_with(ASC_RA_MODE, "ascRaMode", value)
+
+
+# [寿命格局] 取主法（上游 AstroLifespan.js:14-18；上游是全局设置 horosa.lifespan.method，skill 按调用传）。
+_LIFESPAN_METHOD_DESC = "[寿命格局]取主法：ptolemy 托勒密（缺省）| alcabitius | dorotheus"
+
+
+class _ChartDayBoundaryKnobs(BaseModel):
+    """西占 chart 家族的日界两键（wave 3b）：只进 [起盘信息] 的时间基准行与排盘规则行（astroAiSnapshot.js:446-455；上游页面 /
+    AI 挂载 fields 恒带二键、缺省 dayBoundary 出厂 1/1，service._chart_family_snapshot_fields 同补），不进 /chart 请求（Python 盘
+    不算四柱）。声明而不广告（tools/list 预算；🔴 不能放进 BirthInput——`advertised_technique_schema` 以「不在 BirthInput 里」判
+    子类自有字段，放进去会把紫微/八字/奇门等中式工具**已广告**的同名键静默挤出广告层）。说明进 western_options_doc → guidance。"""
+
+    ADVERTISE_HIDDEN: ClassVar[frozenset[str]] = frozenset({"after23NewDay", "lateZiHourUseNextDay"})
+    after23NewDay: int | bool | None = Field(
+        default=None,
+        description="日界开关（西占盘只进 [起盘信息] 时间基准/排盘规则两行，不改星位）：1=23 点换日（缺省，上游 dayBoundary 出厂值）0=24 点换日。",
+    )
+    lateZiHourUseNextDay: int | bool | None = Field(
+        default=None,
+        description="晚子时时柱开关（同上两行）：1=时干按次日日干起子时（缺省）0=按当日日干。",
+    )
+
+
+class _ChartDetailKnobs(BaseModel):
+    """[盘面细节] 的五项口径 + 「当前表」（上游 v3.14.0 utils/chartDetails.js：CHART_DETAIL_OPTIONS / CHART_DETAIL_DEFAULTS /
+    CHART_DETAIL_TABLES；AI 挂载齿轮 techniqueMountSettings.js「盘面细节」组同五键）。只挂在真出这一段的工具上（本命盘 / 重置盘 /
+    占星地图——上游 pipeline.js 给改黄道读数框架的派生盘跳过）。声明而不广告（tools/list 预算；同 `_ChartDayBoundaryKnobs`，
+    不能放进 BirthInput）。词表 western_vocab.CHART_DETAIL_VOCABULARIES：认不出 → tool.invalid_option（后端对认不出的值静默回缺省）。
+    说明进 western_options_doc → horosa_agent_guidance 的 options_keys。"""
+
+    ADVERTISE_HIDDEN: ClassVar[frozenset[str]] = frozenset({
+        "detailFaces", "detailVariant", "detailLunar", "detailMundo", "detailMidpoint", "detailTable",
+    })
+    detailFaces: str | None = Field(
+        default=None,
+        description="[盘面细节] 面的算法：chaldean 迦勒底面（缺省）| element 元素面。改专题主星 / 偶然尊贵 / 波斯尊贵 / 互容 / 行星关系 / 寿主 / 气质 / 奴役判据 / 度数性质。",
+    )
+    detailVariant: str | None = Field(
+        default=None,
+        description="[盘面细节] 算法档：improved 改进（缺省）| classic 经典（保留旧口径：偶然尊贵不补三项、托勒密寿主旧取法、成相表固定真交点、"
+        "广义时位线性极角、度数性质两派旧表）。",
+    )
+    detailLunar: str | None = Field(
+        default=None,
+        description="[盘面细节] 月亮日算法：traditional 传统（缺省，朔到月出为第 1 日）| tithi（日月每差 12° 一日）| equal 均分 | angle 明暗线 | centered 朔居中。",
+    )
+    detailMundo: str | None = Field(
+        default=None,
+        description="[盘面细节] 世俗相位的宫位空间：proportional 比例（缺省，用盘面宫制按黄经折算）| placidus | koch | porphyry | regiomontanus | "
+        "campanus | alcabitius | meridian 子午 | horizontal 地平 | topocentric 站心 | morinus | krusinski。高纬下所选宫制对某些点不成立时段内写明缺哪些点。",
+    )
+    detailMidpoint: str | None = Field(
+        default=None,
+        description="[盘面细节] 中点坐标：ecliptic 黄经（缺省，出「中点合星」行）| mundane 世俗位置 | ra 赤经 | azimuth 方位角 | declination 赤纬 | "
+        "latitude 黄纬（非黄经时出「中点(…,前 15 组)」行）。",
+    )
+    detailTable: list[str] | str | None = Field(
+        default=None,
+        description="[盘面细节] 要取原始明细的表（上游页面的「当前表」，缺省 topics 专题主星）：一张或一组表 id / 中文名（30 张，全表见 "
+        "horosa_agent_guidance）。不改 [盘面细节] 正文（正文恒为 30 张表的结论摘要），只决定 data.chart_details.tables 带哪几张表的后端原值。",
+    )
+
+    @field_validator("detailFaces", "detailVariant", "detailLunar", "detailMundo", "detailMidpoint", mode="before")
+    @classmethod
+    def _chart_detail_vocabulary(cls, value: Any, info: Any) -> Any:
+        from horosa_skill.input_fields import parse_with
+        from horosa_skill.western_vocab import CHART_DETAIL_VOCABULARIES
+
+        return parse_with(CHART_DETAIL_VOCABULARIES[info.field_name], info.field_name, value)
+
+    @field_validator("detailTable", mode="before")
+    @classmethod
+    def _chart_detail_tables(cls, value: Any) -> Any:
+        from horosa_skill.input_fields import field_validator_for, is_blank
+        from horosa_skill.western_vocab import parse_chart_detail_tables
+
+        if value is None or is_blank(value) or value == []:
+            return None
+        return field_validator_for(parse_chart_detail_tables, "detailTable")(value)

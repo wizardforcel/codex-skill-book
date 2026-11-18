@@ -1,0 +1,515 @@
+"""Tests for the obsidian-knowledge CLI."""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from lib.vault_index.cli import (
+    SearchTimeoutError,
+    default_cache_dir_for_vault,
+    format_remember_candidates,
+    format_search_hits,
+    init_vault_index,
+    resolve_vault,
+    run_search_doctor,
+    search_ttl,
+)
+from lib.vault_index.models import Hit
+
+# ---------------------------------------------------------------------------
+# Task 10 — init-vault-index
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("existing_parent", [True, False])
+def test_init_vault_index_creates_template(tmp_path: Path, existing_parent: bool):
+    yaml_path = tmp_path / ".claude" / "obsidian-knowledge.yaml"
+    if existing_parent:
+        yaml_path.parent.mkdir()
+    init_vault_index(yaml_path)
+    assert yaml_path.exists()
+    text = yaml_path.read_text()
+    assert "vault_index:" in text
+    assert "deny_regex" in text
+
+
+def test_init_vault_index_preserves_existing_yaml(tmp_path: Path):
+    yaml_path = tmp_path / ".claude" / "obsidian-knowledge.yaml"
+    yaml_path.parent.mkdir()
+    yaml_path.write_text("ai_managed:\n  - wiki\n")
+    init_vault_index(yaml_path)
+    text = yaml_path.read_text()
+    assert "ai_managed:" in text
+    assert "vault_index:" in text
+
+
+def test_init_vault_index_does_not_clobber_existing_section(tmp_path: Path):
+    yaml_path = tmp_path / ".claude" / "obsidian-knowledge.yaml"
+    yaml_path.parent.mkdir()
+    yaml_path.write_text("vault_index:\n  top_k: 99\n")
+    init_vault_index(yaml_path)
+    text = yaml_path.read_text()
+    assert "top_k: 99" in text  # preserved
+
+
+def test_init_vault_index_rejects_malformed_yaml(tmp_path: Path, capsys):
+    yaml_path = tmp_path / ".claude" / "obsidian-knowledge.yaml"
+    yaml_path.parent.mkdir()
+    yaml_path.write_text("foo: [\n  - unclosed")
+    with pytest.raises(SystemExit) as exc_info:
+        init_vault_index(yaml_path)
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "malformed YAML" in captured.err
+
+
+def test_resolve_vault_defaults_to_first_configured_vault(tmp_path: Path, monkeypatch):
+    """Commands default to the first configured vault when no --vault is supplied."""
+    first = tmp_path / "first-vault"
+    second = tmp_path / "second-vault"
+    first.mkdir()
+    second.mkdir()
+    config = tmp_path / "vaults.yaml"
+    config.write_text(f"vaults:\n  - {first}\n  - {second}\n")
+    monkeypatch.setenv("OBSIDIAN_KNOWLEDGE_VAULTS_CONFIG", str(config))
+
+    assert resolve_vault(None, cwd=tmp_path / "outside") == first.resolve()
+
+
+def test_resolve_vault_prefers_containing_configured_vault(tmp_path: Path, monkeypatch):
+    """A cwd inside a configured vault wins over the first configured vault."""
+    first = tmp_path / "first-vault"
+    second = tmp_path / "second-vault"
+    cwd = second / "wiki" / "topic"
+    first.mkdir()
+    cwd.mkdir(parents=True)
+    config = tmp_path / "vaults.yaml"
+    config.write_text(f"vaults:\n  - {first}\n  - {second}\n")
+    monkeypatch.setenv("OBSIDIAN_KNOWLEDGE_VAULTS_CONFIG", str(config))
+
+    assert resolve_vault(None, cwd=cwd) == second.resolve()
+
+
+def test_format_remember_candidates_prints_scored_paths():
+    """remember reports potential homes with scores and does not write anything."""
+    text = format_remember_candidates(
+        [
+            Hit(path="wiki/repos/acme/app/memory/project_codex.md", score=42.25),
+            Hit(path="wiki/codex.md", score=9.5),
+        ]
+    )
+
+    assert "Potential homes:" in text
+    assert "42.2  wiki/repos/acme/app/memory/project_codex.md" in text
+    assert " 9.5  wiki/codex.md" in text
+
+
+def test_format_search_hits_prints_snippets_under_paths():
+    text = format_search_hits(
+        [
+            Hit(
+                path="wiki/python.md",
+                score=42.25,
+                snippet="Python is a high-level programming language.",
+            ),
+            Hit(path="wiki/empty.md", score=9.5),
+        ]
+    )
+
+    assert "42.2  wiki/python.md" in text
+    assert "      Python is a high-level programming language." in text
+    assert " 9.5  wiki/empty.md" in text
+
+
+def test_default_cache_dir_for_vault_honors_cache_root_env(tmp_path: Path, monkeypatch):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    cache_root = tmp_path / "cache-root"
+    monkeypatch.setenv("OBSIDIAN_KNOWLEDGE_CACHE_ROOT", str(cache_root))
+
+    cache_dir = default_cache_dir_for_vault(vault)
+
+    assert cache_dir.parent == cache_root / "obsidian-knowledge"
+    assert cache_dir.name.startswith("vault-")
+
+
+def test_default_cache_dir_for_vault_falls_back_when_cache_unwritable(tmp_path: Path, monkeypatch):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    monkeypatch.delenv("OBSIDIAN_KNOWLEDGE_CACHE_ROOT", raising=False)
+    monkeypatch.setattr("lib.vault_index.cli.os.access", lambda _path, _mode: False)
+
+    cache_dir = default_cache_dir_for_vault(vault)
+
+    assert cache_dir.parent == Path("/tmp/obsidian-knowledge-cache/obsidian-knowledge")
+    assert cache_dir.name.startswith("vault-")
+
+
+def test_cli_papercut_rejects_blank_description(tmp_path: Path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "lib.vault_index.cli",
+            "papercut",
+            " ",
+            "--vault",
+            str(vault),
+        ],
+        cwd=Path(__file__).parents[1],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "papercut description must not be blank" in result.stderr
+
+
+def test_cli_papercut_rejects_missing_vault(tmp_path: Path):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "lib.vault_index.cli",
+            "papercut",
+            "the vault path is wrong",
+            "--vault",
+            str(tmp_path / "missing"),
+        ],
+        cwd=Path(__file__).parents[1],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "vault does not exist or is not a directory" in result.stderr
+
+
+def test_search_ttl_raises_for_stuck_work():
+    with pytest.raises(SearchTimeoutError, match="search exceeded"):
+        with search_ttl(1):
+            signal_pause()
+
+
+def test_search_ttl_uses_custom_label_for_stuck_work():
+    with pytest.raises(SearchTimeoutError, match="reindex exceeded"):
+        with search_ttl(1, label="reindex"):
+            signal_pause()
+
+
+def test_search_ttl_hard_kills_when_signal_is_swallowed():
+    """When SIGALRM cannot be delivered (work stuck in a C call, or the signal
+    is masked), a watchdog thread must force-exit the process at the deadline.
+
+    Regression: the hourly reindex cron accumulated 255 orphaned processes
+    because a hung TLS read inside an embedding request swallowed the SIGALRM,
+    so ``--timeout-seconds`` never fired and the process never exited.
+    """
+    import time as _time
+
+    script = (
+        "import signal, time, sys\n"
+        "from lib.vault_index.cli import search_ttl\n"
+        # Block SIGALRM so the alarm can never be delivered — emulates a long
+        # C-extension call that never returns to the Python signal check.
+        "signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})\n"
+        "with search_ttl(1, label='reindex'):\n"
+        "    time.sleep(60)\n"
+        "sys.exit(0)\n"
+    )
+    t0 = _time.monotonic()
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).parents[1],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    elapsed = _time.monotonic() - t0
+    assert result.returncode == 124, (
+        f"expected hard-timeout exit 124, got {result.returncode}; stderr={result.stderr!r}"
+    )
+    assert elapsed < 25, f"watchdog should fire within seconds, took {elapsed:.1f}s"
+
+
+def test_cli_hard_exits_after_unexpected_error_with_live_thread():
+    script = """
+import threading, time
+import lib.vault_index.cli as cli
+
+threading.Thread(target=lambda: time.sleep(60)).start()
+
+def fail():
+    raise RuntimeError("unexpected")
+
+cli.main = fail
+cli.cli_main()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).parents[1],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 1
+    assert "RuntimeError: unexpected" in result.stderr
+
+
+def test_run_search_doctor_passes_with_rows_and_known_hits(tmp_path: Path):
+    class Hit:
+        def __init__(self, score, path):
+            self.score = score
+            self.path = path
+
+    class FakeIndexer:
+        vector_status = "ok: bge-m3 via http://127.0.0.1:11434"
+        _vector_enabled = True
+
+        def row_count(self):
+            return 12
+
+        def search(self, query, *, top_k, override_digest_filter):
+            assert top_k == 1
+            assert override_digest_filter is True
+            return [Hit(88.8, f"wiki/{query}.md")]
+
+    code, lines = run_search_doctor(
+        vault=tmp_path / "vault",
+        cache=tmp_path / "cache",
+        idx=FakeIndexer(),
+        queries=["agent-operating-profile", "automated-systems-review"],
+        top_k=1,
+        override_digest_filter=True,
+    )
+
+    assert code == 0
+    assert "status: PASS" in lines
+    assert "rows: 12" in lines
+    assert "query: agent-operating-profile" in lines
+    assert "top: wiki/agent-operating-profile.md (88.8)" in lines
+
+
+def test_run_search_doctor_fails_when_known_query_has_no_hits(tmp_path: Path):
+    class FakeIndexer:
+        vector_status = "Ollama unreachable"
+        _vector_enabled = False
+
+        def row_count(self):
+            return 12
+
+        def search(self, query, *, top_k, override_digest_filter):
+            return []
+
+    code, lines = run_search_doctor(
+        vault=tmp_path / "vault",
+        cache=tmp_path / "cache",
+        idx=FakeIndexer(),
+        queries=["automated-systems-review"],
+        top_k=1,
+        override_digest_filter=True,
+    )
+
+    assert code == 2
+    assert "status: FAIL" in lines
+    assert "vector: degraded (Ollama unreachable)" in lines
+    assert "hits: 0" in lines
+
+
+def signal_pause() -> None:
+    import signal
+
+    signal.pause()
+
+
+def test_private_hook_entrypoint_runs_existing_hook(tmp_path: Path):
+    """_hook dispatches through the installed CLI surface to existing hook code."""
+    payload = {
+        "session_id": "abc",
+        "tool_name": "Bash",
+        "tool_input": {"command": "true"},
+    }
+    env = {
+        **os.environ,
+        "OBSIDIAN_KNOWLEDGE_CACHE_ROOT": str(tmp_path / "cache"),
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "lib.vault_index.cli",
+            "_hook",
+            "post-tool-use",
+            "--kind",
+            "reflect-nudge",
+        ],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).parents[1],
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
+def test_removed_hook_agent_selector_is_rejected_without_blocking_host():
+    result = subprocess.run(
+        [sys.executable, "-m", "lib.vault_index.cli", "_hook", "post-tool-use", "--agent", "codex"],
+        input="{}",
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "unrecognized arguments: --agent codex" in result.stderr
+    assert result.stdout == ""
+
+
+def test_codex_hooks_template_uses_installed_cli():
+    """Codex hooks should use the uv-tool-installed CLI, not repo-local paths."""
+    template = json.loads((Path(__file__).parents[1] / "hooks" / "codex-hooks.json").read_text())
+    rendered = json.dumps(template)
+    assert "install-rules" not in rendered
+    assert "${CLAUDE_PLUGIN_ROOT}" not in rendered
+    assert "/home/" not in rendered
+
+
+def test_top_level_codex_hooks_off_claude_autodiscovery_path():
+    """The top-level tree is dual-runtime: it ships Claude's inline plugin.json
+    hooks AND Codex's hook config. Codex's file must NOT live at hooks/hooks.json
+    because Claude Code auto-discovers that exact path in addition to the inline
+    plugin.json hooks, which double-fires every hook (e.g. SessionStart runs the
+    primer twice). Keep the Codex config at hooks/codex-hooks.json, referenced
+    explicitly from .codex-plugin/plugin.json.
+    """
+    root = Path(__file__).parents[1]
+    assert not (root / "hooks" / "hooks.json").exists(), (
+        "hooks/hooks.json collides with Claude Code's hook auto-discovery; "
+        "the top-level Codex hook config must stay at hooks/codex-hooks.json"
+    )
+    assert (root / "hooks" / "codex-hooks.json").exists()
+    codex_manifest = json.loads((root / ".codex-plugin" / "plugin.json").read_text())
+    assert codex_manifest["hooks"] == "./hooks/codex-hooks.json"
+
+
+def test_codex_marketplace_uses_structured_local_source():
+    """Codex rejects Claude-style string sources such as './' as an empty path."""
+    marketplace = json.loads(
+        (Path(__file__).parents[1] / ".agents" / "plugins" / "marketplace.json").read_text()
+    )
+    plugin = marketplace["plugins"][0]
+
+    assert plugin["name"] == "obsidian-knowledge"
+    assert plugin["source"] == {"source": "local", "path": "./plugins/obsidian-knowledge"}
+    assert plugin["policy"] == {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL",
+    }
+
+
+def test_codex_marketplace_points_to_packaged_plugin():
+    """The Git marketplace must point at a plugin directory below the marketplace root."""
+    root = Path(__file__).parents[1]
+    plugin_root = root / "plugins" / "obsidian-knowledge"
+
+    manifest = json.loads((plugin_root / ".codex-plugin" / "plugin.json").read_text())
+    source = json.loads((root / ".codex-plugin" / "plugin.json").read_text())
+
+    assert manifest["name"] == "obsidian-knowledge"
+    # Local Codex development uses a +codex.<timestamp> cache-buster so the
+    # marketplace treats a rebuilt plugin as new without changing its release
+    # version. The prefix must match the generated source manifest; CI copies
+    # the authoritative package version during release preparation.
+    assert manifest["version"].split("+", 1)[0] == source["version"]
+    assert "hooks" not in manifest
+    assert (plugin_root / "skills" / "obsidian-knowledge" / "SKILL.md").exists()
+    assert (plugin_root / "hooks" / "hooks.json").exists()
+
+
+def test_claude_marketplace_uses_string_local_source():
+    """Claude Code's marketplace must use the bare string source "./".
+
+    The structured form {"source": "local", "path": "./."} is rejected by
+    Claude Code as an unsupported source type, which silently wedges the
+    install at whatever version was first cached (autoUpdate refreshes the
+    marketplace git but can never re-resolve the plugin). Every working
+    local-root plugin uses the string form. Codex's structured-source needs
+    are met by .agents/plugins/marketplace.json, so this file only has to
+    satisfy Claude.
+    """
+    marketplace = json.loads((Path(__file__).parents[1] / ".claude-plugin" / "marketplace.json").read_text())
+    plugin = marketplace["plugins"][0]
+
+    assert plugin["source"] == "./"
+    manifest = json.loads((Path(__file__).parents[1] / ".claude-plugin" / "plugin.json").read_text())
+    codex = json.loads((Path(__file__).parents[1] / ".codex-plugin" / "plugin.json").read_text())
+    assert plugin["version"] == manifest["version"]
+    assert manifest["version"] == codex["version"]
+
+
+# ---------------------------------------------------------------------------
+# Task 11 — reindex subprocess smoke test
+# ---------------------------------------------------------------------------
+
+FIXTURE = Path(__file__).parent / "fixtures" / "sample_vault"
+
+
+def test_cli_reindex_smoke(tmp_path: Path):
+    vault = tmp_path / "vault"
+    shutil.copytree(FIXTURE, vault)
+    env = {
+        **os.environ,
+        "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        # Exercise offline CLI indexing; a shared live embedder is not a fixture.
+        "MEMWEAVE_EMBEDDING_API_BASE": "http://127.0.0.1:1",
+    }
+    result = subprocess.run(
+        [sys.executable, "-m", "lib.vault_index.cli", "reindex", "--vault", str(vault)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,  # discard LiteLLM stderr noise to avoid pipe-buffer deadlock
+        text=True,
+        cwd=Path(__file__).parents[1],  # repo root
+        env=env,
+    )
+    assert result.returncode == 0, "reindex subprocess exited non-zero"
+    assert "Indexed:" in result.stdout
+
+
+def test_cli_reindex_accepts_timeout_flag(tmp_path: Path):
+    vault = tmp_path / "vault"
+    shutil.copytree(FIXTURE, vault)
+    env = {
+        **os.environ,
+        "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        "MEMWEAVE_EMBEDDING_API_BASE": "http://127.0.0.1:1",
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "lib.vault_index.cli",
+            "reindex",
+            "--vault",
+            str(vault),
+            "--timeout-seconds",
+            "20",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        cwd=Path(__file__).parents[1],
+        env=env,
+    )
+    assert result.returncode == 0, "reindex subprocess exited non-zero"
+    assert "Indexed:" in result.stdout

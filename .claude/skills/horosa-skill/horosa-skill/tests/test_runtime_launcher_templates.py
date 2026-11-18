@@ -1,0 +1,367 @@
+"""Windows 启动器模板的编码守卫 —— 让「启动器根本解析不了」这类事故在 CI 就红。
+
+事故（v0.25.0 Windows 半边补建时发现）：`runtime_templates/windows/start_horosa_local.ps1` 是
+**无 BOM** 的 UTF-8。runtime manager 用的是 `powershell`（Windows PowerShell 5.1，见
+`manager._platform_command`），它对无 BOM 的 .ps1 按**系统 ANSI 代码页**解码；UTF-8 的 `—`(U+2014)
+在 CP1252 下解成 `â€` + **U+201D**，而 PowerShell 的词法分析器把 U+201D 当**字符串定界符** ——
+字符串就地截断 → 4 个 parse error → 启动器还没跑就死 → 整个 Windows runtime 起不来
+（`runtime.start_failed`）。注释里的 `—` 无害（注释到行尾），字符串字面量里的才致命。
+
+两道守卫：BOM + 「非 ASCII 只许出现在注释行」到处跑；真解析只在 Windows 上跑（CI 的
+windows-smoke job 会执行）。
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+TEMPLATE_ROOT = Path(__file__).resolve().parents[1] / "scripts" / "runtime_templates" / "windows"
+LAUNCHERS = ("start_horosa_local.ps1", "stop_horosa_local.ps1")
+BOM = b"\xef\xbb\xbf"
+
+
+@pytest.mark.parametrize("name", LAUNCHERS)
+def test_launcher_template_starts_with_a_utf8_bom(name: str) -> None:
+    raw = (TEMPLATE_ROOT / name).read_bytes()
+    assert raw.startswith(BOM), (
+        f"{name} 缺 UTF-8 BOM：Windows PowerShell 5.1 会按 ANSI 代码页解码它，任何非 ASCII 字符都可能"
+        "变成 U+201D（PowerShell 认它作字符串定界符）→ 启动器解析失败 → runtime.start_failed"
+    )
+
+
+@pytest.mark.parametrize("name", LAUNCHERS)
+def test_launcher_template_keeps_non_ascii_inside_comments(name: str) -> None:
+    """BOM 是正解，这条是第二层：字符串字面量里不留非 ASCII，BOM 万一被工具剥掉也不会炸成 parse error。"""
+    text = (TEMPLATE_ROOT / name).read_text(encoding="utf-8-sig")
+    offenders = [
+        (lineno, line)
+        for lineno, line in enumerate(text.splitlines(), start=1)
+        if any(ord(ch) > 127 for ch in line) and not line.lstrip().startswith("#")
+    ]
+    assert offenders == [], f"{name} 的非注释行含非 ASCII 字符（BOM 一旦丢失即 parse error）: {offenders}"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="[platform] Windows PowerShell 5.1 只在 Windows 上可用")
+@pytest.mark.parametrize("name", LAUNCHERS)
+def test_launcher_template_parses_under_windows_powershell(name: str) -> None:
+    """真解析：用 runtime manager 实际调用的那个 `powershell`（5.1），不是 pwsh 7。"""
+    powershell = shutil.which("powershell")
+    if not powershell:
+        pytest.skip("[platform] powershell.exe not on PATH")
+    target = TEMPLATE_ROOT / name
+    probe = (
+        "$errors = $null; $tokens = $null; "
+        f"[void][System.Management.Automation.Language.Parser]::ParseFile('{target}', [ref]$tokens, [ref]$errors); "
+        "if ($errors -and $errors.Count) { Write-Output ('PARSE_ERRORS ' + $errors.Count + ' :: ' + $errors[0].Message) } "
+        "else { Write-Output 'PARSE_OK' }"
+    )
+    completed = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-Command", probe],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+    )
+    assert "PARSE_OK" in completed.stdout, f"{name} 在 Windows PowerShell 下解析失败: {completed.stdout}{completed.stderr}"
+
+
+# --- v0.38.0 B1: spaced / CJK paths, loopback bind, JSON-escaped bootstrap ---------------------------
+#
+# Start-Process joins -ArgumentList elements with spaces and does NOT quote them: a runtime root under
+# `C:\Users\John Doe\…` split the bootstrap path in two and neither service ever started. The Java line
+# also lacked --server.address=127.0.0.1 (Spring Boot binds 0.0.0.0 → Firewall prompt + LAN exposure).
+
+import ast
+import importlib.util
+import json
+import re
+import runpy
+import sys
+
+_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "verify_runtime_scripts.py"
+_spec = importlib.util.spec_from_file_location("verify_runtime_scripts", _SCRIPT)
+_guard = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_guard)
+
+START = TEMPLATE_ROOT / "start_horosa_local.ps1"
+_JSON_EMBED = re.compile(r"\$\(ConvertTo-Json \$(?P<name>[A-Za-z_]+) -Compress\)")
+_SPACED_CJK = {
+    "FlatlibRoot": r"C:\Users\张 三\AppData\Local\Horosa\runtime\current\Horosa-Web\flatlib-ctrad2",
+    "AstropyRoot": r"C:\Users\张 三\AppData\Local\Horosa\runtime\current\Horosa-Web\astropy",
+    "VendorRoot": r"C:\Users\张 三\AppData\Local\Horosa\runtime\current\Horosa-Web\vendor",
+    "ChartEntry": r"C:\Users\张 三\AppData\Local\Horosa\runtime\current\Horosa-Web\astropy\websrv\webchartsrv.py",
+}
+
+
+def _start_text() -> str:
+    return START.read_text(encoding="utf-8-sig")
+
+
+def _bootstrap_body(text: str) -> str:
+    head = text.index('$PyBootCode = @"\n') + len('$PyBootCode = @"\n')
+    tail = text.index('\n"@', head)
+    return text[head:tail]
+
+
+def _render(body: str, values: dict[str, str]) -> str:
+    """Simulate PowerShell's here-string expansion of `$(ConvertTo-Json $X -Compress)` with json.dumps."""
+    return _JSON_EMBED.sub(lambda m: json.dumps(values[m.group("name")], ensure_ascii=False), body)
+
+
+def test_windows_launcher_binds_java_to_loopback() -> None:
+    java_line = next(line for line in _start_text().splitlines() if line.startswith("$JavaProc = Start-Process"))
+    assert "--server.port=$BackendPort" in java_line
+    assert "--server.address=127.0.0.1" in java_line, "Spring Boot binds 0.0.0.0 without it: Firewall prompt + LAN exposure"
+
+
+def test_windows_launcher_quotes_every_path_argument() -> None:
+    text = _start_text()
+    py_line = next(line for line in text.splitlines() if line.startswith("$PyProc = Start-Process"))
+    java_line = next(line for line in text.splitlines() if line.startswith("$JavaProc = Start-Process"))
+    assert "('\"{0}\"' -f $PyBootstrapPath)" in py_line
+    assert "('\"{0}\"' -f $JarArg)" in java_line
+    code = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
+    assert "-ArgumentList @($" not in code, "a bare path element is split on the first space by Start-Process"
+
+
+def test_guard_catches_the_unquoted_and_unbound_forms() -> None:
+    """Negative control: the template exactly as shipped before v0.38.0 must be red on every count."""
+    good = _start_text()
+    legacy = (
+        good.replace("('\"{0}\"' -f $PyBootstrapPath)", "@($PyBootstrapPath)")
+        .replace("('\"{0}\"' -f $JarArg)", "$JarPath")
+        .replace('"--server.address=127.0.0.1", ', "")
+        .replace("$(ConvertTo-Json $ChartEntry -Compress)", 'r"$ChartEntry"')
+    )
+    errors = _guard.audit_windows_launcher(legacy)
+    joined = "\n".join(errors)
+    assert "--server.address" in joined and "-jar" in joined and "bootstrap 路径没带引号" in joined and "raw" in joined, errors
+    assert _guard.audit_windows_launcher(good) == []
+
+
+def test_windows_bootstrap_renders_valid_python_for_cjk_and_spaced_roots(monkeypatch: pytest.MonkeyPatch) -> None:
+    body = _bootstrap_body(_start_text())
+    rendered = _render(body, _SPACED_CJK)
+    ast.parse(rendered)  # a JSON string literal is a valid Python string literal
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(runpy, "run_path", lambda path, run_name=None: captured.setdefault("path", path))
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    exec(compile(rendered, "<bootstrap>", "exec"), {"__name__": "__main__"})
+    assert captured["path"] == _SPACED_CJK["ChartEntry"]
+    for key in ("FlatlibRoot", "AstropyRoot", "VendorRoot"):
+        assert _SPACED_CJK[key] in sys.path[:3], key
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["D:\\horosa\\runtime\\current\\", 'C:\\Users\\a"b\\webchartsrv.py'],
+    ids=["trailing-backslash", "embedded-quote"],
+)
+def test_legacy_raw_string_embed_breaks_on_these_paths(value: str) -> None:
+    """Negative control for the old r"$Var" form: a trailing backslash or an embedded quote is a syntax error."""
+    legacy = 'runpy.run_path(r"{ChartEntry}", run_name="__main__")\n'.replace("{ChartEntry}", value)
+    with pytest.raises(SyntaxError):
+        ast.parse(legacy)
+    ok = 'runpy.run_path(' + json.dumps(value) + ', run_name="__main__")\n'
+    ast.parse(ok)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="[platform] Windows PowerShell 5.1 只在 Windows 上可用")
+def test_windows_bootstrap_renders_under_real_powershell(tmp_path: Path) -> None:
+    """The real engine: PowerShell 5.1 expands the here-string with a spaced+CJK root, CPython must compile it."""
+    powershell = shutil.which("powershell")
+    if not powershell:
+        pytest.skip("[platform] powershell.exe not on PATH")
+    body = _bootstrap_body(_start_text())
+    assignments = "\n".join(f"${name} = '{value}'" for name, value in _SPACED_CJK.items())
+    out = tmp_path / "bootstrap.py"
+    script = f"{assignments}\n$PyBootCode = @\"\n{body}\n\"@\nSet-Content -LiteralPath '{out}' -Value $PyBootCode -Encoding utf8\n"
+    probe = tmp_path / "render.ps1"
+    probe.write_bytes(BOM + script.encode("utf-8"))
+    subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(probe)], check=True, timeout=120)
+    rendered = out.read_text(encoding="utf-8-sig")
+    tree = ast.parse(rendered)
+    strings = [node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+    assert _SPACED_CJK["ChartEntry"] in strings
+
+
+@pytest.mark.parametrize("name", LAUNCHERS)
+def test_launcher_template_sets_utf8_output_encoding(name: str) -> None:
+    """v0.38.1 A1：Windows PowerShell 5.1 往管道写 OEM 代码页；启动器首行把 Console 编码改成 UTF-8，
+    `launcher.log` 与 `startup_warning.details.stdout` 才真是 UTF-8（manager 按 UTF-8 读它们）。"""
+    text = (TEMPLATE_ROOT / name).read_text(encoding="utf-8-sig")
+    first_code = next(line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#"))
+    assert "[Console]::OutputEncoding = [Text.Encoding]::UTF8" in first_code, first_code
+    assert first_code.isascii(), "这一行必须在 BOM 之后第一行且纯 ASCII —— 它自己不能依赖任何编码"
+    assert first_code.lstrip().startswith("try {") and "catch" in first_code, "老 PowerShell / 受限主机上失败也不能挡启动"
+
+
+def test_java_gets_a_code_page_safe_relative_jar_argument() -> None:
+    """v0.38.1：JDK 17 的 Windows 启动器用 GetCommandLineA 读命令行 —— 绝对 jar 路径里 ANSI 代码页表示不了的字符变成 `?`。
+
+    真机证据（runtime-matrix，工作目录「horosa 测试 lane」，en-US cp1252 runner）：
+    `Error: Unable to access jarfile D:\\a\\_temp\\horosa ?? lane\\runtime\\current\\runtime\\windows\\bundle\\astrostudyboot.jar`。
+    修法：Java 的工作目录是 $Root，jar 参数给相对 $Root 的纯 ASCII 路径；JVM 内部的 user.dir / 文件 IO 是 Unicode。
+    """
+    import ntpath
+    import re as _re
+
+    text = _start_text()
+    value = _re.search(r"^\$JarArg = '([^']+)'\s*$", text, _re.M).group(1)
+    assert value.isascii() and value.startswith("..") and "$" not in value
+    root = "D:\\a\\_temp\\horosa 测试 lane\\runtime\\current\\Horosa-Web"
+    assert ntpath.normpath(ntpath.join(root, value)) == ntpath.normpath(
+        ntpath.join(root, "..\\runtime\\windows", "bundle\\astrostudyboot.jar")
+    ), "the relative argument must name the same jar the absolute $JarPath check found"
+    # 负向对照：旧的绝对形状经 cp1252 往返就丢字；新的相对参数原样往返
+    absolute = ntpath.normpath(ntpath.join(root, "..\\runtime\\windows\\bundle\\astrostudyboot.jar"))
+    assert "??" in absolute.encode("cp1252", errors="replace").decode("cp1252")
+    assert value.encode("cp1252").decode("cp1252") == value
+    java_line = next(line for line in text.splitlines() if line.startswith("$JavaProc = Start-Process"))
+    assert "-WorkingDirectory $Root" in java_line, "the relative jar argument only works because Java's cwd is $Root"
+    assert "$JarPath" not in java_line
+
+
+def test_guard_catches_an_absolute_or_interpolated_jar_argument() -> None:
+    good = _start_text()
+    absolute = good.replace("('\"{0}\"' -f $JarArg)", "('\"{0}\"' -f $JarPath)", 1)
+    assert any("$JarArg" in e for e in _guard.audit_windows_launcher(absolute))
+    interpolated = good.replace(
+        "$JarArg = '..\\runtime\\windows\\bundle\\astrostudyboot.jar'", '$JarArg = "$RuntimeRoot\\bundle\\astrostudyboot.jar"', 1)
+    assert interpolated != good and _guard.audit_windows_launcher(interpolated)
+    drive = good.replace("$JarArg = '..\\runtime", "$JarArg = 'C:\\runtime", 1)
+    assert drive != good and _guard.audit_windows_launcher(drive)
+
+
+def test_windows_launcher_turns_off_the_ephemeris_path_fastpath_before_the_chart_starts() -> None:
+    """v0.40.0 draft: both Windows lanes lost every asteroid (KeyError 'Chiron' → /chart「param error」).
+
+    Swiss Ephemeris declares its state TLS on every platform but __APPLE__ (sweodef.h), so on Windows a path set on
+    one thread is invisible to the others. Upstream v3.11.2's fast path records "path already set" process-wide, so
+    CherryPy pool threads never set it and look in the default \\sweph\\ephe\\. The env var must be in place before
+    `Start-Process` spawns the chart interpreter (children inherit the environment at spawn time).
+    """
+    code = [line for line in _start_text().splitlines() if not line.lstrip().startswith("#")]
+    switch = code.index('$env:HOROSA_EPHE_PATH_FASTPATH = "0"')
+    py_start = next(i for i, line in enumerate(code) if line.startswith("$PyProc = Start-Process"))
+    assert switch < py_start
+    assert not _guard.audit_windows_launcher(_start_text())
+
+
+def test_guard_catches_a_missing_enabled_or_late_fastpath_switch() -> None:
+    good = _start_text()
+    line = '$env:HOROSA_EPHE_PATH_FASTPATH = "0"\n'
+    missing = good.replace(line, "", 1)
+    enabled = good.replace(line, line.replace('"0"', '"1"'), 1)
+    late = _guard._move_after_py_start(good, line)
+    for bad in (missing, enabled, late):
+        assert bad != good
+        assert any("HOROSA_EPHE_PATH_FASTPATH" in e for e in _guard.audit_windows_launcher(bad))
+
+
+def test_upstream_fastpath_switch_drift_alarm() -> None:
+    current = "_EPHE_PATH_ACTIVE = None\n_EPHE_FASTPATH = os.environ.get('HOROSA_EPHE_PATH_FASTPATH', '1')\n"
+    assert not _guard.audit_upstream_fastpath_switch(current)
+    renamed = current.replace("HOROSA_EPHE_PATH_FASTPATH", "HOROSA_EPHE_FASTPATH")
+    assert _guard.audit_upstream_fastpath_switch(renamed), "a renamed switch silently disarms the launcher line"
+    assert not _guard.audit_upstream_fastpath_switch("swisseph.set_ephe_path(SEACTIVE_PATH)\n"), "fast path gone = no alarm"
+    if _guard.UPSTREAM_SWE.is_file():  # maintainer tree only: vendor/runtime-source is gitignored
+        text = _guard.UPSTREAM_SWE.read_text(encoding="utf-8")
+        assert not _guard.audit_upstream_fastpath_switch(text)
+        assert re.search(r"HOROSA_EPHE_PATH_FASTPATH'[^\n]*not in \([^)]*'0'", text), '"0" must still turn it off'
+
+
+_SE_EPHE_LINE = '$env:SE_EPHE_PATH = [System.IO.Path]::GetFullPath((Join-Path $FlatlibRoot "flatlib\\resources\\swefiles"))'
+
+
+def test_windows_launcher_points_every_thread_at_the_bundled_ephemeris_before_the_chart_starts() -> None:
+    """Published v0.40.0, Windows maintainer box: 40 identical /astroextra/ephemeris requests (no transits) fired at a
+    freshly started chart service came back as 2 distinct payloads, 39 of them off the in-process bundled-path
+    reference (Moon up to 5.7e-7 deg: another program's old files in C:\\sweph\\ephe); after 300 /chart requests had touched
+    every pool thread the same burst matched 40/40. Upstream's astroextra endpoints call swisseph directly and never
+    reach flatlib's ensureEphePath, so the fast-path switch alone leaves such a thread on libswe's compiled-in default.
+    SE_EPHE_PATH is what libswe consults for a thread that never set a path; it must be exported before Start-Process
+    (children inherit the environment at spawn) and the launcher must refuse to start if the directory is missing."""
+    code = [line for line in _start_text().splitlines() if not line.lstrip().startswith("#")]
+    flatlib = next(i for i, line in enumerate(code) if line.startswith("$FlatlibRoot = "))
+    env_line = code.index(_SE_EPHE_LINE)
+    check = next(i for i, line in enumerate(code) if line.startswith("if (-not (Test-Path -LiteralPath $env:SE_EPHE_PATH"))
+    py_start = next(i for i, line in enumerate(code) if line.startswith("$PyProc = Start-Process"))
+    assert flatlib < env_line < check < py_start
+    assert "throw" in code[check]
+    assert not _guard.audit_windows_launcher(_start_text())
+
+
+def test_guard_catches_a_missing_misdirected_or_late_se_ephe_path() -> None:
+    good = _start_text()
+    line = _SE_EPHE_LINE + "\n"
+    check = next(text for text in good.splitlines(keepends=True) if text.startswith("if (-not (Test-Path -LiteralPath $env:SE_EPHE_PATH"))
+    cases = {
+        "missing": good.replace(line, "", 1),
+        "elsewhere": good.replace('"flatlib\\resources\\swefiles"', '"flatlib\\resources"', 1),
+        "late": _guard._move_after_py_start(good, line),
+        "no existence check": good.replace(check, "", 1),
+    }
+    for name, bad in cases.items():
+        assert bad != good, name
+        assert any("SE_EPHE_PATH" in e for e in _guard.audit_windows_launcher(bad)), name
+
+
+def _installed_windows_payload() -> tuple[Path, Path] | None:
+    from horosa_skill.config import Settings
+
+    current = Path(Settings.from_env().runtime_root) / "current"
+    python = current / "runtime" / "windows" / "python" / "python.exe"
+    swefiles = current / "Horosa-Web" / "flatlib-ctrad2" / "flatlib" / "resources" / "swefiles"
+    return (python, swefiles) if python.is_file() and swefiles.is_dir() else None
+
+
+_FRESH_THREAD_PROBE = """
+import json, sys, threading
+import swisseph
+swisseph.set_ephe_path(sys.argv[1])  # the main thread sets it, as flatlib does at import
+out = {}
+def worker():  # a thread that never sets a path, like a CherryPy pool thread serving astroextra
+    xx, ret = swisseph.calc_ut(2460676.5, swisseph.SUN, swisseph.FLG_SWIEPH | swisseph.FLG_SPEED)
+    out["swieph"] = bool(ret & swisseph.FLG_SWIEPH)
+    out["file"] = swisseph.get_current_file_data(0)[0] if out["swieph"] else ""
+t = threading.Thread(target=worker)
+t.start()
+t.join(60)
+print(json.dumps(out))
+"""
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="[platform] Swiss Ephemeris state is thread-local only on Windows builds (sweodef.h)")
+def test_se_ephe_path_reaches_threads_that_never_set_a_path() -> None:
+    """The real payload binaries (the lane's runtime, or the one installed under the default root): with SE_EPHE_PATH a
+    fresh thread reads the bundled planet file; without it, it does not (Moshier on a clean machine, or whatever sits in
+    \\sweph\\ephe\\ on the current drive) - the negative control that proves the variable is what makes the difference."""
+    payload = _installed_windows_payload()
+    if payload is None:
+        pytest.skip("[platform] no installed Windows runtime payload (python.exe + swefiles) under the configured runtime root")
+    python, swefiles = payload
+
+    def probe(with_env: bool) -> dict:
+        env = {k: v for k, v in os.environ.items() if k != "SE_EPHE_PATH"}
+        if with_env:
+            env["SE_EPHE_PATH"] = str(swefiles)
+        done = subprocess.run(
+            [str(python), "-B", "-c", _FRESH_THREAD_PROBE, str(swefiles)],
+            env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        )
+        assert done.returncode == 0, done.stderr[-800:]
+        return json.loads(done.stdout.strip().splitlines()[-1])
+
+    def from_bundled(result: dict) -> bool:
+        where = os.path.normcase(os.path.normpath(os.path.dirname(result.get("file") or "")))
+        return bool(result.get("swieph")) and where == os.path.normcase(os.path.normpath(str(swefiles)))
+
+    assert from_bundled(probe(with_env=True)), "SE_EPHE_PATH did not reach a thread that never set a path"
+    assert not from_bundled(probe(with_env=False)), "negative control: without SE_EPHE_PATH a fresh thread must NOT find the bundled files"

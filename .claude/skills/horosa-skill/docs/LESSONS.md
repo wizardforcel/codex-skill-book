@@ -1,0 +1,6225 @@
+# 经验台账（LESSONS — append-only ledger）
+
+> **读者**：维护者 / 在本仓改代码或发版的任何 agent。**何时读**：需要某条现行规则的历史来龙去脉、或按
+> 「问题记录协议 v3」（见 [`AGENTS.md`](../AGENTS.md) §2）落一条新教训时。
+>
+> 本文件是**只增不删**的编年台账：每条教训的原文永久保存在这里；「现行真相」的蒸馏版规则住在
+> [`AGENTS.md`](../AGENTS.md) 对应主题章节。两者分工：查历史 → 这里；照着干 → `AGENTS.md`。
+> 新条目**加在「台账正文」最上方**，标题格式 `### vX.Y.Z / YYYY-MM-DD — 主题`，正文保持
+> 症状 → 根因 → 守卫 三要素。
+>
+> 注：v0.15.0–v0.19.0 各轮的教训当时直接蒸馏进了 `AGENTS.md` 主题章节与 `CHANGELOG.md`
+> （如 v0.17 引擎升级 / 名人库、v0.18 pin-forward 复发、法奇门对宫表订正、安装回滚加固），
+> 未单列编年节；自本台账建立起，新教训一律在此落原文。
+
+## 索引
+
+| 时代 | 条目 | 一句话 |
+| --- | --- | --- |
+| v0.51.1-dev (2026-11-17) | v0.51.0 的三条收尾：预算只有「发版前手算一次」的口头规则；ci.yml 两个 job 在 95–97% 才被取消时才发现；export-contract mirror 只在 preflight 跑 | `estimate_lane_budget.py`（本机 junit → 三 lane 估算，超 85% 退出 1）；`ci_job_budget.py` 首末两步、超 85% 打注解；mirror 进 CI 读钉住的公开上游、preflight 带 `--require-vendored`（各有负向对照） |
+| v0.51.0 (2026-11-17) | 第二次矩阵：预算够了（darwin 66% / x64 78%），x64 仍红 8 条——Windows 引擎与 macOS 金标的差不止末位：速度百分比 ~4e-6、截到秒的时刻差一秒、近乎并列的行换序；另 darwin 全量基准 124/125（`dispatch_qimen_liureng_combo` 把占时放 birth，被审计后的闸门拒） | 金标比较按主机分：POSIX 逐值、Windows 比形状 + 去数字的行（`golden_diff` 等）；基准 case 改 context + 离线过闸守卫（负向对照实跑） |
+| v0.51.0 (2026-11-17) | 发版矩阵三 lane 全红：pytest 三处都撞预算被杀（darwin 74% / x64 80% / arm 78%，v3.14.0 同步加约 1000 条 live 值金标、极圈盘一次 ~10 s 被一条用例起 24 次）；外加两类只在 lane 才有的红——`PD_SYNC_REV` 的写死回退值落后上游（v26 vs v28，本机读 vendored 树、CI 不跑 live），Windows 上从 macOS 录的金标全精度 `==` 差末位 | 本机 junit 逐条耗时 × lane 倍率估预算（posix 3000 / nt 6000 / arm +4200、job 200 分）；极圈扫只留有极圈分支的两法；`tests/float_tree.py` 容差比；回退值改常量并守与 vendored 相等（负向对照实跑） |
+| v0.51.0 (2026-11-16) | 发版 preflight 的 export-contract mirror 红：审计 O-02 新增的 skill 侧导出键 `ziwei_rules` 没进 `DIVERGENCE_WHITELIST`——这道检查要 vendor/runtime-source，CI 不跑，只有 preflight 才看得见 | 补白名单条目（附理由）；新增 skill 侧导出键时同一提交登记白名单，并在本机带 HOROSA_SOURCE_ROOT 跑一次 verify_export_contract_mirror.py |
+| v0.51.0-dev (2026-11-16) | v3.14.0 分支第一次跑 GitHub CI（PR #23）红三处 CI 专有：上游对拍用例读 gitignored 的 vendor/runtime-source；自动令牌用例写死 18765 而 CI 上它被别的用例占着；CI 新检出公开上游（PF-20）后 `verify_upstream_sync.py` 把 vendored 树「缺失」全报成漂移 | 对拍一律读 HOROSA_SOURCE_ROOT、缺则 `[upstream-checkout]` 跳过；与端口无关的用例 monkeypatch `port_bindable`；没有 vendored 树时 2 / 2b 两节可见跳过、`--require-upstream` 照旧硬拦 |
+| v0.51.0-dev (2026-11-14) | 审计「全按推荐做」后半程：同名函数顶掉前一个（「二十三点」KeyError）、serve 写 os.environ 的令牌漏到后面的用例、full 视图改目录撞线上预算的老用例、地名「显著度」默认撞同音城市、闸门下沉 service 层要给近千处直调开口子 | 顶层重名用 AST 守卫（ruff F811 抓不到）；进程级副作用经 monkeypatch 登记；改输出形态时把测「下一层」的老用例显式放开上一层；缺省规则逐个排除同名同音与别名；service 闸缺省 enforce + 测试套件 checked + 专测用例真缺省 + AST 要求每处调用写 gate= |
+| v0.51.0-dev (2026-11-14) | AI 调用面审计修复：全量门禁抓到农历输入吞掉十年大运 calendarType 等四处衔接；近似键拒绝三类假阳性；推运缺目标「就拒」撞 90 条上游一致性用例；核实「逐字相同」时发现八字 Java 回退丢大运；MCP 面校验与服务层不同路；--help 跑了真 harness、`| tail` 吞掉 FAIL | 每项 test_fix314_* + 负向对照；改缺省先查一致性用例；核实审计跑遍各条路径；脚本先读用法；校验看退出码 |
+| v0.51.0-dev (2026-11-13) | 上游 v3.14.0 同步的十二个并行批同时因额度耗尽停在半途；接手合并撞出七处衔接（同一移植做两遍、manifest 删条被加回、「两边都留」吞括号、两套标签、生成件随功能、工具数改写器认错旧数、豁免按工具粒度） | 串行接手；manifest 三方 JSON 合并；保留合并后立即 ast.parse；每批合入即跑该批离线 + live；生成件最后统一；不擅自并行派 agent |
+| v0.51.0-dev (2026-11-13) | 天文地占离线「问类：事业」、真机「career」：桩比真后端多一个字段；九星值日改口径基底零信号 | 桩字段先在真实例确认；「结果会变」的每条都要有会变红的值级用例 |
+| v0.51.0-dev (2026-11-13) | 印度择日接上印度盘全文后恒报 [过运×大运联动] 缺段：未来时刻暴露基底的数据条件段 | 补登条件段；派生键换基底用未来时刻跑 live；restamp 前核偏离是否已被上游修掉 |
+| v0.50.2-dev (2026-11-13) | PDF 里扩展 B 生僻字与 emoji 画得出、拿不回：reportlab 的 ToUnicode 把基本平面以外的码位写成 5 位十六进制，复制 / 检索 / 读屏得到乱码；e2e 只核「没方块」，抽文字时 pypdf 的告警才露出来 | 字体载入口改写这些条目为 UTF-16 代理对（基本平面逐字节不变）；单元 + Windows 真字体用例核 ToUnicode；第三方事实入账 |
+| v0.50.2-dev (2026-11-13) | `client config` 打印给人粘的命令：claude-code 那条光写 `--`，PowerShell + npm 的 claude.ps1 一律坏（setup 的同一条早修了，走的是另一个拼法）；VS Code 的 Windows 命令只有 cmd 写法；wheel 用户不带 `--launcher` 直接报错；HTTP 提示 `serve serve` | 打印命令只留 `claude_cli.shell_text` 一个生成函数；JSON 参数 cmd / PowerShell 各一条、会被 code.cmd 拆坏的路径不给；缺省 launcher 与 setup 同；真终端粘贴用例 + 五处负向对照 |
+| v0.50.2-dev (2026-11-12) | server 没有控制台时（pythonw 起、或宿主以 DETACHED 方式起）每次技法调用都弹 node 的控制台窗口：15 处 `subprocess` 里只有启动器带 `CREATE_NO_WINDOW`；排查时一度把被测解释器自己的窗口算成 node 的 | `winproc.NO_WINDOW` 接到每个 spawn；AST 守卫扫全部 `subprocess.*`；探针按窗口属主进程计数，不凭推断归因。同轮：v0.50.1 候选在本机门禁红 2 条（CI 绿）——用例默认了 runner 开着长路径、有建链接特权 | 按本机能力分支，跳过原因带 `[host]` |
+| v0.50.1 (2026-11-12) | 发版矩阵三条 lane 同红一条：`test_client_config_launcher_uvx_emits_absolute_command_when_found` 断言 `warnings` 不在，而 lane 的 pytest 环境设着 `HOROSA_RUNTIME_START_TIMEOUT_SECONDS` 等行为开关，产品按设计在 warnings 里点名；ARM 仿真上脱敏线性用例 2.06 s 撞 2 s 线 | 用例先清 `HOROSA_*`；时间上限按「要拦的回归」定（旧实现 43.7 s → 线 10 s），不按维护机速度定 |
+| v0.50.0-dev (2026-11-12) | v0.50.0 发版第 1 步 `npm install --omit=dev` 改写了 horosa-core-js 的 package-lock.json（package.json 的 engines 说明改过、锁文件没跟），第 2 步 JS 引擎资产见树不干净拒绝出包——红在发版当场，CI 全绿看不出 | `test_lockfile_root_mirrors_package_json` 让 CI 先红；改 package.json 后跑 `npm install --package-lock-only` 一并提交 |
+| v0.50.0-dev (2026-11-12) | v0.50.0 发版提交在 CI ubuntu 上红 8 条、维护机 macOS 全绿：doctor「新机器」用例只在有载荷的平台写过断言；报告用例只在有中文 TrueType 的机器写过断言——6 条里 3 条是真缺陷（CID 回退不补字 ✓☯🎉 进 PDF、空格子标签外 `() Tj`、DOCX 中文字体退成 Arial），另有无载荷平台 advice 叫人「装 730 MB」 | 按本机环境分支的用例在每台机器上把各支都跑：`conftest.font_host`（host / no_cjk_font / no_fonts）、doctor 用例的 `host` fixture 钉 `_platform_key`；CID 字体按 Adobe 字符集合（gbk / big5hkscs）量覆盖；推前在 Linux 容器里跑一遍受影响的用例 |
+| v0.50.0-dev (2026-11-12) | v0.50.0 发版提交本机门禁全绿，main CI windows-smoke 红 13 条：相对路径键带反斜杠、`with sqlite3.connect()` 不关连接删不了库、粗单调钟下预算 0 读完全部、开了长路径的 Windows 照写超长路径（没开的到建目录才裸 OSError）、Segoe UI Symbol 真画得出 🎉、tar 盘符名、给 Windows 粘的命令按 cmd 规则写 JSON；顺带查出知识索引 `--rebuild` 在 Windows 上隔离不了坏库、清残留用 `os.kill(pid, 0)` | conftest 让每条用例都在 `tests/winsim.py`（Windows 文件共享规则）下跑；源码守卫禁 `str(relative_to)` / 裸 `with sqlite3.connect` / procs 以外的 os.kill；预算判 ≥；整条路径按本机上限事前判；tar 过 `_portable_data_filter`；命令写成 PowerShell 与 cmd 同读（`tests/winshell.py` 两种拆法）|
+| v0.50.0-dev (2026-11-12) | JS 引擎只随 darwin / win32 两个 runtime 归档走：Linux、Intel Mac、Docker、pip 网关、没跑 install 的人一个都没有，八字 / 六爻 / 六壬 / 河洛 / 参评等全部 js_engine.cli_missing；install 在这些平台上只报「不支持」，Docker 镜像连 node 都没有 | 平台无关资产 `horosa-core-js-v<ver>.tar.gz`（确定性构建）随发布上 draft、进清单顶层 `core_js`、[GAP] 与 completeness 查缺件 / 摘要；install 在无载荷平台自动只装它、`--engine-only` 任何平台；Docker 自带钉版本 Node + 引擎 |
+| v0.50.0-dev (2026-11-12) | 客户端文档跟不上十三批改动：SKILL.md 说 profile 的 place 不解析（其实解析）、门面 13 写成 14 / 11、`warnings` 非空 = 不完整、确认标记万能、dispatch 什么都能接；示例从没对过 schema，`response_sections` 广告成字符串而服务自己的续读调用给整数 | SKILL.md 按弱客户端重写（45 KB → 27 KB，细节进 references）；示例一律 ```call 块，`tests/test_skill_examples.py` 离线逐条对工具面 / 字段 / 逐字段校验 / 闸门，文档批对共享引擎逐条真跑 |
+| v0.50.0-dev (2026-11-12) | 深审余项：缺 zone 时小六壬 KeyError、占时四技法 HTTP 500、神数 / 本地八字链悄悄按 +08:00；命主的 ad=-1 把择日窗口 / 流年 / 起课读成公元前；择日入参问题报「重试 / doctor」；卦义不认卦名；日子馆印 undefined；十年大运印英文星名；按设计不出的段印失败式占位 | 时地缺什么报什么（`place_fields_required`）、`ad` 只跟它配对的日期（`_ad_of_date`，源码扫描守卫）、`zeri_engine_input_error` 逐字段、`SECTIONS_NOT_PRODUCED_BY_DESIGN` 走 not_requested |
+| v0.50.0-dev (2026-11-12) | 中式技法同一个输入多种读法：太乙缺省日界盘头写 24 点、日柱按 23 点，options 里的日界只到快照（盘头辛酉正文壬戌）；`ad=-1` 被正传 / 小六壬 / 神数 ×14 等丢掉、太乙一半用；飞宫只认字面 female；小六壬「道家」、地占未知传本、紫微 timeAlg=2、河洛 / 一掌经十余旋钮认不出就换缺省；小六壬 nums / 灵棋 counts 用不了就悄悄以时起；河洛 / 参评公元前出空盘 ok=true | 入口只留一种形态（日界合到顶层、`ad=-1` 改写成带负号日期、派生盘 ad 随自己的时刻）；`cn_vocab` 词表挂 schema；给了用不了就拒并回 `cast_method`；本地历法域外 `tool.date_range_unsupported` |
+| v0.50.0-dev (2026-11-12) | 十把守卫红不了：live lane 跳过原因是黑名单、归档防穿越零测试、旋钮接线按子串、分层豁免空循环、并发测的是 sleep 桩、值金标认标题和注释、闸门自测住在被测数据里、约 50 条要上游检出的测试有的猜路径、错误码「有测试」认注释；selfcheck 中途 await 之后的 async 失败退出码 0 | 每把守卫配一个它声称要抓的变异体实跑红；跳过原因带标签、live lane 白名单；字面量 / 调用 / 代码记号才算证据；期望搬出被测物 |
+| v0.50.0-dev (2026-11-12) | 每次 JS spawn 静态加载全部 51 个技法模块（0.13 s，天星择日一次 7 次 = 1.1 s）；create_mcp_server 1.9 s（别名整词判断每次重编大字符类正则、每个默认值建 TypeAdapter） | tools/index.js 按需 import（0.04 s/次，129 次调用 stdout 逐字节相同）；正则只编一次、默认值短路、签名按进程缓存（tools/list 逐字节相同，0.9 s） |
+| v0.50.0-dev (2026-11-12) | 合参把一个技法包装成交叉印证（all_clear true）、没给 tools 借单技法路由、模板里没有盘面事实、不能复用已算的 run、只有中文 | `engine/hecan_select`（闸门与服务共用，按领域缺省配对）+ run_id 复用 + 正文节选 + 合参自己的 run 与 child_runs + 双语；`test_hecan.py` |
+| v0.50.0-dev (2026-11-12) | 技法卡只回显手写的少数键：六爻缺省男却 settings 空、紫微 `gender: false`、岁差空串；看不出来源 | 设置全表从闸门指引表推出，每项人读值 + 来源（用户 / 档案 / 地点 / 缺省）；`test_technique_card_settings.py` 整表守卫 |
+| v0.50.0-dev (2026-11-12) | 择日条件极性没人说：冲煞生肖自带判法再加 negate = 双重否定，拿到冲马的日子 | 生成自上游注册表的条件说明 + negate 规则 + 每个择日结果回显引擎读法；`test_zeri_conditions.py`（真引擎冲马对照） |
+| v0.50.0-dev (2026-11-12) | 摘要噪声、知识结果挂技法卡、节气盘「没要」报「缺」、模板正文两份、决策层白发请求、OTLP 不自陈、精简面指向不存在的工具、追问不点名技法 | 一句话标题、无卡域、not_requested_sections、模板去重、enforce 不问、instructions 第三说法、按面写读法、追问点名；各有守卫 |
+| v0.50.0-dev (2026-11-12) | 派生盘（十三分 / 十二分 / 希腊分 / 调波 / 龙盘）的 [古典格局] 是本命分析逐字节照搬；古典口径键原值下发、口径行照抄（真交点写了、算的是平交点）；分析请求不带口径；01:59.5 写成 01:00；十年大运 / 调波 / 七政择日 / 卜卦 / 择日认不出的值静默换缺省 | `western_vocab` 一键一张词表（`Vocabulary` 加数值模式；容许度收量程内任意数并照写）；`CLASSICAL_ANALYSIS_TOOLS` 镜像钉版 skip 名单；分析带口径；分钟进位；词表性质测试 + 钉版对表 |
+| v0.50.0-dev (2026-11-12) | 并行九批各自全绿，合进集成分支后撞出七处衔接：闸门看不到入参批的别名 / 嵌套提升、缺性别名单两份（12 / 17）、同一错误码登记两次、两个码表达同一件事、可选值键 accepted / allowed / valid_domains 三种、密钥判定子串误报 MAX_TOKENS、tools/list 量尺把线上不发的 null 计入撞硬顶 | 合并后在集成分支重跑全量门禁；同一事实只留一份（名单、错误码、详情键、归一化载荷）；预算守卫量线上真发的形状 |
+| v0.50.0-dev (2026-11-12) | MCP 结果把原始引擎树当正文交给模型：114 技法中位 17 万字符、72 个超过 Claude Code 5 万字符落盘线；调度两技法 290 万字符；`include_all` 指引 126 万字符；3 MB 澄清备注原样回显两遍 | MCP 缺省改阅读视图（正文一遍 + 段索引 + 依据卡），模型预算按段裁并给照抄可用的续读调用，JSON 不缩进，调度 / 合参 / 存档读回同一视图；整表体积守卫 |
+| v0.50.0-dev (2026-11-12) | `response_view` 跟着载荷进了 runner 的子调用：择日先算的展示盘快照被清空，黄历择日 14 段丢 7 段、多一条假的「结果不完整」（7 个择日技法同病） | `run_tool` 记调用深度，嵌套调用摘掉展示键、不套视图；整表对照每种视图与原始结果的段与告警 |
+| v0.50.0-dev (2026-11-12) | 新机器、网关可达、网关不可达三种现场 doctor 给同一份报告：12 条 `missing:*` + 「not installed yet」+ 去配 OpenClaw，`uv run` 写死，中英混杂；网关永远到不了 ready | 先定 deployment 再出 issues；summary 中英成对；命令只从 `hints.cli_command` 来；OpenClaw 只给确知的人；js_engine 一节 + selfcheck 跑 JS |
+| v0.50.0-dev (2026-11-12) | Java 端口上有个不应答 HTTP 的监听者：端点「不可达」、身份判定不跑，照样起启动器，用户等满预算拿到 conflicts 为空的 start_timeout | `ports.port_taken`（socket 层）在起启动器前 / 超时报错 / doctor 三处共用；非自家占用 → `runtime.port_taken` |
+| v0.50.0-dev (2026-11-12) | 注册表 87 个 HOROSA_*，用户文档只列十几个，32 个 stable / experimental 的变量只能读源码；未知变量的告警在 doctor 里打两遍 | `docs/ENV_VARS.md` 由注册表 + `env_docs` 生成并锁步；doctor 收集告警不再重打日志 |
+| v0.50.0-dev (2026-11-12) | `HOROSA_RUNTIME_DOWNLOAD_ATTEMPTS=abc` 悄悄回落 3，provenance 却写 env:…；`HOROSA_SERVER_ROOT=127.0.0.1:9977` 没人提；代理口令原样进 doctor JSON | 解析器返回 (值, 原因)；provenance `default:rejected env:…`；doctor `env:rejected_value` / `env:invalid_url`；按名字遮值 |
+| v0.50.0-dev (2026-11-12) | 清单条目没有 sha256 时网络下载一声不吭地不校验；断点按文件名存，同名的另一份内容被续上；没有 If-Range；有进展的断线也吃重试；并发 install 互踩；本地清单不是 JSON 时 traceback | 无摘要走网络即拒（`--sha256` 可补）；断点按 sha 定名 + 旁注 + If-Range + 干净重下 + 进展豁免 + 下载锁；清单读不懂结构化报错 |
+| v0.50.0-dev (2026-11-12) | PATH 上的 Node < 20.10：tools/index.js 加载即 SyntaxError，每个 JS 技法 `execution_failed` + `error: {}`；HOROSA_NODE_BIN 指空悄悄回落；doctor 只探 runtime 自带的 node | `engine/node_runtime.py` 解析一次读版本；`node_too_old` / `node_bin_missing`；启动崩溃报 stderr 那行；清单按 mtime 缓存 |
+| v0.50.0-dev (2026-11-12) | `uninstall --purge-data --yes` 在知识库 / 档案都不在时 rmtree 整个 HOROSA_SKILL_DATA_DIR，连同里面不是本工具写的文件；dry-run 只印一行目录名 | `purge.OWNED_NAMES` 白名单 + `left_in_place` + 只 rmdir；家目录 / 根 / 包着 runtime 根时整条拒绝 |
+| v0.50.0-dev (2026-11-12) | 文档教 `curl -o runtime.zip` 存 macOS 的 tar.gz 资产再 `install --archive`：BadZipFile traceback；代理登录页、半截下载同样 traceback | 魔数认格式；坏归档 `runtime.install_archive_invalid`；`install --sha256`；文档配方按原文真跑 |
+| v0.50.0-dev (2026-11-12) | runtime 根只读时 `runtime start` 回「别的进程正在启动」，永远等不到；启动锁里的 pid 被回收给无关进程后锁永不回收 | 只有 FileExistsError 算持锁；`LockDirNotWritableError` → `runtime.root_not_writable`；锁记 `start_token` 认出回收的 pid |
+| v0.50.0-dev (2026-11-12) | 地名「唯一命中」照收上游 high：NYC → 银川、HK → 海口（拼音首字母算精确）、St. Petersburg → 佛州（地区半截提示）、照样起盘；限定写法（北京市朝阳区、London, UK、Taipei, Taiwan）全找不到；提示语推荐的写法自己也不能用 | skill 自己的接受规则（placeResolve.js verdict）：本名 / 英文名 / 全拼 / 行政区词干 / 别名相等才收，同名多地一律问；551 条语料 + 全库 50 077 条「本名, 本地区」性质测试；档案名繁简同键、rename、CLI 导出导入 |
+| v0.50.0-dev (2026-11-12) | 入参认不出就原样往下传：东八区 / 辰时 / 480 / 40n75 / 性别「其他」在不同技法上报错、按缺省或算错，MCP 顶层 place / 别名键被 SDK 丢掉 | 一个逐字段校验器（input_fields + input_normalization）管全部技法与嵌套当事人：读懂进 warnings、读不懂按字段结构化拒；MCP 接回未声明键；结果随性别而变的技法没性别就拒；全目录垃圾值用例守 |
+| v0.50.0-dev (2026-11-12) | dispatch 把同一份出生数据发给每个技法：奇门 / 塔罗 / 黄历按出生时刻起盘，太阳返照不知道推哪年，`preferences` 与用户原话到不了技法；没命中关键词 + 有出生数据一律起本命盘（「我和他合不合」也是），繁体一个关键词都不中 | 114 个技法登记时间角色（`engine/time_roles.py`）、逐技法规划载荷（`engine/dispatch_plan.py`，起课只读 `context`）、查询先归一再路由、意图类代替兜底；226 句意图语料必过 |
+| v0.50.0-dev (2026-11-12) | 澄清闸按字面键过滤问题：伪名（location / birth data / cast-input）给了还问、上海出生问南半球月令、`huangli {"date"}` 被空追问拦住、问题只有中文；带上确认标记连性别这种事实也放行；dispatch 闸是写死的四问 | 问题逐条解析「哪些键回答它 + 谓词 + 是否事实」（`agent_guidance/questions.py`），什么都不缺就放行、确认标记只回答设置；dispatch 先路由再取选中技法问题并集 |
+| v0.50.0-dev (2026-11-12) | `setup --client claude-code` 第二次必失败（`claude mcp add` / `add-json` 同名都拒），retry_command 是同一条必失败的命令；`-e K=V` 排在名字前把名字吞掉，精简面第一次就失败 | 先读 `$CLAUDE_CONFIG_DIR/.claude.json`：一致不动、不同 remove + add、失败用 add-json 装回；照真 CLI 抄的替身（含 PATH 上的真可执行文件）+ 负向对照 |
+| v0.50.0-dev (2026-11-12) | 终端里设了 `HOROSA_RUNTIME_ROOT` 跑 setup：配置不带它，探针却继承终端环境 → 全绿，GUI 客户端起的 server 用默认目录；无载荷平台 / 外部引擎时 setup 死在 install | env_carry 三表锁住登记表（引擎 / 数据变量写进每种 env、密钥永不写、行为开关只点名）；探针 = 最小环境 + 条目 env；无载荷 / 外部引擎跳过安装照写配置 |
+| v0.50.0-dev (2026-11-12) | `.horosa-bak` 每次覆盖（第二次跑完原文件就没了）、0600 配置写成 0644、Codex TOML 直写、OpenClaw 主配置无备份 | 单一落盘口 `_commit_config`：不变不写、首份备份永不覆盖 + 时间戳备份 5 份、原子替换保权限；逐格式测试 |
+| v0.50.0-dev (2026-11-12) | ok:false 信封不统一：无码的校验错误缺省 `horosa_skill_error` → 「重试 / 跑 doctor」；f-string 拼的错误码静态扫描看不见、两个族落不到恢复规则；dispatch 全失败顶层 code 为 null | 127 工具 × 三组坏参数机检不变量；ToolValidationError 缺省 `tool.invalid_input`；码族登记表 + pytest 下未登记码以 BaseException 红；每个码要有测试（债务表只减） |
+| v0.50.0-dev (2026-11-12) | `HOROSA_TOOLSETS` 拼错 = 悄悄全量；`all` = 128；说明书恒写 127；`serve --host 0.0.0.0` 横幅给出连不上的地址、局域网来连 421 不提变量；非 ASCII 令牌 500；485 个广告属性无描述；注释里的工具数全过期 | 写错往精简面倒并三处可见；说明书按注册计划生成；横幅 / 421 按 SDK 同一判据列可连地址与要加的那一行；令牌按字节比；共享字段词典 + 无描述不广告；字面量工具数守卫 |
+| v0.50.0-dev (2026-11-12) | 记忆检索搜的是文件字节：run id、路径、`json` / `ok` 都「命中」，`王 小明` / `婚姻 李四` 0 条，繁简不通，日期写法不同就找不到，`%` `_` 当通配符，深翻页 1.7 s，翻页之间点开一条就重复一条 | 每个 run 一份检索文档（人会搜的字），空白 AND、知识库同款折叠、EXISTS + 全序 SQL 分页；老库迁移 + 正文按预算回填；不再按点用重排 |
+| v0.50.0-dev (2026-11-12) | 记忆过滤条件各认各的：`tool` 只认注册表键（`八字` / MCP 名 0 条），`after` / `before` 按字面比（`昨天` 照收），`group_id` 被丢，档案别名找不到人，列表行带整份载荷（4 行 15 KB） | 过滤在 service 归一（技法名、档案别名、时刻 + 时区），认不出就拒收并给可用写法；列表行 subject 只留认人字段 |
+| v0.50.0-dev (2026-11-12) | 写回答案：第二次覆盖第一次、不带问题就把问题重置、空答案清空、未知 run 冒裸 ValueError、8 MiB 照收；show 产物缺了还说「完整记录」；只读目录上查询冒 sqlite 原始异常 | 旧答案进历史、问题保留、空 / 超长拒收、结构化 not_found；show 如实列缺失；存储错误一律 `memory.store_unavailable`，只读时退到不可变只读连接 |
+| v0.50.0-dev (2026-11-12) | 坏库隔离之后静悄悄：新库是空的，检索只是「没有结果」，别的进程更不知道；可 `runs/` 里每个 run 都有完整副本 | 库是产物的索引：`memory rebuild` 照 manifest / 产物找回；隔离后自动跑；查询与 doctor 提醒 `.bak` 与没进库的文件；崩溃残留只报不删；CLI delete / export |
+| v0.50.0-dev (2026-11-11) | 决策层一档脱敏是一张「日期长什么样」的正则清单：一九九〇年五月三日辰时、May 3 1990、庚午年、北纬31度、Shanghai、我叫王小明原样离机；`\s*` 前缀模式在 8 万空格上 43.7 s，每次 dispatch 都跑 | 按构造：任何数字串最后一律 `<数字>`，地名库全集（首字分桶最长匹配，技法术语受保护）、档案名、引导词人名、干支时辰；空白先压、量词有上界、输入先截；地名库找不到就不发；README 两份写残余风险 |
+| v0.50.0-dev (2026-11-11) | 忠实性零断言报 ok=true、ratio 1.0：「Your day master is Jia wood」对着戊日主的盘满分；bench `--skip-runtime` 跑 120 条里 3 条报 pass_rate 1.0；数据集「宫头：」在导出改成表格后陈旧，全量 119/120 而 CI 看不见 | 三种结论（not_assessed：ok=null、退出码 3、说出找过的族）+ 日主 / 英文四柱 / 格局 / 大运（只认引擎明写的值）；bench 写 verdict + coverage、pass_rate 按全部 case；手写片段对仓里录下的真实导出核对 |
+| v0.50.0-dev (2026-11-11) | 「八字里的用神怎么选」改写成「字里 用神 八 选」；裸词排第一的是界面页与一行口诀；「八字 用神」前两条是口诀（标题里的「八字」在计分）；英文术语与错字零命中、只给中文提示 | 按语料自己的词表切词（标题 / 小节名 / 加粗），孤立单字丢；领域词只加权；裸词时正文顺带提到的界面页 / 口诀 ×0.5；多词全含优先并说出 any；英文按语料中英对照换中文；零命中给近似词。相关度集 0.776 → 0.985，heldout 不降 |
+| v0.50.0-dev (2026-11-11) | 用户笔记原文（检索摘要、精读、knowledge_context）原样交给模型，「SYSTEM: 忽略以上指令」与服务器的话没有区别；只有 knowledge_context 顶上一句说明，裁剪时会和正文分开 | 唯一出口 `user.untrusted()`：`untrusted: true` 排在正文字段前面、正文夹在固定双语围栏里、笔记自带的 ⟦⟧ 换成形似字符；MCP 工具体一层测三处 |
+| v0.50.0-dev (2026-11-11) | 自备知识库的四处「不吭声」：domain 只认内部 id（「八字」「BAZI」报英文错）、limit / offset 越界悄悄改值、PDF / Word / 无扩展名文件悄悄跳过、同一条笔记命中封顶后定义那段被挤掉且 total 按封顶后算；空库 0 命中没说明；精简面的提示点了那个面上没有的工具 | 每一处都说出来：域名认显示名 + 双语错误与清单；paging 写 warnings；not_indexed 按原因 / 扩展名；封顶留定义段 + more_in_note 给精读参数 + total_passages；library 状态；how_to_read 按 settings.mcp_compact 点工具 |
+| v0.50.0-dev (2026-11-11) | 报告的 `output_path` 能点名 run 自己的存档 / manifest（输出根就是 `<data>/runs`），整份替换后这条 run 再也出不了报告；路径检查排在写回解读之后，被拒时答案已记到 run 上；`report_from_tool` 被拒时技法已跑完存好 | 事前检查（无副作用）挪到起盘 / 写回之前；已有文件只替换记在记忆库里的报告；存储区不写；缺省名带样式且原子占名；守卫 `tests/test_report_preflight.py` |
+| v0.50.0-dev (2026-11-11) | 调用方 Markdown 逐行正则认：斜体 / 删除线 / 链接 / 代码块原样印符号，「Note: …」进键值表，调用方的小数被四舍五入；换成 CommonMark 后中文 `**结论：**今年` 又不认 | `reports/markdown.py` 一棵块树 PDF / DOCX 共用；同一段文字里 CommonMark 没认下的成对 ** / ~~ 补认；键值表与取整只对引擎段 |
+| v0.50.0-dev (2026-11-11) | 一段 2000 字的结论、一格 3000 字的表格、2000 字的章名都让整份 PDF `LayoutError` 退成 TXT；几千行的解读按页数平方变慢（8000 行 72 s）；PDF/UA 声明下藏着不嵌入的 Helvetica / Times-Roman | 卡片拆成逐块的 `CardPiece`、长值 / 长格可跨页、`Guarded` 兜底只摊开一块；分栏与长段按屏 / 按组量；初始字体、表格字体、矢量图起始字体都设成报告字体，声明按实际引用的字体判 |
+| v0.50.0-dev (2026-11-11) | PDF 的 emoji 只换 U+1F300–1FAFF 一段（旧断言只测 📍，恰在段内）；退化 TXT 是机器版全文；技法依据报告印 `分宫制=1`；盘图没画成时 PNG 说「这个技法没有盘式」；金口诀印 app 的「起盘后显示…」 | 按含义换符号 + 按真实 cmap 兜底；TXT 用同一串人读块；`setting_reader_text` 共用；`report.chart_figure_unavailable` + `figure_gaps`；adapter 剔除界面提示 |
+| v0.49.1-dev (2026-11-09) | 太乙 / 三式合一择时的 92 天上限是由 60 秒墙钟倒推的估计；Windows x64 实测单扫描 69 / 82 秒，上限窗口必然 `js_engine.timeout` | 扫描那一次调用的墙钟按窗口给（天数 × 4 秒、封顶 540 秒，客户端按 600 秒配），`engine_timeout_at_least` 只抬不降 |
+| v0.49.0 (2026-11-10) | 推 main 后 CI 红在塔罗测试：DOCX 断言写在「没有中文字体就返回」之前；CI 的 Ubuntu 没有中文 TTF，DOCX 本来就不栅格化盘图。本机有字体，门禁和 preflight 全绿 | 断言挪到字体判断之后；新增一条在每台机器上模拟无字体的测试，把只在 CI 走到的分支拉回本机。tag 前 CI 闸拦住了，没发出去 |
+| v0.49.0 (2026-11-10) | 发版前预估 lane 预算：windows-latest 在 v0.48.0 已用 2504 / 2700 s（93%），v0.49.0 的测试多约 8%（本机 472 → 509 s），照比例会贴着上限 | nt 预算 2700 → 3600；仿真 lane 加时 2700 → 1800，总数仍 5400 s，job 超时不变。看上一版的注解提前加，别等草稿被杀 |
+| v0.49.0-dev (2026-11-09) | 七政四余报告画的是方盘，app 七政页缺省是 Moira 圆盘；赤纬推运 app 画赤纬图（svg + 绝对定位 HTML 的卡片）而报告画本命轮 | Moira 补算抽成 guolao runner 共用、fields 口径按 runner 实际值（两页缺省宿度制不同）；赤纬图 svg 原样 + HTML 读 DOM 重画，踩到 `left:0;right:0` 居中、svg 丢首尾空白、卡片高含内边距三处；七条负向对照各红 |
+| v0.49.0-dev (2026-11-09) | 河洛 / 神数的「信息板」要不要进报告：多数神数板只是把正文重排成卡片；河洛的板却有正文没有的大半内容，且整块 2400 px 高、要的纳音 / chartExtras 结果里没有、卦辞库让 bundle 超 4 MB | 逐板「抽文字 → 繁转简 → 对照 snapshot_text」定取舍，只加河洛；按 app 的卡切四张图；core-js 交 board_context；bundle 上限 5 MB；`tests/test_app_charts_heluo.py` 三条负向对照各红 |
+| v0.49.0-dev (2026-11-09) | app 发牌动画（`animation … both`）在浏览器里盖掉了几何牌位的内联 `translate(-50%,-50%) rotate(90deg)`：牌按左上角落位、凯尔特交叉牌不横置、整张盖住第一张（上游 bug）；塔罗牌面扫描件来源 / 授权上游从未记录；补字链印不出的 emoji 符号会让 PNG 整张拒绝 | 牌阵图照内联几何画（= 减少动态效果下的 app），上游只报；144 张逐字节随包 + manifest + 第三方事实如实写「来源未记录、维护者准许」；`horosa-optional-glyph` 印不出就去掉；守卫 tests/test_tarot_figures.py 九条，负向对照十条全红 |
+| v0.49.0-dev (2026-11-09) | 推运双盘 / 七政择日 Moira 盘 / 天星择日与产前朔望的时刻盘：app 在结果之外另取一张盘，报告画不出；补算时差点撞上三件事——`_call_remote` 探不到会去起 runtime、缺省「今天」让隔天的报告换了盘、bundle 带进 react-dom 客户端后 scheduler 的 MessageChannel 让进程永不退出 | 出报告时按存档入参 + 结果里实际用过的时刻经真引擎补算（不存档、不启动 runtime、重起须与存档一致），app 原版代码画；失败留原图 + `figure_gaps` 说明；react-dom 只放行 server；十三条负向对照各红 |
+| v0.49.0-dev (2026-11-09) | app 盘图让 pytest 慢了三成（≈480 → 610–680 s），Windows x64 lane 本来就在 93%：每次出图的 Node 进程算完还空等约 2.5 s，app 原版代码加载时留着轮询的 setTimeout | `render-charts` 等 stdout 写完再 `process.exit(0)`；直接 exit 会截断在 65 511 字节（管道缓冲）；守卫两条，负向对照各自红 |
+| v0.49.0-dev (2026-11-09) | 报告盘图改用星阙 app 原版绘图代码（esbuild 打包 → linkedom 出 SVG → svglib 转矢量）：svglib 把非标准字体静默换成 Helvetica、`fill="transparent"` 画成黑块；app 紫微中宫把「121e28」当科学计数法印成 1°7′4″E（上游 bug，只报）；打包产物曾带进机器临时路径 | 字体走 Courier 占位再换回嵌入字体；SVG 先规整；adapter 只做无损记法换算；构建目录 realpath + 固定名 symlink，跨检出逐字节同一；`verify_app_charts_bundle.py` 进 preflight |
+| v0.48.1-dev (2026-11-09) | v0.48.0 Windows 原生复验：CLI `profile save` 只给地名不补坐标（门面补、CLI 绕过，之后起盘缺 zone / lat / lon 被拒）；`report.no_chart_content` 的恢复提示让八字 PNG 用户「去对八字出」；每份 PDF 重新解析 TrueType（Windows 大字体，110 份 728 次 106 秒），AGENTS 记的「TTFont 带每份文档状态、须每次新建」不成立 | CLI 走 `ToolsAPI.profile`；提示写明 PNG 只画有盘式的技法、改出 PDF / DOCX；`_TTF_CACHE` 按注册名 + mtime / 大小缓存（同一测试 133 → 88 秒，48 份渲染逐字节相同）|
+| v0.48.0 (2026-11-08) | 发版矩阵：windows-11-arm 的 pytest 在 3600 s 处零失败被杀（进度 86%）；v0.47.x 两次已占 96–97% 却没人看 lane 报告 | 仿真 lane 加时 900 → 2700 s、job 90 → 120 分钟；lane 超 85% 打 `::warning::` 注解并写进报告；pytest.log 带 `--durations=25` |
+| v0.48.0-dev (2026-11-08) | 四路并行功能批（地名检索 / 命主档案 / 盘图与日历 / 工具面瘦身）：坐标串分钟四舍五入与上游向下取整差 1′、本机 zoneinfo 缺上游 2026 规则覆盖、`Any | None` 广告成 `type:"null"`、错误码表重复键静默覆盖、MCP 预校验把缺省值写成显式值盖掉档案、全局替换 time.sleep 让测试偶发红、合并时两个并列块的相同结尾被当成共同后缀 | 期望值一律取自上游 / 引擎；与上游逐值对拍；断言只写被测的那块；合并后逐块复核；门禁跑着时不动工作区 |
+| v0.47.4-dev (2026-11-07) | windows-smoke 偶发红：`start` 刚报两个服务都可达，紧接着 doctor 探到 chart 不通，`setup` 判 ok:false，同轮真实排盘冒烟全过；上一轮只重跑未定论 | doctor 只在「一边通一边不通」时短暂复探（3 次 × 0.5 秒），全通 / 全不通一次定论；三条负向对照。推上去后测试在 Linux / Windows CI 红：断言了带平台布局的整体 `ok`，改为只断言 `services:*` |
+| v0.47.3-dev (2026-11-06) | 公开 wheel 冒烟：`setup --vectors` 在默认 Python 3.11 的机器上解析失败。uv 按 requires-python 换解释器的逻辑认不出带 extra 的包；之前的端到端是在仓库目录里跑的，项目配置替它选中了 3.12，因为错误的原因通过 | uvx 启动器带 `--python 3.12`；端到端要在项目目录之外、干净环境里跑 |
+| v0.47.2-dev (2026-11-06) | 拆报告模块时踩的两处：方法改函数后局部变量遮住同名函数（`payload = payload(...)`，`UnboundLocalError`）；验证比对工具时两个负向对照看着没红，其实是对照本身没改动输出（8.6 → 8.7 pt 在 OOXML 里取整相同，`bool(ai_report)` 恒真） | 函数用动词命名；对照先确认真的改了输出 |
+| v0.47.2-dev (2026-11-06) | 「回填只进机器 JSON」这句话是错的：`ai_report` 带 `analysis_sections` 时，PDF / DOCX 的「AI 解读」里印着机器写的段落（八字 16 段 3084 字，AI 写的 2 段 69 字）；上一轮审计只试了四种形状就下了结论，还写进了 AGENTS | 文档改回实情，输出未动，待决；下结论前逐字段试完，不凭几个样例 |
+| v0.47.2-dev (2026-11-06) | 结构整理（行为不变）：派生本地分派与导出键表、工具数写手、分层、CLI 流程模块、`run_tool` 分段。工具数写手放回历史重放时改错了「106 条基准用例」，也照出判官的盲区和两处从没人发现的陈旧工具数 | 写手与判官共用形状；重放历史验证写手；每个提交 471 条请求与广告面逐字节对拍 |
+| v0.47.2-dev (2026-11-06) | 每出一份 PDF 都把系统字体集重新解析一遍：`_face_index` 枚举 .ttc 占渲染约七成，长命的 MCP server 也不例外 | 「字面名 → 序号」表按文件缓存，键带 mtime 与大小；同一份 PDF 从 0.96 s 到 0.29 s，嵌入字体不变；`tests/test_pdf_font_cache.py` |
+| v0.47.2-dev (2026-11-06) | JSON 报告的闸永远是绿的：AI 只写「好。」时覆盖率 1.0、`ready_to_deliver: True`；`style:"chart"` 完全没有 AI 也写 `has_ai_answer: True`、`ai_analysis_complete: True`，量的都是机器回填 | 闸改量调用方自己写的答案；逐章覆盖如实报但不拦交付（定向解读是有意设计）；chart 不要 AI；`tests/test_report_gates.py` |
+| v0.47.2-dev (2026-11-06) | 存档只增不减且看不见：产物带 `indent=2`，答过没回读的 run 会被 `memory prune` 选中，`doctor` 只报磁盘余量不报自己用了多少 | 产物不带缩进；写回答案算点用，prune 也跳过升级前写回的；`doctor.memory_db.usage`；`tests/test_memory_durability.py` |
+| v0.47.2-dev (2026-11-06) | install 不防并发也不防崩溃：别的会话在 stop 与换目录之间从旧树起启动器（install 仍报成功）；被杀的 install 留下 `.hi-*` 约 2 GB，卸载也不清；崩在两次改名之间只剩 `previous/`，离线装不回来；完整的 `.part` 每次重试都 416；镜像回 200 + 错误页时回退不生效 | 换目录全程持启动锁；`.hi-*` 记属主 pid，install 一进来就清、进卸载清单；启动路径与 install 恢复完整的 `previous/`；416 看 Content-Range；逐候选校验内容；`tests/test_runtime_recovery.py` |
+| v0.47.2-dev (2026-11-06) | 启动锁撞上回收的 PID：hand-off 给启动器的锁没人释放，下次启动时那个 pid 若已被无关进程占用，「活持有者不回收」让每次调用都回 `runtime.starting`，启动脚本一次不跑 | 启动器锁按时长封顶（960 s，大于一次启动的上限），上限内才信「活着」；服务都起来 / 停掉时收回；`tests/test_runtime_recovery.py` |
+| v0.47.2-dev (2026-11-06) | `memory_query` 的 `text` 只看最近 400 条：FTS 查得到，`query_runs` 却回 0 条，且不告诉调用方；两字词根本不走 FTS | 问题与答案走索引全库可搜（FTS，短查询 / 缺 FTS5 用 LIKE），并进候选；盘面正文深扫仍有窗口，结果带 `not_scanned`；`tests/test_memory_search.py` |
+| v0.47.2-dev (2026-11-06) | 记忆库出问题拖垮整个服务：只读库 / 路径不可用让 `MemoryStore()` 抛错、服务建不起来；只坏中间页的库构造时看不出来，每次存档都 malformed，重启也不隔离；隔离日志承诺的「memory 工具重建索引」不存在 | 构造不抛（`init_error`，下次操作自愈）；写路径 `_writer` 遇 malformed 且 `integrity_check` 确认后隔离重建；删掉那句承诺；`tests/test_memory_durability.py` |
+| v0.47.2-dev (2026-11-06) | `horosa_memory_query` 说明写「run summaries」，缺省却带全量产物：20 份 63 KB 的星盘线上 1.8 MB，超 1 MiB SSE 上限；2 MB 的八字 42.5 MB。v0.46.1 的预算只认顶层 `data`，记忆结果没有，`horosa_memory_show` 2.1 MB 同样绕过 | `include_payload` 缺省 false；`_fit_result_budget` 按形状裁，记忆产物先裁原始子树、再整份占位；`tests/test_memory_mcp_budget.py` |
+| v0.47.2-dev (2026-11-06) | 答案写回把唯一一份盘面写成 0 字节：`_refresh_run_artifacts` 原地 `write_text`，真卷写满时重试 `ok: true` 也救不回来，`report_render` 只剩 `report.source_not_found`；并发读者 26/1851 读到半个文件；落库 sha 写回后全错；报告 JSON 也被改写 | 存档一律走 `_write_json_atomic`（同目录临时文件 + fsync + 替换），刷新后更新 size / sha，`report_*` 不刷新；`tests/test_memory_durability.py` |
+| v0.47.2-dev (2026-11-06) | 核心调用链审计：闸门、入参、错误路径在表面层手抄多份且已漂开——`horosa_hecan` / `hecan` 从 v0.28.0 起绕过澄清闸 | 每条一个修复 + 负向对照；覆盖面守卫改成枚举全部入口，不点名 |
+| v0.47.2-dev (2026-11-05) | Windows 面没测过的形状：管道下 55/60 个 `--help` 崩、stderr 错误信封不是合法 UTF-8；output_path 先 resolve 再判（UNC 会向对方送 NTLM，卡 21 秒）、NUL / 备用数据流「成功」无文件；状态文件共享冲突（87% 写失败、11.5% 读成「没有状态」、锁留在盘上）；报告目标开着就退化成 TXT，且降级信息被丢、仍报「已生成 PDF」；太乙 / 三式择时一周 40–60 秒（百年流年表逐小时重算节气）| CLI 入口统一 UTF-8；`winpaths` 字符串闸在任何文件系统访问之前；`fsretry` 统一重试共享冲突、放锁绝不抛；另存 `名字 (1).pdf` 并如实回报；`lunarYearCache`（快 6 倍，320 条引擎请求修前修后逐字节相同）|
+| v0.47.2-dev (2026-11-06) | 知识检索的真问题在词法：系统自己印的标签搜不到（hit@1 0.474），「X 是什么」全库 0.016，用户笔记三字以上的词一律 0 分（双字序列拼成「紫微微斗斗数」去数），坏索引带累内置结果 | 一份 `retrieval.py`；语料 = read 的返回；别名、档位排序、零命中改写；故障隔离；读路径不拿写锁；dev / heldout / 自检索三种评测加下限（heldout 0.821 / 0.923）|
+| v0.47.2-dev (2026-11-06) | `[vectors]` 从 v0.45.1 起到不了 MCP server：依赖要装在客户端起 server 的环境里，配置里的启动器却不带 extra，server 永远是纯 BM25 且不报错；`how_to_enable` 还教了 PyPI 上不存在的 `pip install` | `setup --vectors`：写配置之前用客户端那条命令真跑一遍，stdio 探针再要 server 自己报 ready；三态沿用；`--from` 无空格 PEP 508；audit 看穿新写法 |
+| v0.47.2-dev (2026-11-04) | 上游 v3.13.2 只改桌面端就绪门 + 版本号，skill 结果不变；`--depth` 克隆让 `bazi_pithy` 的 `generated_at` 静默写错；公开克隆缺 dist-file 与 @babel/parser | 生成脚本拒绝浅克隆（先红后绿）；Runbook 写明本地上游 == 公开远端时同步 / `--scan` 用本地、门禁用非浅公开克隆；0 hit 先跑上一区间对照 |
+| v0.47.2-dev (2026-11-04) | Windows 维护机补 veraPDF 后把 `HOROSA_VERAPDF` 设成用户级变量，skill 每次启动多报一行「未知环境变量」；同一台机器上`HOROSA_JAVA_HOME`（星阙桌面端构建脚本的 JDK 路径）一直在误报。扫全树：代码里 12 个 HOROSA_* 名字没进注册表（7 个真变量：测试开关 + 启动器交给上游引擎的旋钮；5 个不是环境变量） | 登记为 internal；`test_every_horosa_name_in_the_tree_is_registered` 扫 src / tests / scripts，新名字不登记即红，不是环境变量的写进 `_NOT_ENV_FLAGS` 并给理由 |
+| v0.47.1-dev (2026-11-03) | v0.47.0 收尾项：宿占整张死键表、七政显示偏好、玄史天象记录字段、繁体古籍档漏多行原文、年龄行日期解析、127 处过期上游行号 | 古籍档 span 对整库 33 117 条记录逐条钉；年龄行在 node 里对上游 210 例对拍；死键 / 偏好表逐值对上游 |
+| v0.47.0-dev (2026-11-03) | 上游 v3.13.0 → v3.13.1 再同步：vendor 清单 / 名字级审计全绿，奇门本地路由节气种子却一直无日柱（局数大面积错）；冬至日柱订正改在内部函数、skill 只引了文件名；公元前目标日被四位年正则拒收 | 端口审计加文件级命中；qimen 补日柱（live 种子 fixture）；`_astroextra_date` 走民用历；五域逐函数复核 |
+| v0.46.2-dev (2026-10-31) | Windows 原生复验 v0.46.1 时盯上一条「如实承认的边界」：trace / 决策台账被多个 MCP 会话共写，Windows 上 CRT 的 O_APPEND 是模拟的（seek + write 两步），8 进程 × 200 行每轮丢约 24%；守卫用例在 Windows 上一直 skip | `appendlog.append_line`：Windows 用只申请 FILE_APPEND_DATA 的原生句柄（内核在末尾原子写，1600/1600、16 进程 × 240 KB 行 960/960），trace 与台账都走它；跨进程用例取消 Windows 跳过 + 负向对照用例证明旧写法本机确实会丢 |
+| v0.46.1 (2026-10-31) | 编辑发布说明触发的 completeness 必然误报：release 事件检出 tag 的提交，那里的 server.json 还是上一版 mcpb sha | completeness 的 checkout 固定默认分支；流水线形状测试锁住 |
+| v0.46.1-dev (2026-10-30) | 八字结果走 streamable HTTP 整条失败：官方 SDK 客户端 SSE 单事件上限 1 MiB，原始盘序列化后 2.48 MB（v0.45.1 起即如此） | MCP 层线上体积预算 900 KB：超出时只略去 data 里最大的原始子树，AI 读的部分不动；进程内真客户端量线上字节的测试 |
+| v0.47.0-dev (2026-10-30) | 同步上游**未推送**的 219d8a67 / 8964bfd5（推运图族四法）：四个新工具让 tools/list 冲到 267 KB（硬顶 256 KB）；runner 必须手算上游 JS 定义的请求体；sync 脚本把未公开 sha 写进需求文件首行；「jay」是「jayne」的前缀、「周日小限」含「小限」、OpenCC 把「周日小限」转成「週日」 | 广告层按工具隐藏不影响结果的域核心键 + 收紧共用尾巴（260 223 B）；progextra 回传 vendored 上游算的 `request_fields`、runner 逐键比对（`tool.directed_request_mismatch`）；需求文件首行 sha == 记录的 pin（测试）；路由互斥 + 语料 8 例；定字表 + 金样 |
+| v0.46.0 (2026-10-30) | main CI windows-smoke 两红：整盘 JSON 进 node argv（WinError 206）、`time.tzset`（POSIX 专有）；本机全绿 | `esm_argv` 全平台拦 > 24 000 字符；tzset 必须带 `hasattr` 条件（AST 守卫，负向对照收紧过） |
+| v0.46.0-dev (2026-10-30) | 上游 v3.11.3 → v3.13.0：vendor 清单全绿，手抄件十余处静默过期（印占分盘标签表、写死的缺省 / 文案、民用历日期运算、yearsystem129 后端字段已删仍在读）；顺带查出印度 Tajika 缺省缺席、金口诀昼夜粗判 | `audit_upstream_ports.py` + 台账（变了的上游名字 ∩ skill 提到的 → 必须有结论，审到当前 pin）；`also_derived_from` 多源看守；手抄表逐值 / civil 移植差分测试 |
+| v0.45.1 (2026-10-28) | 发版矩阵 windows-11-arm（仿真 x64）pytest 在 2700 s 被杀，~98%、零失败；v0.45.0 时已占 96% 无人察觉；同批 windows-latest 反而更快 | 只给 `--expect-emulated` lane 加 900 s（3600），守卫同时校验仍装得进 job 的 90 分钟；lane 脚本取自派发提交（main），不必挪 tag |
+| v0.45.1-dev (2026-10-28) | MCP SDK 1.x → 2.3 + 澄清闸走 MRTR：`mcp.get_context()` 没了、模型属性改 snake_case（`model_dump()` 量出来的不是线上形状）、`read_resource` 不收 AnyUrl（setup 探针把异常吞成 None）、`streamable_http_client` 只给两个流、调用结果是 `CallToolResult` | 上下文放 ContextVar；量线上形状一律 `by_alias=True`；探针传字符串；闸门三条路（MRTR / 服务端发起 / 结构化错误），真 SDK 客户端两种协议各跑一遍端到端；篡改 requestState 被 SDK 拒（-32602） |
+| v0.45.1-dev (2026-10-27) | 补上 v0.45.0 列为「没做」的三项：内置知识检索仍是子串计分；向量检索；带标签 PDF。pikepdf 新版 macOS 轮子要 macOS 14/15（本仓承诺 11 起）；reportlab 开源版不打标签；FTS5 的 bm25 不再用；向量测试缺 numpy 会整文件跳过 | 内置检索同一套归一 + BM25（精确键仍压过一切）；可选 `[vectors]`（bge-small-zh int8，钉提交号 + sha256，RRF 定序决胜）；PDF 在 reportlab 里自写结构树（无新依赖）→ veraPDF PDF/UA-1 PASS；dev 组加 numpy 让替身测试在 CI 真跑 |
+| v0.45.0-dev (2026-10-27) | 用户要「看 GitHub 上最好的生产级自定义知识库怎么做，直接借鉴」，并把所有技法的报告与工具调用也照最好的做：五路调研（qmd / basic-memory / Cherry Studio / RAGFlow / Dify / FastGPT / MaxKB / Anthropic 与 MCP 规范 / kerykeion / STORM）；实现时 FTS5 bm25 对常见词给 0 分、executescript 吞事务、零分段凑预算、`knowledge_read` 在技法表里 | 自备知识库：标题分块 + 中文双字 FTS5 + 自算 BM25 + 增量同步 + 长条目只带相关段 + 检索 / 精读两个工具；报告：E 段号与可点引用、数据在前、AI 层单独标注、封面关键设置、替代文字；工具：文件卡 + 按协议版本的 resource_link、检索门面常驻；四条守卫第一版「因为错误的原因通过」，改到负向对照会红 |
+| v0.44.2 (2026-10-27) | 发版期定时 completeness（40552300999）红：main 的 server.json 已回填新 draft 的 mcpb sha，公开 latest 仍是上一版，两者必然对不上 | 窗口性误报：从回填提交推上 main 到翻公开之间的定时 / 手动 completeness 都会红；翻公开后 publish job 派发的那次绿才是判据。未改 workflow（候选修法见条目） |
+| v0.44.2 (2026-10-27) | 发 v0.44.2 时 `publish_release.sh --dispatch` 的 `gh run watch`（默认 3 秒刷新）加上另开的两个 watch 盯同一条 40 分钟的流水线，撞 GitHub 二级限流：所有 `gh` 调用 HTTP 403，脚本的 watch 也以 exit 1 退出（流水线本身不受影响） | 脚本 watch 加 `--interval 60`（守卫 `test_publish_script_watches_the_pipeline_slowly`）；同一条 run 只留一个 watcher；撞了就停掉所有轮询、几分钟后低频再查 |
+| v0.44.2-dev (2026-10-26) | 印度律盘 `chartnum: 9` 的 [起盘信息] 仍写「当前分盘：命盘 / 分盘：D1」：`_attach_jyotish_sections` 没把 `chartnum` 交给 vendored `buildIndiaSchoolHeaderLines`，落到兜底 1；上一条台账误记为「上游文本口径」 | 传请求 `chartnum`（上游 `buildIndiaSnapshotText(…, params.chartnum, …)` 同）；回归测试修前红；调 vendored builder 要对齐上游调用点的实参 |
+| v0.44.1-dev (2026-10-26) | 剩下几种盘图：太乙结果其实一直带 `pan.palace16`（v0.44.0 未做清单的理由错了）；七政罗计命名要跟引擎换位后的 id 走；宫的 sign 在 `chart.houses` 不在 objects | 太乙十六宫 / 七政方盘 / 七政择日动盘 / 南印方盘 / 90° 度盘 / 合盘双圈 / 择时盘；正文有同一份位置表就逐项对照、对不上不画；负向对照 6 条全红 |
+| v0.43.1-dev (2026-10-24) | 两份独立评审：110 份完整排盘报告（符号缺字、护栏话外露、附录机器值、0 张盘图、版面浪费、行首标点）与自备知识库（卸载删笔记、GBK 静默消失、删错文件、覆盖无备份、存档留全文、旧测试因错误原因通过） | 补字链 + 盘图（只取引擎数据）+ 版式重做；知识库单一解析器、回收站、编码链、问题清单、存档只存引用、卸载默认保留；第二轮再修巴比伦无宫、变卦不手推、DOCX 位图、出框 12 pt；第三轮再修卦图六神 / 三式子盘两处图文矛盾；47 条负向对照 |
+| v0.43.1-dev (2026-10-23) | Windows 原生复验 v0.43.0：开着 Smart App Control 的 Windows 11 拒绝运行 uv 给新环境现生成的 `Scripts\*.exe`（`os error 4551`，同机时拦时放），门禁镜像第一步、以及用户的 `uv run … horosa-skill serve` / `uvx … horosa-skill` 都可能起不来；PDF 报告里《灵棋经》等条文的 13 个扩展 B 字，微软雅黑缺 12 个，画成方块 | `python -m horosa_skill` 入口 + `--entry auto|script|module`（SAC 开着自动用 module）+ setup 探针认 4551 + doctor 报 `smart_app_control` + 门禁镜像在 Windows 走 `python -m pytest`；PDF 按字补 SimSun-ExtB / MingLiU-ExtB（`_pdf_glyph_fallback`）；知识库测试 `os.symlink` 在普通用户 Windows 上 WinError 1314（CI 是管理员看不见），`skill_install` 不认 junction；release lane 里 SAC 还拒绝加载载荷的 `astropy/time/_parse_times.pyd`（太乙 / 三式合一全挂，同哈希在旧根放行） | 测试改造 junction；判链接 `is_symlink() or is_junction()`；随包 Python 的应用控制替身（被拦才生效，astropy 落回纯 Python 解析器，结果逐位相同） |
+| v0.43.0-dev (2026-10-23) | 完整排盘 PDF 报告：reportlab `multiBuild` 复用同一份 story，长段落第二遍抛 LayoutError，报告静默降级成 TXT；`Songti.ttc` 第 0 号子字体是 Songti SC Black，正文整本粗体；延迟出页的 canvas 把书签都钉在第 1 页；CLI 报告 `--language` 缺省 zh-CN 盖掉繁体设置；繁体报告里渲染器写死的标签（目录 / 页脚…）仍是简体；知识库隔离测试查错了字段（`data.input_normalized` 是引擎回显）而「因为错误的原因通过」 | 每遍现组 story、目录自绘两遍稳定；字体常规 / 粗体成对注册；CLI 只在给了时才传语言；隔离断言查信封 / 存档 / 引擎请求三处并做负向对照；渲染器字面量过 `t()` 只转一次（已转的文字再转不幂等） |
+| v0.42.0-dev (2026-10-22) | 加「繁体输出」：OpenCC 在术数字上系统性转错（年干→年幹、子丑合→子醜合、日冲→日衝、金克木不变成剋、斗君→鬥君、吉凶星→兇星）；上游段名本就含繁体（命宮、佈局），一律繁转简会把它们折坏；简体 PDF 用的 Songti SC 缺 966 个繁体字；知识精读的正文直接放在 data 里，白名单漏转；两条守卫因样本里没有可转的字而「因为错误的原因通过」 | 按原文逐位定字（与上游界面简繁同一机制，规则 ⊇ 上游、偏离有理由）；标识按词表反查；繁体选 TC 字体并核字形；所有中文字段必须归类（`unclassified_text_paths`）；负向对照的样本必须真会变 |
+| v0.41.2-dev (2026-10-21) | PDF 正文测试断言「带正文 > 2 × 不带正文」的文件大小：大小随嵌入字体漂（Linux 1.83 倍、macOS 1.94 倍），main CI 与发布后矩阵红 | 看内容不看大小（`_pdf_story_text` 收集交给 reportlab 的文字）；只在一台机器上校准的阈值不是断言 |
+| v0.41.2-dev (2026-10-20) | 同日另一条清理分支（Windows 维护机）与已发布的 v0.41.1 重构撞车；结构拆分作废，把 v0.41.1 没覆盖的 13 处缺陷逐条移植：畸形清单崩 doctor、换端口后探旧端口、停脚本超时输出 `b'…'`、Windows 卸载删不掉只读 JDK、引擎非对象 JSON、tool_run 吞坏 request、Codex 非数字超时崩 client check、技法依据报告 DOCX/PDF 空白、八字全零误判、整句 output_contract 逐字拼接、灵棋吞引擎失败、**测试碰用户真实 runtime 与数据目录**（拒连端口挡不住文件系统）、scripts 的 CP1252 解码与 CRLF 写入 | 每条先红后绿的回归测试；conftest 把默认数据目录 / runtime 根换成临时目录（`test_test_isolation`）；scripts/ 的子进程编码与 `write_text` 换行两条守卫 |
+| v0.41.1-dev (2026-10-20) | 可维护性重构第 5 批：铁律 5 的 pin-forward 理由、bump 站点数、preflight 顺序、协议版本号等 10 处陈旧事实；新守卫锁「bump 站点都点名」「文档点名的东西都在」 | 文档里的数字从源头推导或不写；点名的东西要有机器核实 |
+| v0.41.1-dev (2026-10-20) | 可维护性重构第 4 批：测试替身挪出 test_service；ci.yml 补只读权限与并发（main 每提交一组，否则排队会丢结果）；发布巡检的 75 行 heredoc 变成有单测的 `verify_published_release.py` | 并发组键决定谁会被排队丢掉；工作流里的检查要能被测试碰到 |
+| v0.41.1-dev (2026-10-20) | 可维护性重构第 3 批：拆大模块（`agent_guidance` → 包）；拆的时候发现 options_keys 注入原地写进被多个工具共用的策略 dict | 拆分 = 只搬不改名、对外表面逐字比对；import 期对共享对象的原地写一律写时复制 |
+| v0.41.1-dev (2026-10-20) | 可维护性重构第 2 批：经度重试梯子把西经改成东经还算出了结果；宽 `except` 什么都不说时 `logger.warning` 棘轮看不见（审计 12 处）；算源生成器把 3 个技法指向不存在的 runner、声明成「不起盘」；PDF 无中文字体时静默出豆腐块 | 重试只许改写法、不许改值；静默也要能被数出来；名字映射要断言存在 |
+| v0.41.1-dev (2026-10-20) | 可维护性重构第 0 批：直接 `uv run pytest` 会打到桌面版 8899/9999（conftest 不钉后端）；`run_ci_gates` 漏跑多行步骤；拆分前立 monkeypatch 目标守卫 | 护栏要在 CI 看不见的地方也成立；拆之前先堵「拆错了安静变绿」 |
+| v0.41.0 (2026-10-12) | 接入面四缺口：wheel 里没有 skill（只装 wheel 的用户 agent 从没读过规则）；注册表 `/v0/validate` 对旧 server.json 说 valid、publish 会因小写命名空间与不存在的 pypi 包拒两次，且 tag 处的 mcpb sha 是旧的；Agent Plugins schema 封闭；setup 9 → 25 家（各家静默失效的事实各钉一条）。顺带：lane 继承真 HOME、OpenClaw 产物的 `mcp` 根键会被猜测表误合并、AGENTS 说有人锁的 `check_client_matrix` 早已不存在 | 只在发布时执行的规则要在本地复刻；setup 新写的路径都要有接缝；新客户端 = 一行事实 + 锁步测试 |
+| v0.40.2 (2026-10-11) | 表面审计（全 110 技法 × MCP 全量 / 精简 / CLI / HTTP + 门面·资源·提示）查出 service 层全绿掩盖的 8 处 agent 可见缺陷：技法名两种写法只收一种且闸门对 MCP 名放行、dispatch/hecan 吞掉平铺出生信息还反问用户、记忆/报告缺参叫 agent 去问用户、精简面 instructions 写 120 工具、19 条 CLI 命令无说明、示例载荷只有 9/110、qimenzeri 依据卡恒「与声明不一致」、全新数据目录并行首起时 ALTER 竞态崩溃 | `resolve_tool_name` 单点解析（闸门先解析再判）；`_lift_flat_birth`；`AGENT_OWNED_OPERATIONS` 回 must_ask_user=false；精简面 instructions 变体；全命令 help + 计数取真值；每技法 live 示例；`ENGINE_OVERRIDES`；`_ensure_column` 吞并发 duplicate column；新 `scripts/surface_audit.py` 发版前跑 |
+| v0.40.1 (2026-10-06) | preflight 先查「旧 pin 在公开远端」，随后 `verify_upstream_sync --write-state` 把本地未推送的上游 HEAD（ecd742f6）写进 pin，收尾还提示「提交它」——靠人眼拦下 | `pin_to_record`：HEAD 已推送记 HEAD；未推送且没碰 `UPSTREAM_INPUT_ROOTS` 记最近已推送祖先；碰了 / 输入路径脏则拒写；pin 闸挪到全部闸之后；临时 git 仓五情形 + 路径扫描 + 闸序守卫，负向对照 5 红 |
+| v0.40.1 (2026-10-06) | `bump_version.py 0.40.1` 把 pyproject 的历史注释「# v0.40.0 P1：运行期契约此前不在 wheel 里」也改成了 v0.40.1——历史识别靠 `HISTORY_MARKERS` 关键词，这条注释一个都不含 | 代码站点（pyproject / `__init__.py`）只改版本赋值那一行；测试含通用规则会动两行的负向对照；发版前逐行看 bump 的 diff |
+| v0.40.0 (2026-10-05) | 换新 Windows 机后在 Python 3.13 venv 里跑门禁：`verify_runtime_python_lock.py:37` 的 `re.split(pat, line, 1)` 报 DeprecationWarning（3.13 起 maxsplit / count / flags 按位置传参弃用，日后变 TypeError）；CI 钉 3.12，永远看不到 | 改 `maxsplit=1`；`verify_undefined_names.py` 规则集加 ruff `B034`（re.split / sub / subn 位置参数，基线 0）+ self-test 红绿对照；修前对本仓报红 = 负向对照 |
+| v0.40.0 (2026-10-01) | 公开版 Windows 复验（`--check` [OK]、门禁 24/24、release 模式原生 lane 12/12 / 1791 passed）顺带查出：刚起的 chart 服务上 40 个相同的星历请求回来 2 种结果、39 个偏离自带星历——上游 astroextra 直接调 swisseph、不经 flatlib，没服务过 flatlib 的池线程落到默认 `\sweph\ephe\`；7b8da79 的关短路管不到。另更正 09-30「桌面端同中」：它的启动器设了 `SE_EPHE_PATH` | Windows 启动器起 chart 前设 `SE_EPHE_PATH` 指向自带 swefiles（与上游桌面端同；目录缺席即拒启），冷启 40/40 与参照相同；守卫不变量 6 + 4 个负向对照 + 真载荷行为测试（含负向对照）；离线探针必须带被测进程的真实环境 |
+| v0.40.0 (2026-10-01) | 已公开后的 release 模式矩阵 36903587803：ARM lane 1789 过 / 1 红——`test_app_marker_does_not_shadow_the_command_line_evidence` 用假 PID 4242 却没钉 `process_image_path`，托管 runner 上 4242 真有进程 → 拿到别人的映像、不再取命令行 → 证据退成 app_marker | 三条假 PID 用例钉住映像查询；静态守卫：换了 `listener_pids` 字面 PID 的用例必须同时换 `process_image_path`；「4242 被占」模拟复现原错误、修后通过 |
+| v0.40.0 (2026-10-01) | draft 矩阵 36878423196 的 macOS lane（此前一直绿）四条 `ERROR at setup`：「别人」的监听夹具子进程 30 s 没报出端口——1e10587 改成子进程构造完 HTTPServer 才报号，而构造里的 `socket.getfqdn` 反查在托管 macOS runner 上超过 30 s | 先裸 socket bind + listen + 报号，再把 socket 交给 HTTPServer（不走 server_bind，没有反查）；守卫给 getfqdn 下毒，构造在前的写法报不出号 = 负向对照 |
+| v0.40.0 (2026-10-01) | 修完 Windows 线程问题后两条 Windows lane 只剩星历金标 2 红：「留」的顺逆标签互换——上游 `calc_stations` 按留点那一刻≈0 的速度正负定向，是浮点噪声（金标 41 个留错 19 个，mac 绿只因噪声与生成金标时相同）；星历是 v0.40.0 新工具 | 用户拍板 skill 侧声明式偏离：按同一响应的逐日速度复核（覆盖外按交替续推），`directionUpstream` 可审计、判不出就 warning；fixture 增补独立真值（前后半天速度），离线 / live 金标对真值、与平台无关；负向对照 |
+| v0.40.0 (2026-09-30) | Windows 原生复验 draft（7b8da79 后）：本机与托管 x64 / ARM 都只剩 `test_live_chart_service_reproduces_the_upstream_goldens` 2 条红——diff 只在星历「留与顺逆转向」表：上游 `calc_stations` 方向取根处速度的符号（噪声；mac 金标 41 行错 19、Windows 错 20），时刻落在速度噪声窗口里（冥王星 6.9 s）跨平台差 1 s；另：短路下的池线程读编译期默认 `\sweph\ephe\`，本机那里有别的软件的旧星历 → 静默偏差、不报错 | 只放宽病态的那一格、放宽量取实测窗口：停滞行星体 / 位置逐字节、时刻 ≤ 10 s、方向不比，其余逐字节（退 Moshier 由月相 / 月亮入座按秒抓）；自我退役守卫钉住上游缺陷；产品层方向是否声明式 deviation 待用户拍板；Windows 复验要比数值，不只看没报错 |
+| v0.40.0 (2026-09-30) | draft 矩阵：mac lane 绿、两条 Windows lane 红（18 / 17 条 chart 类 `param error`，chart 日志 `KeyError: 'Chiron'`）——上游 v3.11.2 的星历路径短路在进程级记「已设」，而 Swiss Ephemeris 在 Windows 上按线程存状态，CherryPy 池线程从没设过路径 | Windows 启动器起 chart 前设 `HOROSA_EPHE_PATH_FASTPATH=0`（上游自带 kill-switch）；`verify_runtime_scripts.py` 不变量 5 + 上游开关名漂移警报 + 负向对照；一次性诊断分支在 x64 + ARM 真 draft 载荷上对照 0/12 → 12/12 |
+| v0.40.0 (2026-09-29) | Windows 维护机 tag 前闸：`listening_server` 夹具「探针 bind(0) → 关 → 再让子进程绑同号」在本机（动态端口段 1024–15000）全量 pytest 下 4 次中 2 次 `WinError 10013`；09-28 矩阵两条 Windows lane 1500 s 超时——本机真机 lane 1111 s / 1755 passed，慢不是挂 | 要一个「别人」的监听进程就让它自己绑 0 号并报端口；端口必须外定的 `serve --port` 只对绑不上的早退有界换号；矩阵超时先用流式 pytest.log + `--durations` 分清慢 / 挂，预算只对「慢」有意义 |
+| v0.40.0 (2026-09-29) | 文档全面复审：四路审计报 ~120 条陈旧（契约 v14/v56、闸门 84/8、分组 28/5/10、`export_format`、Windows 构建机叙事、AGENTS 死符号与重复…）——守卫只锁「可派生数字」，锁不住存在性 / 蒸馏 / 手改镜像 / 第三方事实 / 版本站点 | 协议 v3 第 5 件：`docs/DOC_MAP.md` 完备性 + 蒸馏守卫（版本号 + 标题代码锚）+ 生成式镜像 `gen_agent_mirrors.py` + `third_party_facts.json`（verified_on / 120 天 / 每周 issue）+ `bump_version.py` 单清单 + 三把 README 新锁（分组数 / 契约号 / 闸门数） |
+| v0.40.0 (2026-09-29) | 发布前复审：上游已到 v3.11.2（9cd9078f）而 skill 钉的 9b74714b 已不在任何上游分支上（三个修复被并入 v3.11.2 提交）——CI 形状看不见，本机 `--require-upstream` 一跑 51 个 runtime 文件 + 12 个 core-js 漂移 | 上游 HEAD 与 pin 每次发布前必对（`git branch --contains <pin>`）；pin 不在分支上 = 历史被改写，逐文件对账不信 diff；公开发布前 pin 必须在上游公开远端上 |
+| v0.40.0 (2026-09-29) | 「同步了却没同步」第七例：`src/shared/localNongliAdapter.js` 是 v0.9 的自写近似公式，2026 立春算到 10:16（真值 04:02，差 6 小时），奇门本地路由 / 奇门择日扫描 / 七政大限年界都吃它 | `src/shared/` 只许放上游没有对应物的自写件（allowlist 守卫）；有上游同名/同职能文件一律 verbatim vendor；种子值级金标对 lunar-javascript 精确表 + 旧公式负向对照 |
+| v0.40.0 (2026-09-29) | 周一矩阵两条 Windows lane 在 pytest 1500 s 处超时且**没有留下 pytest.log**——分不清慢还是挂 | 预算按主机（Windows 4–5× 慢于 mac）；pytest 输出流式落盘，超时也留尾巴；`test_verify_runtime_live` 两条 |
+| v0.40.0 (2026-09-29) | 15 天里第三方世界的变化：Windsurf 更名 Devin Desktop 且移除 Cascade（配置路径换了）；Codex 0.158 每工具 inputSchema 5000 B 预算（超出静默剥说明）；mcp 1.30 头 API 变更 + pydantic≥2.11；GitHub Actions 删 Node 20 | 客户端路径表加 Devin 路径（旧路径留候选）；`verify_mcp_list_budget` 加每工具 5000 B 硬顶；测试/lane 改 `streamable_http_client`；11 个 action 主版本升到 Node 24 |
+| v0.40.0-dev (2026-09-24) | Windows 复验 lane：main（已同步上游 v3.11，契约 15）× 公开 v0.39.0 runtime（payload 14）→ 6 条 sync311 / sanshiunited live 红——版本偏斜，不是回归；`requires_chart` 只看「活不活、点没点名」，看不出「够不够新」 | `requires_current_runtime_contract`：已装 payload 的 `export_registry_version` < 本树 `AI_EXPORT_SETTINGS_VERSION` 即 skip 并写明偏斜（未知不跳）；挂到 sync311 全部 17 条 live + sanshiunited；每周一矩阵（main × latest）因此不再假红 |
+| v0.40.0-dev (2026-09-24) | Windows 复验：`run_ci_gates` 23/24——benchmark smoke 在 cp1252 管道上 `print(json.dumps(报告, ensure_ascii=False))` 炸；stdio 守卫只扫 print **字面量**，对「打印数据」失明，同盲区 19 个脚本 | 打印数据 = 承诺输出非 ASCII：`ensure_ascii=False`+`print(` 也须 reconfigure；19 脚本补惯用块；windows-smoke 加 benchmark 步骤（唯一非 UTF-8 stdout 的 runner） |
+| v0.40.0 (2026-09) | 首推 windows-smoke 红：tests/ 里 7 处起 node 复算金标的 `subprocess.run(…, text=True)` 没给 encoding，CJK 输出按 cp1252 解炸 | node 调用一律 `encoding="utf-8"`；`test_subprocess_encoding` 扩到 tests/ 的 node 调用（负向对照） |
+| v0.40.0 (2026-09) | 首推 CI 红：ci.yml 两个 stdio 探针把全量面工具数写死 116，四个新工具把它变成 120 | 数字只许一个源：探针从 contracts/mcp_list_budget.json 读 full_tools/compact_tools；docs-sync 扫 README 全量行 + ci.yml 字面数 |
+| v0.40.0 (2026-09) | 审计 P0：报告类 MCP 工具 `output_path` 可写任意路径（提示注入 = 覆盖用户任意文件） | 落盘路径闸：相对路径按输出目录解析、绝对路径须在输出目录 / `HOROSA_REPORT_OUTPUT_ROOTS` 内，越界 `report.output_path_not_allowed` 不写文件；三工具 destructiveHint=True |
+| v0.40.0 (2026-09) | 审计 P1：`contracts/` 不在 wheel / MCPB 里——Jev enforce 永不生效、技法算源恒「未标注」（v0.39.0 已出货） | 运行期契约经 `contracts_locator`（源码树 → 包内副本）；pyproject force-include + `.mcpbignore` 反选 + wheel 守卫锁条目 |
+| v0.40.0 (2026-09) | 并行同步实现者踩坑：stub 杀死纯逻辑（六壬择时恒零命中）/ worktree 子进程跑主 checkout / 算源生成器不幂等 / `_js_round` 负数截断 / 移植口径与测试替身 | stub 审计进 revendor；conftest 钉 PYTHONPATH；契约 == 生成器输出；桩按真实下发参数校验 |
+| v0.40.0 (2026-09) | 上游 v3.11.x 重同步：六处「同步了却没同步」——live 复验跑的是已装 runtime 的旧 JS / curated 件 restamp 不带内容 / 生成器修产物不修源 / 裸 `export default X` 漏剥 / vendored JSON 不在 manifest / 知识库计数无真值守卫 | 复验只认本仓引擎（conftest 钉根）；能 verbatim 的手工件一律 verbatim；修生成器不修产物 |
+| v0.39.0 (2026-09) | 发布前 CI 红：双语棘轮抓到新包 28 处单语 raise；本机跑的是「顺手的守卫」不是 run_ci_gates.py | 本机门禁 = `run_ci_gates.py`；按文件计数的棘轮是 API 契约，新包落地就按它写 |
+| v0.39.0 (2026-09) | 决策层：问题构造在 `ask()` 之外抛错，把 liureng_gods 打成 internal_error | 可选增强的**每一行**都要在降级护栏里；「英文 instructions」改成占比规则 |
+| v0.38.1 (2026-09) | 复审：自动化的盲区与 Windows 编码——B0 归属证据不经代码页 / doctor 预算 / 长路径闸 / 隔离前置；B1 升级就地不砍服务、doctor 报载荷过期、selfcheck 先起 runtime；B2 九客户端按各家真实规则（占位符白名单、JSONC 保注释、Cline/Zed timeout、Codex env 根、探针按客户端形状 + `horosa://runtime/status`、wheel 预下载、OAuth 网关改口、镜像指针）；B3 矩阵真下载、出厂预算、HTTP 握手、九客户端、挂着客户端不停、publish 与矩阵同字节、cron 离整点 + kick、min_os 进清单、mcpb 解包断言 | PowerShell 5.1 往管道写的是 OEM 代码页，Python 侧只许收字节（base64）或走 ctypes；「lane 传了 file:// 就以为验过下载」= 本机环境替测试补前提的第三例；换目录前必停自己的服务、但永不停陌生人的；每个客户端的占位符 / 超时 / 环境转发规则都要按**它的**文档写，并让 `client check` 对着真文件说话；发布期：publish job 的每一步先对真 draft 跑（draft 对 `releases/tags` 404、job 级 permissions 整块替换）；发布后：只在没人跑的平台可达的分支靠静态检查兜（F821 闸），带完整输出的超时要按阶段拆预算 |
+| v0.38.0 (2026-09) | 适配性：B0 三处「绿得不真」；B1 Windows 启动器；B2 客户端接入；B3 wheel 零安装；A0/A1 托管派生地基；A2 Windows 半边从 darwin 种子派生；A3 发布契约（清单钉 tag + size、按契约逐平台判完整、平台表锁）；A4 安装侧平台策略（Windows ARM 公告式回退、`min_os`、平台键看芯片）；B4 `setup --client` 一条命令接入（七步、失败包、真 stdio 探测）；B5 agent 文档（shell-only 契约、四份薄镜像、命令守卫）；B6 doctor 机器条件（码表人话、--explain、长路径余量、quarantine、仿真进程、下载旋钮、零外网）；A5 托管流水线（draft → 派生 → 三台真机矩阵 → [OK] 才公开；首跑抓到非默认端口下 stop 停不掉）；主干 CI 红了 19 个 commit 没人看（Windows CRLF checkout / 路径分隔符 / 宿主 OS 默认路径 / macOS runner netstat CLOSED）；A6 v0.38.0 首次托管双平台一次公开（GITHUB_TOKEN 的 release 事件不触发下游 workflow） | CI 的绿由每条命令背书；路径元素自己带引号；写用户文件只动自己的键；配置里的命令一律绝对路径；分发每条路要在没 git/没 github.com 的机器上成立；派生只从过闸的种子开始、依赖集是种子的纯函数；回退只许公告着做、载荷自带解释器所以平台键看芯片不看宿主 Python；接入的终点是客户端那条命令真起了 server；给 agent 抄的每条命令都要有守卫对到真实 CLI；每个诊断码都要有人话、doctor 只报不改且默认不碰外网；清单只在两平台齐了才上 release、真机证据由流水线产出 |
+| v0.37.0 (2026-09) | 任意 AI 客户端可调用：广告层只对一个客户端对过 / 自家 .mcp.json 从未连通 / 端口静默采用与误杀 / 回环走代理 | 按**别人的**约束测；改 golden 前先答「旧断言为何不会红」；负向对照跑不红就如实改口 |
+| v0.36.0 收尾 (2026-09) | 「Java 族 live 需 Mongo」十个版本的误定性 = vendored 脚本裸 `-jar`；演禽假闸门 | 贴「环境限制」前先读 `Result` 原文、用上游桌面起法起一遍；闸门问项以 live 翻转为准，不以转发为准 |
+| v0.36.0 (2026-09) | 止血/可用性/捞回能力 15 批（响应放大、静默降级、手抄表、死键、降级误杀、扁平面丢键、moira 误排除、闸门半盲、错误码……） | 每批四件套 + 全量门禁；台账正文按批见下 |
+| v0.35.0 (2026-09) | 手工件零信号 + 整拷树不比对（六亲两格错值滞留四轮） | 不经流水线的文件都要有「源变了就叫人」的边；守卫树集合 == sync 整拷集合 |
+| v0.35.0 (2026-09) | 手册知识包白名单脱钩 + 读脏工作区 | 每册手册要么收割要么明文排除；出处与正文同源于同一 commit |
+| v0.35.0 (2026-09) | SQLite 日志侧车混进镜像与发布包 | 排除集四处同加（sync / 守卫 / 三 builder）；侧车不是源文件 |
+| v0.34.0 (2026-09) | 上游 v3.10.0 择日十技法同步 | 闭包按停止节点算；抽壳要机械化；解析器盲区造假债务；兜底分类=待确认 |
+| v0.33.1 (2026-09) | issue #15 家族全清剿 | presence 级断言对值失明；跨边界不改键；静默降级会上移；schema 描述不是愿望清单 |
+| v0.14.0 (2026-06) | 古典占星 [古典]/[古典格局] | endpoint 必须登记 `_PYTHON_CHART_ENDPOINTS`；段补≠新工具；离线/live 覆盖分层 |
+| v0.13.0 (2026-06) | 4 未同步 AI 技法 + 太乙/八字段口径 | 审计先查自家排除项；`EXPORT_TECHNIQUES` 才是权威清单；请求型 builder 归 Python |
+| v0.12.0 (2026-06) | 主限法 v12 核5收敛 + faRelatedPeople | vendor 源=Horosa-Public；params 回显≠引擎值；live 必打 vendored 实例；pdSyncRev 心跳 |
+| ↳ 附录 | 主限法 v12 同步清单（历史核对参照） | 显示窗/Vertex/钥匙修真/pdYears 3000/golden v266 |
+| v0.11.0 (2026-06) | 星阙 v2.6.3→v2.6.5 parity | 恒星黄道透传；JS 闭包提取三陷阱；政余诚实局限；离线契约禁裸「无」 |
+| v0.10.0 (2026-06) | 星阙 v2.5.4/v2.6.x parity | PD 参数走 perchart；依赖闭包是头号陷阱；法奇门外科式接入；live 服务让测试真跑 |
+| v0.9.2 (2026-05) | 加固审计 | f-string None 陷阱；禁静默回退；runtime 瘦身实测；preset 是超集 |
+| v0.9.0→v0.9.1 (2026-05) | 神数家族 14 路全上 | kentang 路由坑；`Result.snapshot` 嵌套；kinastro 只 vendor 引擎；中立 CWD 验证 |
+| ≈v0.8.x | v2.5.0 推运(7)+卜卦/择日 | JS-vendor vs Python-port 决策树的来历与四个坑 |
+| ≈v0.7.x | v2.4.0 西占 4 件 | backend-predict 模式；本命增补 JS算/Python排；mundane 复合盘；runtime-source 重同步 |
+| v0.10.0–v0.18.0 | 发布完整性编年（缺半/repack/pin-forward 全史） | 三种失效模式的完整案例史；现行法则见 `AGENTS.md` §7 |
+| Windows 发布侧 | 独立台账（本文下节） | 三失效模式/逐版本 win 半边史/横切教训（维护者视角） |
+| upstream v2.2.1 | AI-analysis SSE Issue #8 | 只影响星阙桌面端 chat 流，不影响 skill 计算路径 |
+
+---
+
+## Windows 发布侧台账（维护者视角 · 原文收编）
+
+Windows 侧离线 runtime 发布的逐版本经验台账。这里是**为什么**与**踩过的坑**的叙事视角；
+可执行的操作细节（命令、脚本、闸门）在 [`AGENTS.md`](../AGENTS.md) 的对应条目与
+[`OFFLINE_RUNTIME_RELEASES.md`](./OFFLINE_RUNTIME_RELEASES.md)、
+[`WINDOWS_RELEASE_BUILD_PROMPT.md`](./WINDOWS_RELEASE_BUILD_PROMPT.md)。名词见 [`GLOSSARY.md`](./GLOSSARY.md)。
+
+## 背景：为什么有 Windows 侧台账
+
+离线 runtime 分 darwin-arm64 与 win32-x64 两个平台构建。**Windows 半边在一台真实 Windows
+机器上离线构建**（要 embed Python + JDK17 + Node + astropy + 引擎 + core-js），不进 CI。mac 侧发布
+新版时，win 半边常常缺席或滞后——这台台账记录了它的每一次形态与修法。
+
+## 主线：`latest` 的 Windows 半边完整性（三种失败模式）
+
+| 模式 | 表现 | 守卫 | install | 探测 |
+| --- | --- | --- | --- | --- |
+| **无 manifest** | `runtime-manifest.json` 直接 404 | — | **两平台都坏** | 手查 |
+| **darwin-only** | manifest 只列 `darwin-arm64`，无 win zip | **红**（v0.13.0 起自动抓） | Windows 找不到 `win32-x64` / zip 404 | 守卫红 或 `sync --check` |
+| **pin-forward** | manifest 列 win32 但**指向旧版 zip** | **绿**（URL 能解析、sha 匹配） | 不坏，但装到**滞后 N 版**的旧运行时 | 只有 `sync_windows_release.py --check` 抓得到 |
+
+**pin-forward 是最隐蔽的**：守卫只查“存在 + 可解析”，查不出版本不匹配。唯一可靠探测是
+`sync_windows_release.py --check`——它找版本专属的 `horosa-runtime-win32-x64-vX.Y.Z.zip`
+资产，pin-forward 下该资产缺失即报 `[GAP]`。**把 `--check` 的 GAP 当权威，不管守卫什么颜色。**
+
+## 逐版本
+
+| 版本 | Windows 侧发生了什么 | 教训 |
+| --- | --- | --- |
+| v0.7.0 | 构建脚本用了 `rsync`（Windows 没有） | 改 `shutil.copytree`，让同一个 builder 跨平台可跑。 |
+| v0.9.1 | 补 14 个神数引擎 | 神数族（5 独立 + 9 kinastro）要全量 vendor。 |
+| v0.10.0 | `latest` 无 manifest → 两平台 install 全坏；且 mac builder 有 shaozi 生成 + plotly 剥离两步，Windows builder 没有 → 会出占位邵子条文且 zip 大 40MB，**却仍通过 verify** | 加 builder 间步骤对齐；`verify` 的 `REQUIRED_ENTRIES` 是两 builder 必须满足的跨平台契约。**动一个 builder 就 grep 另一个 + 两份 REQUIRED_ENTRIES。** |
+| v0.12.0 | 启动器加固；建立两道 CI 闸 | PID 归属须用 `[System.IO.Path]::GetFullPath` 规范化后比对（否则 `..\` 未规范化→永不匹配→stop 静默空转、漏杀进程）；java 加 `-Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8`（Temurin 17 pre-JEP-400 CJK 乱码）；端口占用快速失败 + 300s 就绪闸。新增 `release-completeness.yml` + `verify_builder_parity.py`。 |
+| v0.13.0 | 第一个被守卫**自动抓到**的 darwin-only | 从此靠那道红勾，不再靠手工发现。 |
+| v0.14.0 | 造出 `sync_windows_release.py` 一键补齐 | 把手工的“构建→下 darwin→双 manifest+校验和→verify→上传”封装成幂等、安全（无 `--upload` 不做不可逆动作）的一条命令。 |
+| v0.15.0 | 天文地占/塔罗两新技法 | 新技法可能带**新后端端点**（`/geomancy/reading`）——源树 astropy 须够新，否则新端点 404 而 verify（只查文件在不在）照过。 |
+| v0.16.1 | mac **首次自发全双平台**（重封包 v0.16.0 win zip + 改内嵌 manifest）；但 `export_registry_version` 6→7 只改了 mac builder | 重封包合法的前提是发布 diff **无 payload 层改动**（core-js/引擎/wheels/启动器）；用 HTTP range 读已发布 zip 的内嵌 manifest 可免下 800MB 核验。**数字常量会漂移**：子串级 parity 看不见 6 vs 7，遂给 `verify_builder_parity.py` 加了 `schema_version`/`runtime_layout_version`/`export_registry_version` 交叉核对。 |
+| v0.17.0 | pin-forward 模式开始；一掌经/占星地图/名人库 + 引擎全面升级 | 新增 `/location/acg` 端点 + `astrodata-aa.sqlite.gz`（约 50MB，在 `dist-file/astrodata/`）——**源树新鲜度成真风险**，须从当前 Windows 工作区重灌 vendor 并原生验证新端点返回真数据。 |
+| v0.18.0 | pin-forward（钉 v0.16.1） | 验证 install 落盘时踩过假警报：真运行时根在 `AppData\Local\Horosa\runtime\current`，别错查了旧的 `.horosa\runtime\current`。 |
+| v0.19.0 | 名人库中文化 + 法奇门对宫订正 | 名人库靠 astrodata sqlite 的 `name_zh` 列（07-07 源树已含 5.9 万行）；对宫订正在 `DunJiaFaCalc.js`（JS，随 repo）——原生验证可用 sha 对齐“bundle 里的 JS == repo 的 JS”。 |
+| v0.20.0 | pin-forward **基线前移**（钉到上一个真 zip 而非冻结 v0.16.1）；黄历/六壬七政 | 滞后从多版降到约一版；黄历依赖 java 端 `/nongli/time` + `/jieqi/year`，直接裸 POST 会因 payload 归一化差异 500，须走 skill 自己的 `_call_remote` 归一化路径验证。 |
+| v0.21.0 | 安装链增强（断点续传/多镜像/进度/uninstall/upgrade/selfcheck） | 新 install UX 往 stdout 打**进度/引导文案，不再是纯 JSON**——脚本化判定改用 `doctor`（仍是干净 JSON）或从混合输出提取末尾 JSON 块的 `asset.sha256`。“版本短路”被 `--force` 绕过，`install --archive --force` 仍做真安装。 |
+| v0.23.0 | darwin-only 复发；vendor 缺 v3.5.x 新顶层件（kin_year_domain/ifa_odu/prepareruntime）+ jar 落后须从当前 Windows workspace 重灌；首建死于 Temurin `releases/latest` 半发布窗口（jdk-17.0.20-ga 无 win 二进制）→ JDK 改走 Adoptium API；kintaiyi game_theory/scipy 吓人 traceback 定性为两平台一致良性噪音 | JDK 解析必须 asset-existence-aware；重灌后必跑 `verify_vendor_runtime_sources.py` + `verify_export_contract_mirror.py`；吓人 traceback 先对照 mac 半边定性再动手；无 Mongo 机器 live 验证按「chart 半边绿 + 占时路径 java 500 属预期」判读。 |
+| v0.33.0 (2026-08) | 功能大扩容（93→97）+ 成熟度升级：tianxing explainAt / qizhengelection 等未接入端点收割，四个现场踩坑 + 一批排除判定 | 收割前先查 skill 自家「明确排除项」；区分「引擎文件存在」与「可 headless」 |
+| v0.28.0 (2026-08-17) | v3.9.2 / v3.9.3 同步轮四条 + 首个「AI 层」批次三条：守卫在做功，坑换了形态 | 同步缺口小了不等于没有——每轮仍跑全量对账 |
+| v0.27.0 (2026-08-13) | 目录 mtime 判源树新旧会误判（Windows 侧补半）：darwin-only 发布后守卫连红三次 | 新旧判定看内容 / 提交，不看 mtime |
+| v0.27.0 (2026-08-13) | 落后上游 4 个 release 而四把守卫全绿：盲区在「根级文件」和「单向键差」 | 同源校验必须比上游 HEAD 的全树，含根级文件与双向键差 |
+| v0.27.0 (2026-08-13) | `execution` 不是算源：技法依据卡若照它写会系统性说错「谁算的」 | 算源只从 compute_sources / 技法算源契约取 |
+| v0.27.0 (2026-08-13) | 一台机器的修复可以无声滞留：`main` 没有 upstream tracking | `main` 必须跟踪 origin/main；每次开工先 fetch 并看 ahead/behind |
+| v0.26.1 (2026-08-05) | 「守卫全绿 + 测试全绿」的 v0.26.0 里躺着 16 个 bug | 发布后做三路对抗性复审；presence 级绿灯挡不住值级错误 |
+| v0.26.0 (2026-08-04) | 上游 v3.7.x 同步：三个**机制**缺口比内容缺口更贵（四把守卫全绿仍少两个技法） | 缺口先修机制（守卫的盲区），再补内容 |
+| v0.25.1 (2026-08) | 第一次真跑全套 live：7 红里 4 个是本机无 Mongo、2 个真段缺陷、1 个隔离没做全 | live 红先分类（环境 / 真缺陷 / 隔离），别一把改测试 |
+| v0.25.1 (2026-08) | 中文首页的数字漂了两代：守卫的徽章正则只认英文标签 | 计数守卫必须同时认中英文形态；README 计数以 collect-only 真值锁 |
+| v0.25.0-dev (2026-08) | 段级欠账回填（批 1 起）：印占 53 段 verbatim vendor 胜过 Python 移植 | 大段导出正文优先 verbatim vendor，不移植 |
+| v0.24.0 (2026-07-31) | 守卫「结构性失明」+ MCP 面三处静默破损：守卫全绿却漏掉 8 个上游版本 | 同源校验比对上游 HEAD，不比对自己的 vendored 拷贝 |
+| v0.22.0 (2026-07-16) | parity lint 常量交叉扩到全部 manifest-stamping 脚本（Windows 侧）：export_registry_version 曾在 linux builder 滞留 | 打戳常量一处真值，parity lint 覆盖所有打戳脚本 |
+
+## 横切教训
+
+- **构建/验证 parity 是唯一防回归的锚**：`verify_runtime_release.py` 的 `REQUIRED_ENTRIES` +
+  `verify_builder_parity.py`（步骤子串 + 数字常量）。改任一 builder，同一提交内对齐另一个。
+- **源树新鲜度**：技法多在 repo 层（core-js/service.py），随 checkout 走；但**新后端端点/新数据文件**
+  （astropy 端点、astrodata sqlite）来自外部 Windows 工作区。跳版前核工作区 astropy/dist-file 的 mtime
+  是否新于目标发布，并原生验证新端点返回真数据。
+- **环境坑**：PowerShell 5.1 以 cp1252 读无 BOM 的 `.ps1`（毁 CJK 字面量）→ 用 `pwsh`；Python stdout
+  cp1252 遇 CJK 崩 → `PYTHONUTF8=1`；`gh api --jq .tag_name` 返回裸标量不是 JSON。
+- **原生验证优先走真生产路径**：`install --archive <zip> --force` → `doctor`（结构）→ 启动加固启动器 →
+  直接压测 chart 端点（ken×3 + 神数 + geomancy/acg 各 `rc=0`/真数据）+ 查无乱码。
+- **不碰 mac 层**：Windows 侧只补 Windows 半边与 Windows 侧工具/文档；不改 mac 的发布自动化。
+
+---
+
+## 台账正文（新条目加在最上方）
+
+### v0.51.1-dev / 2026-11-17 — v0.51.0 留下的三条：把「记得看」改成机器说
+
+- **背景**：v0.51.0 发版的四次 release-runtime 与两次 CI 取消，暴露三处只靠人记的地方。① lane 预算：规则写的是「同步上游后打 tag 前用本机 junit × 倍率估一次」，
+  但没有工具，倍率只在当时的会话里；② ci.yml 的 `test`（19–24 / 25 分）和 `windows-smoke`（45–57 / 60 分）绿着跑到 95–97%，没有任何信号，
+  直到各被取消一次；③ `verify_export_contract_mirror.py` 要 gitignored 的 vendored 树，只在 preflight 跑——审计新加的 `ziwei_rules` 漏登白名单，
+  PR CI 与本机 25 道门禁都绿，到发版 preflight 才红。
+- **修复**：① `scripts/estimate_lane_budget.py <junit.xml>`：逐条耗时之和 × `verify_runtime_live.LANE_SLOWDOWN_VS_MAINTAINER_MAC` 对照三条 lane 的预算与
+  runtime-matrix 的 job 超时，超 `PYTEST_BUDGET_WARN_FRACTION` 退出 1 并给出要加到多少；倍率按 v0.51.0 通过的那次 run（darwin 2076 / x64 4802 / ARM 8182 s）对同一套件本机 1185 s 标定为 1.8 / 4.1 / 6.9；先前按被杀 lane 停点估的 3.7 / 6.2 对两条 Windows lane 偏乐观约 10%。
+  负向对照：v0.50.1 的旧预算对 v0.51.0 的套件三 lane 全报、未裁极圈扫的 1558 s 本机跑三 lane 全报。② ci.yml 两个 job 首步记开始时间、末步
+  `scripts/ci_job_budget.py --job <id>`（`!cancelled()`，从 ci.yml 读本 job 的 `timeout-minutes`，超 85% 打 `::warning::`，从不让 job 失败）；
+  `tests/test_ci_job_budget.py` 守首末两步在场（负向对照：删掉 windows-smoke 末步即红并点名）。③ mirror 守卫无 vendored 树时读
+  `$HOROSA_SOURCE_ROOT` 的 aiExport.js（CI 已按契约提交号检出公开上游，PF-20），ci.yml 加一步；preflight 与 Windows 构建带 `--require-vendored`
+  仍验随包那份。`tests/test_verify_export_contract_mirror.py` 在 CI 形状下重放 v0.51.0 的漏登（去掉 `ziwei_rules` 白名单即红）。
+- **规则**：凡是「发版前记得看一下」的检查，要么变成脚本 + 退出码，要么变成 CI 注解；只在发版路径上跑的守卫，能读公开上游就搬进 CI。
+
+### v0.51.0 / 2026-11-17 — 第二次矩阵：Windows 引擎和 macOS 金标差的不只是浮点末位
+
+- **症状**：run 44026495396（预算放宽后）darwin 绿、pytest 1994 / 3000 s；windows-latest 跑完 4662 / 6000 s 但红 8 条：时主九分主两条
+  （`end` / `start` `00:38:41` vs `00:38:42`）、发展年龄两档那条（另一处没改的 `==`，`at` 差 ~4e-10）、盘面细节四张盘 + 重置盘一条
+  （`planetDetails.speedPct / speedMeanPct` 差到 ~4e-6；`inMundo` 相位行 MC/Asc、北/南交换序；`sunPhases` 时刻差一秒）。同 lane 的全量
+  HorosaBench（record only）124/125：`dispatch_qimen_liureng_combo` 被 `agent_guidance.required: question_moment` 拒。
+- **根因**：① 上一条只按「末位噪声」设了 1e-7 容差，但 Windows 载荷的差会被放大和离散化：速度是数值微分（噪声 × 1/dt）、时刻截到整秒（边界上一翻就是 1 s）、
+  排序键近乎并列时行换序（70°N 上升与天顶几乎重合）——没有一个容差能同时兜住而不变成「什么都过」。② 基准数据集的 dispatch case 把占时写在 `birth`；
+  审计后占类技法的时刻只认 `context`（闸门是对的），离线跑基准跳过所有 requires_runtime 的 case，所以只有 darwin lane 的全量跑看得见。
+- **修复**：`tests/float_tree.py` 加 `golden_diff` / `golden_text_diff` / `golden_text_contains`：POSIX 照旧逐值（1e-7），Windows 比形状（键、长度、类型）
+  与去数字后的行（多重集，不论顺序）；七处金标比较改用。`tests/test_float_tree.py` 用 lane 实际回的 Windows 值做夹具：POSIX 分支仍红、Windows 分支绿、
+  Windows 分支下少一行 / 多一个键 / 换了标签照红。基准 case 改把时刻放 `context`；`test_every_dispatch_case_gets_past_the_gate_offline`
+  离线把每条 dispatch case 过一遍闸门（负向对照：换回 HEAD 的数据集红 `agent_guidance.required`）。
+- **规则**：跨平台的值金标只在录它的平台上逐值比；其它平台比形状并在 helper 里写明为什么。新加闸门规则时，把基准数据集里的 case 也过一遍（离线就能查）。
+- **第三次矩阵（run 44055112124）补一刀**：x64 只剩盘面细节两张盘红——[盘面细节] 的「世俗相位(比例):日合月(…)、上升合福点(…)、天顶刑福点(…)…」是**一行**里
+  用「、」串起来的列表，近乎并列的两项在行内换了序（上升合福点 / 天顶刑福点、海冲南交 / 海合北交），而 Windows 分支只容许整行换序。`_masked_lines` 改为
+  去数字后再按列表分隔符拆开、排序；用这次的真实一行做夹具（POSIX 红、Windows 绿、改一个相位或少一项照红）。教训：形状比较要把「排序」放到最细的列表粒度，
+  而一次只能看到 lane 跑到的第一处断言——第二次只修了数据断言，正文断言当时根本没跑到。
+- **ci.yml 两个 job 也到顶了**：v3.14.0 同步后 Linux `test` 19–24 / 25 分钟（e83b6450 在单元测试被取消）、`windows-smoke` 45–57 / 60 分钟（030d8784 被取消、重跑绿）。
+  按「占比 > 90% 就提前加」改 40 / 90 分钟。大同步之后发版前，ci.yml 的 job 时长与 lane 预算一起看。
+
+### v0.51.0 / 2026-11-17 — 发版矩阵三 lane 全红：套件慢一倍撞预算，外加两类只在 lane 上才有的红
+
+- **症状**：release-runtime run 43988165149（publish=true）三条 lane 的 pytest 全在预算处被杀：darwin 1500 s 跑到 74%、windows-latest 3600 s 到 80%、
+  windows-11-arm 5400 s 到 78%；publish 跳过、草稿没转公开。被杀前 pytest.log 里还有 F：三 lane 同红 `test_pd_v12_engine_rev_and_core5_fallback`，
+  两条 Windows lane 同红 `test_live_every_transform_kind_equals_the_upstream_full_golden[vertical/improved]`、x64 另红 `test_live_superimposed_tables_equal_the_upstream_golden`。
+  PR #23 的 CI、本机 25 道门禁、本机 live 全套都绿。
+- **怎么定位的**：超时没有 `-rf` 摘要，只有一串点；数 pytest.log 里的进度字符得到序号（3786 / 6630 / 6688），本机同参数 `--collect-only` 按序号对回用例名
+  （darwin 6344/8496 = 74.7% 与日志的 [74%] 对上）。本机 `--junitxml` 逐条耗时累加到各 lane 停下的序号，得到每条 lane 相对本机的倍率。
+- **根因 1（超时）**：v3.14.0 同步加了约 1000 条 live 用例（变换盘逐种、盘面细节 30 表、时主十二法逐法逐选项的值金标），本机整套 1485–1558 s，
+  估算 darwin ~2800 / x64 ~5700 / arm ~9600 s。其中一条 `test_live_every_method_answers_inside_the_polar_circle` 独占 145–260 s：北纬 70° 的盘
+  引擎每起一次 ~10 s（47°N 0.06 s、66°N 2.6 s、67°N 4.5 s，与宫制、predictive 无关——上游引擎特性，只报不改），这条十二法 × 每法两次请求。
+  v0.50.1 收尾时 x64 已 93% 的 near-budget 注解早就提醒过。
+- **根因 2（pdSyncRev）**：`test_local_js_tools.py` 的期望 `PD_SYNC_REV` 读 vendored 树的 helper.py，缺树时退回写死的 `pd_method_sync_v26`；上游 v3.14.0
+  已推到 v28。本机有 vendored 树（读到 v28）、CI 没有 chart 服务（这条跳过），只有 lane「无 vendored 树 + 真 chart 服务」走回退。
+- **根因 3（Windows 金标）**：变换盘 / 盘面细节 / 时主的值金标在 macOS 录，用 `==` 比全精度浮点（`vertical` 的赤纬、`golden` 的黄经…）。Windows 载荷是
+  MSVC 编的同一份引擎，三角函数末位会差；按 6 位舍入比的黄经大多过、全精度比的必红。后两条（盘面细节、时主夹具）Windows lane 还没跑到，同样写法。
+- **修复**：① 极圈扫只留有极圈分支的九分主（`timelord_tables.py` 的 `polar` 只此一处）+ 事件类代表 moving，十二法极圈由上游引擎层用例守，本机 145–260 → 39 s；
+  预算按估算放到各 lane ~80%：posix 3000、nt 6000、仿真 +4200（总 10200 s），runtime-matrix job 120 → 200 分钟（守卫算术照旧）。
+  ② 回退值改成具名常量 `PD_SYNC_REV_FALLBACK = v28`，新用例 `test_pd_sync_rev_fallback_tracks_the_vendored_engine` 在 vendored 树在场时要求二者相等
+  （负向对照：改回 v26 红、v28 绿）。③ 新增 `tests/float_tree.py`（结构 / 字符串 / 布尔 / None 照旧精确，数值 1e-7 容差，报差异路径），四处金标比较改用它；
+  `tests/test_float_tree.py` 证明末位噪声（4 ulp）旧 `==` 红、新比较绿，1e-5 的真变化照红。
+- **规则**：同步上游（尤其加了成批 live 值金标）后、打 tag 前，用本机 junit 逐条耗时 × lane 倍率估一次预算，不够先加；live 用例别成批起高纬盘；
+  跨平台比浮点金标用 `float_tree_diff`；「vendored 树缺席时退回」的写死值就是 lane 上的真值，re-vendor 时一并推进。
+
+### v0.51.0 / 2026-11-16 — 只有 preflight 跑的检查，改动它覆盖的东西时要手动跑
+
+- **症状**：v0.51.0 发版 preflight 红 `export-contract mirror`：`skill export-technique keys not present in vendored upstream …: ['ziwei_rules']`。PR #23 的 CI 与本机 25 道门禁都绿。
+- **根因**：审计 O-02 把紫微规则库正文单独做成导出技法键 `ziwei_rules`（skill 侧、上游无对应导出契约），没登记 `scripts/verify_export_contract_mirror.py` 的
+  `DIVERGENCE_WHITELIST`。这道检查读 gitignored 的 vendor/runtime-source，`run_ci_gates.py` / CI 不跑它（test_guard_wiring 写明），只在 preflight 跑。
+- **修复**：补白名单条目并写理由。
+- **规则**：新增 / 改名 skill 侧导出技法键时，同一提交登记白名单，并在本机 `HOROSA_SOURCE_ROOT=<上游> uv run python scripts/verify_export_contract_mirror.py`。
+  待做：CI 已检出公开上游（PF-20），可让这道检查在没有 vendored 树时改读 HOROSA_SOURCE_ROOT、进 CI。
+
+### v0.51.0-dev / 2026-11-16 — 分支 100 个提交没跑过 GitHub CI：本机有、CI 没有的三样东西
+
+- **症状**：feat/upstream-v3.14.0 一直只推分支（ci.yml 只在 push main / PR 触发），开 PR #23 后 Linux `test` 红：① `test_sync314_predictive_exports`
+  两条读 `vendor/runtime-source/.../presets.js`（FileNotFoundError）；② `test_serve_wires_the_auto_token…` 拿到 `serve.port_in_use`（18765）；
+  修完再跑，③ `verify_upstream_sync.py` 一步报 vendored 哨兵与子树「missing in vendor/runtime-source」几十条。本机 25 道门禁一直全绿。
+- **根因**：本机有、CI 没有——gitignored 的重灌树 `vendor/runtime-source`（①③；③ 是 PF-20 让 CI 设了 HOROSA_SOURCE_ROOT 后才进到跨树比对）、
+  空闲的 18765（②，CI 上另有用例起本地 HTTP 服务占它）。用例 docstring 还写着「随仓提交」，与 .gitignore 相反。
+- **修复**：① 读 HOROSA_SOURCE_ROOT，缺则 `[upstream-checkout]` 跳过；② monkeypatch `ports.port_bindable`（占住 18765 复现红、改后绿）；
+  ③ 没有 vendored 树时 2 / 2b 可见跳过（`::notice::` + 摘要写 skipped），`--require-upstream`（preflight）缺树照旧 FAIL——
+  `test_ci_shape_skips_only_the_vendored_tree_sections_and_preflight_still_requires_them` 守（负向对照：旧脚本红）。
+- **规则**：长分支合并前先开 PR 让 CI 跑（不只是本机门禁）；用例里出现 `vendor/runtime-source` 就要有跳过分支；用例别写死端口除非它测的就是端口。
+
+### v0.51.0-dev / 2026-11-14 — 审计「全按推荐做」后半程：输出 / 输入 / 调用面 / 平台四路剩余项与待决项，七批串行
+
+- **范围**：用户定「全都按照推荐做、做完直接推送」。输出（O-07…O-29、待决项 1–8）、输入（F06/F14/F15/F18–F34、待决项 1 第一档 / 3 / 5）、
+  调用面（S-05/S-27/S-28/S-30、MCPB 隐私政策与 Desktop 缺省精简面、合参按问题选段）、平台（PF-01…PF-23 除少数留到发版、
+  A-4 闸门下沉、A-1 普查第 0 期、CI 钉提交号检出公开上游、darwin lane 跑完整基准）。每项一条用例 + 负向对照实跑变红，每批全量门禁绿才提交。
+- **同名函数静默顶掉前一个**：input_fields 里钟点用的 `_cn_number` 与农历用的 `_cn_number` 同名，后定义的顶掉前一个——「二十三点」KeyError、
+  「十二三点」读成 12 点、「八九点」崩成内部错误。ruff F811 抓不到（前一个在函数体里被引用过就算「用过」）→ 新守卫
+  `tests/test_no_shadowed_definitions.py`（一个模块里顶层函数 / 类重名即红）。
+- **进程级副作用漏到后面的用例**：回环 HTTP 自动令牌（PF-05）在 `_run_serve` 里写 `os.environ["HOROSA_MCP_TOKEN"]`，起过 serve 的用例之后，
+  「HTTP 且没令牌时删除关闭」的用例按字母序在后面跑就红了（单跑全绿）。→ conftest autouse 先经 monkeypatch 登记这个键，用例结束还原。
+- **改输出形态撞「测下一层」的老用例**：S-28 让 full 视图超模型预算时回键目录，五条测线上预算层（略去最大原始子树）的老用例拿不到 `data`。
+  它们测的是下一层，不是缺省形态 → 在那几条里显式放开模型预算（`mcp.result_budget`），新形态另有专测；并发串扰用例同理。
+- **缺省规则逐个排除反例**：待决项 5（光写 London 取那一座）初版把 Suzhou 判成苏州（宿州也是大城）、Canton 判成广州（Canton 也是俄亥俄的城市名，
+  经旧称别名到达）。→ 只在「恰好一个精选城市、无限定词、不是经别名到达、对手里没有同在中国的地方」时取，每次披露；语料原位改 25 行。
+- **闸门下沉 service 层**（A-4）：缺省 enforce 会让测试套件近千处直调（134 个文件）全红。→ 进程级缺省 `gate.DEFAULT_GATE`，conftest 换成 checked，
+  专测闸门的用例标 `@pytest.mark.service_gate` 用真缺省；AST 守卫要求 service / surfaces / benchmark / scripts 里每处
+  run_tool / dispatch / hecan / report_from_tool 调用都写 `gate=`（漏写 = 嵌套调用被二次拦，或入口绕过自己的闸）。
+- **其余踩到的**：① 新提示文字里的全角括号撞「路由词表必须是 NFKC 规范形」守卫；② 地名标签核对（F30）要查城市库，钉「显式坐标不碰引擎」的两条
+  用例按真实意图改成「引擎不可用也照常、坐标不改」；③ `client config` 的 HTTP 备选命令里放 `$HOROSA_MCP_TOKEN` 撞 cmd / PowerShell 粘贴守卫；
+  ④ 新增的英文单语错误文案撞双语棘轮；⑤ 新探针的宽 except 撞静默降级棘轮——能收窄的收窄（httpx.HTTPError 不是 RuntimeError 子类），
+  真是探针的写注释并刷新基线；⑥ 带 `ad` 时历法说明先说「按公元 500 年读」、折叠后才是公元前——显式纪元时由折叠说明一并写。
+- **留到发版 / 没做**：PF-01 第 3 层（wheel 带 runtime_pins.json，要把 wheel 构建挪到派生之后）；PF-04「旧副本留到新版第一次起成功、起不来自动换回」；
+  待决项 1 的「时刻未知」三柱 / 无宫位盘模式（要按段过滤正文）；私密漏洞报告的仓库开关与隐私页补 Claude / MCPB 一段（都在用户手里）。
+- **守卫 / 做法**：`tests/test_fix314_*.py` 每项一条；`tests/test_no_shadowed_definitions.py`；`tests/test_fix314_service_gate.py`（含 AST）；
+  `scripts/technique_census.py` + `contracts/technique_census.json` + `tests/test_technique_census.py`；workflow 形状测试加「action 钉 40 位提交号」
+  「CI 检出公开上游」「darwin lane 跑基准且不阻断」；Docker 形状测试加 digest / 非 root / HEALTHCHECK。
+
+### v0.51.0-dev / 2026-11-14 — AI 调用面审计修复（四路审计的 P0 / P1 串行修）：全量门禁抓到的衔接、模糊匹配的假阳性、「首选修法」撞上游一致性
+
+- **范围**：surface / inputs / outputs / platform 四路审计（scratchpad/audit314）的 P0 五项全修，P1 修了 S-02/07/08/10/11/13/14/17/18、
+  F08–F11/F16/F17、O-02/03/04、八字 Java 回退（S-16 复核时发现）、O-05 只做可见。每项一条守卫 + 负向对照实跑变红，每批全量门禁绿才提交。
+- **全量门禁抓到的衔接**（单项测试全绿、全量红）：① 农历输入（F02）在不知道技法时（MCP 预归一化 fields=None）把十年大运自己的
+  `calendarType: calendar_360` 当成历法、报 calendar_unsupported——十年大运整个起不了盘；② 目标时区（F03）的宽 except 静默 return（silent-degrade
+  棘轮）；③ 新 JS 工具 zeriParamCheck 没带值级金标；④ LunarDateError 首参是 kind 码，双语棘轮把它当消息（91 → 97）。
+- **模糊匹配做拒绝的假阳性**（S-13）：difflib 0.75 把 pdchart 自己读的 `direction` 配成 `pdProjection`；编辑距离 2 把合参交给紫微的
+  八字参数 `byLon` 配成 `lon`、把 `tree=None` 配成 `time`。判据定为：忽略大小写与 _ / -，键长 ≥ 6 容 2 处、4–5 容 1 处，值为 None 不算给了，
+  任何技法真有的参数名不算写错——三类假阳性都钉成用例。
+- **「首选修法」撞上游一致性**（F16）：审计首选「推运缺目标就拒」，全量 90 红，其中一批是钉上游 `today(chartZone)` 缺省的一致性用例——
+  那是有意采纳的口径。退回审计次选：缺省照上游、warnings 写明「按本服务时钟取了缺省」。同理 O-05（数据目录 0700 / 文件 0600）与
+  `test_new_artifacts_keep_the_umask_mode`（容器卷上别的进程要读）冲突：只做 doctor 可见，缺省改动留给用户定。
+- **核实审计的「逐字相同」时发现真缺口**：S-16 说 bazi_birth 与 bazi_direct 输出相同——本地引擎路径相同，Java 回退（公元前 / byLon）不同：
+  bazi_birth 回退 /bazi/birth，响应没有大运。上游 AI 无头复算走 fetchBaziDirectCached（回退 /bazi/direct）。两条旧用例钉的正是 /bazi/birth，
+  而且只看端点不看大运，所以一直绿。
+- **MCP 面的校验与服务层不同路**：S-08（问句露 pydantic 内部路径）服务层早有 `_one_error_per_field`，MCP 两个信封和 hecan 没用；
+  S-11（子技法收到联合分支缺省值）MCP 面先校验再 model_dump，缺省值在那一层就写成显式值——修了服务层，CLI / MCP 对照用例才抓到。
+- **流程上的两次失手**：① 给不解析参数的 `section_harness.py` 加 `--help` 想看用法，整套 harness 不钉后端跑到桌面版 8899/9999（临时数据目录、
+  不存档，没写用户数据；已坦白）；② `verify_docs_sync.py | tail -1 && git commit`：tail 的退出码吞掉了 FAIL，带着错的导出技法数提交了一次（随即 amend）。
+- **守卫 / 做法**：审计修复每项 `tests/test_fix314_*.py` + 负向对照；「改缺省」类修法先 grep 有没有钉上游缺省的一致性用例；核实审计结论时
+  把各条执行路径（本地 / 回退 / 只读视图）都跑一遍；仓内脚本先读头部用法、绝不用 `--help` 试探；提交前的校验不接管道、直接看退出码。
+
+### v0.51.0-dev / 2026-11-13 — 上游 v3.14.0 同步：并行批半途全停后由一人串行接手，合并衔接与「同一移植做两遍」
+
+- **现象**：上游 Horosa-Public v3.14.0（e55c3a66）一个提交 678 文件：5 个新技法键（timelords / transformchart / zodiacsystems / dongya /
+  zhufang）、导出契约 60 → 65、既有技法多个新段、一批「结果会变」的口径更正、帮助改「一技法一章」、全站界面重做。同步按十二个并行批派出，
+  全部在中途因模型额度耗尽（HTTP 429）同时停下：4 批已提交、3 批提交了一半、5 批只有未提交改动，没有一批交完备忘与手抄审计结论。
+- **接手时撞出的衔接问题**（每条都是「各批自测全绿、合起来红」）：
+  ① labs 与 western 各自移植了同一处上游改动（wholeSignRulers.js 变换盘宫制标记），名字不同；合并取其一，另一批的守卫改指留下的名字。
+  ② 三批各往 `vendor_manifest.json` 同一位置加条目，文本合并冲突；手解时把 cn_a 删掉的 `suzhan/suzhanSnapshot.js` 条目又加了回来
+  （守卫 `test_suzhan_and_jinkou_snapshot_builders_are_verbatim_vendored` 抓到）。之后改用三方 JSON 合并（以 merge-base 判「谁删了」）。
+  ③ 「两边都留」的文本合并在 router 里吞掉了一个 `]`、在 western_options_doc 里吞掉了一个 `}`——冲突块边界恰在结构中间。
+  ④ 同一个 orbScale 两批写了两个卡片标签（「容许度倍数」/「容许度整体倍率」），取上游界面用词。
+  ⑤ 生成件随功能提交进来（technique_provenance.json 缺新技法 → 依据卡「算源 = 声明」为 None）。
+  ⑥ 工具数改写器（`bump_version.py --tool-counts`）按 `mcp_list_budget.json` 的 `full_tools` 认「旧数」：先重记预算基线再改写，
+  「全量 127」就留在 README 里没人改（旧数已等于新数）。
+  ⑦ 一个 JS 工具把整包 settings 交给只读两键的上游请求构造函数（玛雅关联常数只给本地历法）：边界守卫按 (工具, 键) 认豁免，
+  同一工具另一处调用点真读这个键 → 豁免永远「不再需要」、去掉又报死键。改成只交它读的键，请求体逐字不变。
+- **根因**：并行批的「最后一步」（备忘、手抄审计结论、负向对照、生成件单独提交）全都排在功能之后，额度一断最先丢的就是它们；
+  冲突解法「两边都留」对表格 / 列表追加是对的，对跨越语句边界的冲突块是错的。
+- **守卫 / 做法**：合并 vendor_manifest 一律三方 JSON 合并；「两边都留」之后立刻 `ast.parse` 每个改过的 Python 文件；
+  每批合入后立刻跑该批测试（离线 + live）再合下一批；生成件全部合完后统一重生成；手抄审计在集成者手里按「引用文件本轮是否被改过」
+  分三类逐条核（285 条，核出推运 / 主限 / 量化盘的随盘容许度与表格紧挨不再合并两处真口径，均实测已落地）。
+- **规则**：不要自作主张大规模并行派 agent（额度是用户的，断了就全半途）；默认串行，确需并行先问。
+
+### v0.51.0-dev / 2026-11-13 — 桩比真后端多一个字段，离线与 live 各说各话（cn_b 批）
+
+- **现象**：天文地占离线快照「问类：事业」，真机一直是「问类：career」，几个版本没人发现。
+- **根因**：`tests/fakes.py` 的 `/geomancy/reading` 桩塞了 `questionTypeZh`，真后端从不回这个键；Python 移植 `zh or key` 的回落只在真机走到。
+- **守卫**：离线用例断言桩不带该键；live 用例断言真后端只回键。
+- **规则**：给 `FakeClient` 加字段前先在真实例上确认这个键存在。verbatim 文件结果变了不等于有测试会红（九星值日改日紫白，基底零信号）——
+  发布说明里每条「结果会变」都要能指到一条会因此变红的值级用例；写金标挑一个与缺省 / 样例不同的期望值。
+
+### v0.51.0-dev / 2026-11-13 — 派生键换基底，基底的「数据条件段」被暴露（india 批）
+
+- **现象**：印度择日接上印度盘全文后恒报 [过运×大运联动] 缺段。
+- **根因**：该段只在过运日不早于出生时才出；择日命中时刻在未来，过运日（今天）早于「出生」。印度盘本身对未来时刻也一直有这个假缺段。
+- **守卫**：补登为条件段；live 用例断言 missing 为空。回放盘的回显会盖住请求值——「回放盘 + 断言请求派生值」测到的是夹具，改由 live 看。
+- **规则**：bespoke 件 `--restamp` 前对每条偏离问一句「上游这一版修了吗」，修了就退役偏离。
+
+### v0.50.2-dev / 2026-11-13 — PDF 里的生僻字与 emoji 画得出、拿不回
+
+- **现象**（Windows 原生复验 v0.50.1，e2e 的「Markdown + emoji 解读」一项）：PDF 里 🌟 ✨ 换成 ★ ✦、🚀 💰 由 Segoe UI Symbol 画出，没有方块；
+  但用 pypdf 抽文字时连报 `Odd-length string (b'1F680')`，抽出的文字里没有 🚀 💰。最小复现：`render_report` 一段含 𡛸𤣥𥦗（扩展 B，
+  SimSun-ExtB 画）与 🚀💰 的文字，嵌入字体的 ToUnicode 513 条里 5 条是 5 位十六进制。
+- **根因**：reportlab 4.4.10 `ttfonts.makeToUnicodeCMap` 一律 `"<%02X> <%04X>"`：码位超过 U+FFFF 就写出 5 位，不是合法的 UTF-16BE。字形照画，
+  复制 / 检索 / 读屏 / 文本抽取拿到乱码。Windows 上最常见（SimSun-ExtB 与 Segoe UI Symbol 真有这些字形），别的平台装了同类字体一样。
+- **修**：`renderers._patch_to_unicode_cmap`（在 `_load_ttf` 里装，所有嵌进 PDF 的 TrueType 都从那里载入；幂等）把这类条目改写成代理对；
+  基本平面的条目逐字节不变，别的 PDF 字节不受影响。上游哪天修了，正则不再匹配，补丁自然失效。
+- **核对**：修后同一复现 0 条非法；pypdf 抽出 𡛸𤣥𥦗🚀💰 五个字全在，不再告警。
+- **守卫**：`tests/test_pdf_glyph_fallback.py`——补丁后的函数对 U+216F8 / U+1F680 写 `D845DEF8` / `D83DDE80`、基本平面原样、调两次不层层包；
+  Windows 真字体用例核整份 PDF 的 ToUnicode 都是合法 UTF-16、能映回原字。负向对照：补丁改成直接 return → 两条红。第三方事实
+  `reportlab.tounicode-astral` 入账。
+- **规则**：验 PDF 文字只看「没方块」不够，要连 ToUnicode（复制 / 检索拿回的字）一起核；抽取工具的告警是信号，不是噪声。
+
+### v0.50.2-dev / 2026-11-13 — `client config` 打印的命令粘进 PowerShell 是坏的；wheel 用户不带 --launcher 直接报错
+
+- **现象**（Windows 原生复验 v0.50.1，粘贴矩阵：发布版 wheel 打印的每条命令 × cmd / Windows PowerShell 5.1 / pwsh 7.6 × 替身
+  claude.exe、npm 的 claude.ps1 + claude.cmd、VS Code 的 code.cmd、uvx.exe × 五种数据目录，替身记录收到的 argv）：110 条里 19 条不对，
+  VS Code 那条在 PowerShell 里根本没有可用写法（不计入）。
+  ① `client config --format claude-code` 的 `command`（README 教用户复制的那条）在 PowerShell + npm 装的 claude 里任何路径都坏：
+  光写的 `--` 被 claude.ps1 当成参数结束符吃掉，`-e` 是可变参数，把后面的启动命令吞成环境变量。setup 打印的同一条命令没事——
+  v0.50.0-dev 修 setup 时写了 `claude_cli.shell_text`，`client config` 仍走另一个拼法 `_format_cli_command`。
+  ② VS Code 的 `cli_command_windows` 是 cmd 写法（`"{\"name\": …}"`）：PowerShell 5.1 / 7 里一律坏；cmd 里路径带 `&` 也坏（cmd 的引号状态
+  在每个 `"` 处翻转，JSON 字符串的内容正好落在引号外）；路径以 `\` 结尾时 `\\"` 被拼成 `\\\"`，JSON 坏掉。
+  ③ wheel / uvx 装出来的包跑 `client config --format X`（不带 `--launcher`）报「Path must point to the horosa-skill package directory…」：
+  缺省 launcher 写死 `uv`，而 setup 早就按「有没有 pyproject.toml」选 `uvx-wheel`。④ `alternative_http.note` 写成 `… horosa-skill serve serve`。
+- **修**：claude-code 的 `command` 与 HTTP 那条都走 `claude_cli.shell_text`；没有共同写法（`$` `` ` `` `%`、尾随 `\`）时退回 cmd 写法，但 `--`
+  仍写成 `"--"`（路径只含 `%` 时 PowerShell 那边就差这一个）。VS Code 给两条：`cli_command_windows`（cmd）与新增 `cli_command_powershell`
+  （同一段 C 运行库转义放进单引号字面量；5.1 与 7 调 .cmd 都走旧式传参），路径里有 `& | < > ^ %` 时两条都不给、改给
+  `cli_command_windows_note` 指向 install_link / setup；POSIX 的 `cli_command` 改 `shlex.quote`（路径带 `'` 不再断）。`client config` 的
+  `--launcher` 缺省与 setup 同（`_default_setup_launcher`）。
+- **核对**：修后同一矩阵（多了 VS Code 的 PowerShell 一条）114 条里 106 条对；剩下 8 条都是路径含 `$` 时 PowerShell 展开变量——没有
+  共同写法，`shell_text` 注释早有说明，cmd 那边都对。PowerShell 写法另测九种路径：`&` `^` 两种被 code.cmd 那一跳拆坏，正是不给命令的那组。
+- **守卫**：`tests/test_client_config_paste.py`——claude-code 命令按 `winshell` 在 cmd / PowerShell 两种拆法下得到同一个 argv（含 `--`）；
+  退回 cmd 写法仍有 `"--"`；VS Code 两条按「code.cmd 再拆一遍」的模型往返出原 JSON，危险路径不给命令；wheel 形状缺省 `uvx-wheel`；
+  Windows 上真起 cmd / powershell / pwsh 粘一遍（替身 .cmd / .ps1 记 argv）。负向对照：五处修复逐个撤回，每处都有用例红。
+- **顺带踩的**：第一版矩阵用 `.bat` 文件模拟 cmd，`%` 的处理与交互粘贴不同（批处理里单个 `%` 被吃掉），改用 `cmd /d /s /c "<一行>"`；
+  替身 `.cmd` 里写中文路径会被 OEM 代码页读坏，替身目录不放中文。
+- **同轮另一处：CI 的 windows-smoke 撞 45 分钟**。推 bb12577f 后 CI 的 windows-smoke 被取消：单元测试一步 41.6 分钟（上一轮 34.3），
+  OpenClaw smoke 开跑 1 分 41 秒就撞上整 job 的 `timeout-minutes: 45`，已跑步骤全绿，Linux `test` job 也绿。近 12 次该步 30.5–41.6 分钟，
+  加上前后约 6 分钟固定步骤，45 已在 87–100% 之间——又是 v0.45.x 那条「占比 > 90% 就提前加」没人执行。45 → 60。没有机器守卫：
+  CI 时长本机测不到，靠每次推送后看一眼 job 时长 / 预算。
+- **规则**：同一类输出（给人粘的命令）只留一个生成函数；`--` 与 JSON 这类参数的「两种终端都对」要用真终端验，模型拆不出 `.cmd` 的二次解析。
+
+### v0.50.2-dev / 2026-11-12 — server 没有控制台时，每次调用都弹 node 的控制台窗口
+
+- **现象**（Windows 原生复验，找没覆盖过的形状）：用 `pythonw.exe` 起 `horosa-skill tool run bazi_birth`（server 自身没有控制台），
+  调用期间桌面上弹出 node.exe 的控制台窗口（Windows 11 默认由 Windows Terminal 托管），外加一个一闪即逝的。
+- **根因**：控制台程序被一个没有控制台的进程拉起时，Windows 给它新开一个可见控制台。全仓 15 处 `subprocess.run / Popen` 里只有启动器
+  （manager `_spawn_command`）带 `CREATE_NO_WINDOW`；js_client 的引擎与画图调用、node 版本探针、procs 的 PowerShell CIM、ports 的
+  netstat、doctor / setup 的探针都没带。宿主给 server 一个隐藏控制台时（Electron / Node 以 windowsHide 拉起：Claude Desktop、Claude Code）
+  子进程继承它，不弹——所以平常看不到；pythonw、或宿主以 DETACHED 方式起 server 时才弹。
+- **修**：`horosa_skill/winproc.py` 的 `NO_WINDOW`（Windows 上 = `CREATE_NO_WINDOW`，别处 0），每个 spawn 都带。不用 DETACHED_PROCESS
+  （启动器那条教训：powershell -File 会静默 exit 0）。所有调用都捕获输出、自管超时，没有依赖共享控制台的。
+- **核对**：同一探针（窗口按属主进程计数）pythonw 下 bac26c96 → node.exe 等 3 个窗口；修后 0。最小复现：DETACHED 父 + 普通 `subprocess.run`
+  的子进程 `GetConsoleWindow()` 非 0 且可见，带 `CREATE_NO_WINDOW` → 0；隐藏控制台父两种都是 0。
+- **守卫**：`tests/test_winproc.py`——AST 扫 `src/horosa_skill` 全部 `subprocess.run/Popen/call/check_*`，没有 `creationflags`（或 `**kwargs`
+  透传）就红；Windows 上 DETACHED 父 + `NO_WINDOW` 子拿不到控制台窗口。负向对照：去掉 js_client 一处 → 红。不带标志的对照只在复验时
+  实跑（会在维护者屏幕上真弹窗口）。
+- **顺带踩的**：第一版探针用 venv 的 `python.exe` 加 DETACHED_PROCESS 起被测进程，修前修后都数到 2 个窗口——查属主才发现是被测解释器
+  自己的窗口（venv 启动器没控制台，真解释器就新开一个），不是 node 的。我先写了「2 个 = node 版本探针 + 引擎」，没有证据。
+- **规则**：窗口 / 进程类现象按属主进程计数再归因；GUI 宿主形状用 pythonw 模拟，不用「venv 启动器 + DETACHED」。
+- **同轮另一处：CI 的 Windows runner ≠ 普通 Windows 机器**。v0.50.1 候选（bac26c96）本机门禁 6558 passed / 2 failed，main CI 全绿：
+  `test_report_preflight` 的「240 字节合法长名照常写成」在没开长路径的机器上被（正确地）拒——pytest 临时目录约 97 字符，整条 353 > 259；
+  `test_tar_links_that_stay_inside_still_extract` 在没有建链接特权的账户上，tarfile 按 errorlevel 1 静默跳过链接，断言读不到文件。
+  runner 开了 LongPathsEnabled、以管理员跑；本机 `LongPathsEnabled = 0`、WinError 1314。产品行为都对（Windows runtime 归档是 zip，
+  JS 引擎 tar 构建时拒收链接）。修测试：长名那条按 `output_paths.path_limit()` 算放得下多长，放不下先断言干净拒绝、再用最长能放的名字；
+  链接那条先 `_symlink_or_skip`（`[host]` 跳过）。规则进 AGENTS §9.5.2。
+- **同轮第三处：偶发红**。本机门禁一遍红 `test_result_view_catalogue::test_service_views_never_change_what_was_computed`
+  （triplicityrulers[sections] 的 `当前时点` 正文变了）：同一盘不带视图 / 带视图各算一遍再比正文，`当前时点` 首行是「导出时刻 HH:MM」，
+  两遍之间跨过整分钟就不等。修：该模块 autouse 冻结 `service._clock.datetime`。对照：换成每次 +1 分钟的时钟 → agepoint / balbillus /
+  bezzafigure / decennials… 一片红，冻结 → 绿。
+- **撞车（又一次）**：同一晚我也写了 v0.50.1 lane 那两条用例的修复，fetch 确认对面没动之后开跑门禁，30 分钟里 mac 侧推了 be2a0c88
+  修同两条 → 我的那份作废，只留上面这条。规则加一句：对面正在发版时，修发版矩阵的红先在对话里说一声、或只诊断不修。
+
+### v0.50.1 / 2026-11-12 — CI 形状 ≠ lane 形状：用例吃到 lane 的环境变量；时间线按维护机速度定
+
+- **症状**：v0.50.1 draft 的发版矩阵三条 lane（macOS arm64 / Windows x64 / Windows ARM）都红在 `test_client_config.py::test_client_config_launcher_uvx_emits_absolute_command_when_found`；
+  ARM 仿真 lane 另红 `test_decisions_redact.py::test_scrubbing_is_linear_on_adversarial_input[北纬1]`（2.06 s，线 2 s）。CI 与本机门禁都绿。
+- **根因**：① lane 的 pytest 环境（`verify_runtime_live.py::pytest_env`）设着 `HOROSA_RUNTIME_START_TIMEOUT_SECONDS`、`HOROSA_TRACE_ENABLED` 等；
+  深审客户端接入批让 `client config` 把终端里设着、却不写进配置的行为开关点名进 `warnings`（设计如此），用例却断言「没有 warnings」。
+  CI 与 `run_ci_gates.py` 的环境是干净的，看不出。② 时间上限 2 s 是照维护机（< 1 s）定的；要拦的平方级旧实现是 43.7 s。
+- **修复**：用例先 `monkeypatch.delenv` 全部 `HOROSA_*`（负向对照：lane 形状的环境下旧用例红）；脱敏线性用例上限 10 s（仍比 43.7 s 低 4 倍）。
+  只改用例；发布资产（draft 上 bac26c96 构建的字节）不变，lane 的用例取自 main HEAD（`actions/checkout` 不带 ref）。
+- **规则**：断言「没有 warnings / 没有某字段」的用例，先清掉会影响它的 `HOROSA_*`——lane 的环境不是 CI 的环境。时间上限按要拦的回归定，留出仿真 lane 的余量。
+
+### v0.50.0-dev / 2026-11-12 — 锁文件跟不上 package.json：发版第 2 步才红
+
+- **症状**：`publish_release.sh --draft` 第 1 步（darwin 载荷）在 horosa-core-js 里跑 `npm install --omit=dev`，把 package-lock.json 根条目的
+  `engines["//"]` 改成 package.json 的新说明；第 2 步 `build_core_js_asset.py` 要求资产等于已提交的树，见锁文件改了就拒绝。没有任何东西上传。
+- **根因**：深审守卫批改了 package.json 的 engines 说明，没重生锁文件；CI 只跑 `npm ci`（不改锁文件），看不出两者不一致。
+- **修复**：提交同步后的锁文件；`tests/test_core_js_asset.py::test_lockfile_root_mirrors_package_json` 逐字段比根条目（dependencies /
+  devDependencies / engines / license；`bin` 会被 npm 去掉 `./`，不比）。负向对照：旧锁文件下红。
+- **规则**：改 horosa-core-js/package.json 任何字段，同一提交里跑 `npm install --package-lock-only` 并提交锁文件。
+
+### v0.50.0-dev / 2026-11-12 — macOS 绿 ≠ CI 绿（又一次）：按本机字体 / 平台分支的用例只在维护机那一支写过断言
+
+- **症状**：v0.50.0 发版提交（45af5eaa）推上去，CI `test`（ubuntu-latest）红 8 条，`run_ci_gates.py` 在维护机 macOS 上 25 步全绿。
+  doctor 两条「新机器」用例期望 next_action 里有 `horosa-skill install`，CI 上拿到的是网关那句；报告 6 条：标签外的 `() Tj`、DOCX 字体表没有
+  `<w:altName`、预检用例 `KeyError: 'reason'`、`'CIDTypeFace' object has no attribute 'charToGlyph'`、排盘报告「附录漏了 True」。
+- **根因**：两类「本机环境决定走哪一支」的代码，用例只在维护机那一支上写过断言。① 平台：CI 的 ubuntu 是没有离线载荷的平台，doctor 按 E-02 设计走
+  「引擎 + 网关」；用例没钉平台。顺着查到真问题：那一支的 `advice[runtime:not_installed]` 照抄「运行 install（约 730 MB）」，而 install 在那里只装
+  7 MB 的 JS 引擎；引擎缺着时下一步只说网关、命令埋在结论里。② 字体：ubuntu-latest 一款中文 TrueType 都没有（toolset 只装 fonts-noto-color-emoji），
+  PDF 退到 reportlab 自带、不嵌入的 CID 字体，DOCX 探测不到中文字体。这一支此前只有 `test_cid_fallback_*` 一条在本机模拟过。6 条里 3 条是**产品缺陷**：
+  CID 字体没有 `charToGlyph`，`_pdf_glyph_fallback` 于是「不补字」，✓ ☯ 🎉 原样进 PDF（印成方块 / 乱码）；CID 字体对空字符串也写 `() Tj`，版式表空格子
+  成了标签外的绘制；DOCX 的 w:eastAsia 退成 Arial（没有中文字形，模板字体表里本来就有它，替身信息加不进去）。另 2 条是**用例假设**：「TrueType」里的
+  子串 True 被当成漏出的布尔值；PNG 在无字体机器上先因字体被拒，没有 reason。符号用例本想在 CID 支 skip，判据（`face is None`）写错——CID 字体也有 face。
+- **修复**：doctor advice 按平台给、引擎缺着时 next_action 先给 `install --engine-only`；CID 字体按 Adobe 字符集合量覆盖（Adobe-GB1 ⊇ GBK、
+  Adobe-CNS1 ⊇ 大五码 + HKSCS → Python `gbk` / `big5hkscs` 编得出即画得出，`renderers._font_coverage`，app 图同用）；`TaggingCanvas` 空串不画；
+  DOCX 字体名改成候选表 `_DOCX_FONT_CANDIDATES`，本机一款都没有时写 Microsoft YaHei / JhengHei。UA 声明的判据从「有 /FontFile2」改成
+  「正文不是 CID」（补字链的 TrueType 是嵌入的）。
+- **守卫**：`tests/conftest.py` 的 `font_host`（host / no_cjk_font / no_fonts）——字体相关的 6 条用例在每台机器上三种现场都跑；`test_doctor_modes.py` 的
+  `host` fixture 钉 `_platform_key`（darwin-arm64 / linux-x64）+ 引擎缺着的一条。负向对照：四处修复各自还原，模拟现场的那几格红（doctor 3 条、
+  空 Tj 2 条、DOCX 2 条、补字 2 条）。在 Linux 容器（python:3.12-slim，无字体 / DejaVu 两种镜像）里复现了 CI 的 8 条红，修后全绿。
+- **规则**：用例的结论取决于本机环境（字体、平台、已装工具）时，把环境当参数：fixture 模拟每一支、每台机器都跑，`[host]` skip 只留给模拟不出来的；
+  「CI 上走另一支」不是 skip 的理由，常常正是缺陷所在。推之前怀疑是平台分支，就在 Linux 容器里先跑一遍受影响的用例。
+
+### v0.50.0-dev / 2026-11-12 — macOS 绿 ≠ Windows 绿：windows-smoke 红 13 条，本机用 `tests/winsim.py` 模拟 Windows 的文件共享规则
+
+- **症状**：v0.50.0 发版提交（45af5eaa）本机 25 步门禁全绿，main CI 的 windows-smoke（windows-latest）红 13 条，6513 过：
+  ① `test_era_pairing` 2 条——守卫拿 `str(path.relative_to(SERVICE))` 当键，Windows 上是 `runners\mingli.py`，ALLOWED 写的是 `/`；
+  ② `test_memory_facades` 4 条 WinError 32（memory.db / memory.db-shm）——测试自己的 `with sqlite3.connect()` 只提交不关，库删不掉；
+  ③ `test_memory_search` 3 条 not_scanned 为 0——Windows 的 `time.monotonic` 15.6 ms 一跳，「此刻 > 截止」在同一跳里永不成立，预算 0 读完了全部正文；
+  ④ `test_report_preflight` DID NOT RAISE——写死 25 段 × 200 字符（≈ 5000），开了长路径的 Windows（32 767）照常写成；
+  ⑤ `test_report_symbols`——🎉 / 👨👩👧 / ☯ 落在 Segoe UI Symbol 上：那款字体真有黑白字形，是用例把 macOS 的结果写死成「🎉 一定不在」；
+  ⑥ `test_runtime_archive_containment`——拿 `f"{tmp_path}/…"` 当绝对路径，Windows 上是盘符路径，tarfile 按绝对路径拒（正确）；
+  ⑦ `test_setup_command`——rollback 里的 add-json 按 list2cmdline 写，用例用 shlex 拆成 Invalid JSON。
+- **根因 / 判定**：①②⑤⑥ 是测试假设（产品对）；③ 是产品语义（预算判 `>`）在粗钟下失效；④ 的产品面：没开长路径的 Windows 上 stat 对超长路径
+  只说「不存在」，事前检查全过，到建目录才是裸 OSError；⑦ 的产品面：同一条文字真粘进 PowerShell 也是坏的（反斜杠不转义、5.1 不认 `&&`、
+  npm 的 claude.ps1 吃掉光写的 `--`）。按同一类顺查出两处 CI 看不到的产品缺陷：知识索引 `_connect` 在 PRAGMA 失败时不关连接（`--rebuild` 遇到坏头的
+  索引，隔离改名在 Windows 上必然 WinError 32）；v0.50.0 新加的 `rebuild._pid_alive` 用 `os.kill(pid, 0)`（Windows 上信号 0 = CTRL_C_EVENT）。
+- **修复**：每条先在本机复现再修。`tests/winsim.py`（按描述符查本进程开着的路径，拒绝 replace / rename / unlink / remove / rmdir；macOS F_GETPATH、
+  Linux /proc）由 conftest 自动装到每条用例——整套在它下面跑，除上述 4 条只多出 Windows 上本就跳过的 `test_a_reader_in_flight_keeps_a_complete_copy`
+  （标 `posix_file_semantics`）与 tempfile 的 POSIX 写法（豁免）；预算四处改 `>=`，三条用例加粗钟变体；`check_path_length` 按 `path_limit()`
+  （Windows 259 / 32 766 个 UTF-16 单元、macOS 1023 / Linux 4095 字节）事前判，仍是 `path_refused_by_system`；补字按字形表核（0 号、空字形不算）；
+  `_portable_data_filter`；`shell_text` 写两种终端同读的形式、装回旧条目用 `add`、多条每条一行、程序名写 `claude`；`_pid_alive` 走 `runtime.procs.pid_alive`。
+- **守卫**：`tests/test_windows_portability.py`（禁 `str(…relative_to…)`、禁裸 `with sqlite3.connect`、只有 procs.py 能调 os.kill，各带负向对照；模拟器自证会拒）；
+  每条修复的用例都在本机走 Windows 那一支（模拟器 / 粗钟 / `path_limit` 注入 / 替身字体 / `tests/winshell.py` 的 cmd 与 PowerShell 拆法），撤掉修复本机即红。
+- **规则**：AGENTS §9.5.2。只能推理、本机跑不了的：真 Windows 的 SQLite 锁时机、Segoe UI Symbol 的字形是否非空、PowerShell 5.1 / 7 与 claude.ps1 的真实拆法——
+  下一次 windows-smoke 与 Windows 维护机复验确认。
+
+### v0.50.0-dev / 2026-11-12 — JS 引擎只随两个平台的 runtime 归档走：其它机器一个都没有（E-02）
+
+- **症状**（深审 env 组 E-02）：wheel / pip / Docker / 网关安装在 Linux、Intel Mac 上（以及任何没跑 `install` 的人）没有本地 JS 引擎：
+  八字 / 紫微 / 奇门 / 太乙 / 金口诀 / 六壬 / 河洛 / 参评等一律 `js_engine.cli_missing`，六爻失败，盘图与塔罗悄悄降级；`install` 在这些平台上只报
+  `runtime.install_missing_platform`，Docker 镜像连 node 都没有；`setup` 在网关 / 无载荷两条路上一个字节都不装却报成功。
+- **根因**：horosa-core-js 只作为 runtime 载荷的一部分发布（`artifacts.horosa_core_js_root`）。载荷含原生二进制（JDK / CPython / Node），所以只有
+  darwin-arm64 / win32-x64 两份；而引擎本身是纯 JS + 四个生产 npm 包，与平台无关——它被不必要地绑在了平台载荷上。
+- **修复**（维护者选方案 a）：每个发布另附平台无关的 `horosa-core-js-v<ver>.tar.gz`。`scripts/build_core_js_asset.py` 从已跟踪树 + 锁里生产依赖闭包
+  确定性打包；`publish_release.sh` [2/9] 构建并与 seed 同批上 draft、进 SHA256SUMS；`generate_release_manifest.py --core-js-archive` 写清单顶层 `core_js`
+  （钉 tag 的 url、sha256、size、node 下限、version；不进 `platforms`）；`release-runtime.yml` 的 resolve 先查 draft 上有它、assemble 取回同一份字节写进
+  最终清单与 SHA256SUMS。安装侧 `runtime/engine_asset.py`：清单缺本平台但有 `core_js` 时 `install` 自动只装引擎，`--engine-only` 任何平台显式；
+  复用镜像 / 断点 / 摘要 / 安全解包，落 `<runtime 根>/core-js/`，`uninstall --engine-only` 只删它；Node 不随资产走，缺了照装并说清装什么。
+  Docker 镜像加钉版本 Node（与 runtime_toolchain 同版本）+ 按锁 `npm ci --omit=dev` 的引擎，设 `HOROSA_CORE_JS_ROOT`。
+- **守卫**：`tests/test_core_js_asset.py`（排除集与 `RSYNC_FILTERS` 锁步、只含生产依赖、两次构建逐字节相同、脏树 / 版本不符 / 锁不符 / 符号链接拒）；
+  `tests/test_core_js_release_wiring.py`（清单生成、校验器 since 起必需、`sync_windows_release --check` 对缺件 / 缺条目 / 未钉 tag / 摘要不符 / 无摘要 /
+  size 不符各报 [GAP]、completeness 五项、发布脚本与流水线把资产带进最终清单与 SHA256SUMS）；`tests/test_engine_asset_install.py`（127.0.0.1 上的
+  HTTP 源 + 镜像前缀、篡改摘要拒且旧引擎原样、缺资产 / 404 / 非引擎归档 / 穿越成员拒、卸载范围、无载荷平台自动装、Node 缺 / 旧的告警、真资产装上后
+  真跑 place_search 与 huangli）；Dockerfile 守卫五个负向对照。每把都先用变异体跑红过。
+- **规则**：平台无关的东西不绑在平台载荷上；一件发布资产 = 构建脚本 + 清单条目 + [GAP] / completeness 检查 + 安装路径 + 卸载范围，同一个 change 里齐。
+  `contracts/release_platforms.json` 的 `core_js` 段是唯一事实；说引擎能力时只说 headless JS 那部分（紫微、西占、三式、神数仍要 Java / chart）。
+
+
+### v0.50.0-dev / 2026-11-12 — 客户端文档落后于行为：SKILL.md 的说法与示例没人核对（文档批）
+
+- **症状**（冷启动客户端审计 coldagent S1–S14 + 十三批合并后复核）：SKILL.md 说命主档案的 `place` 只是标签（`profiles.py` 早就按地名解析坐标与时区）；
+  精简面写「13 个门面 + tool_run」又在别处写 11；「`warnings` 非空 = 结果不完整」（地名解读、续读提示、未用参数也进 warnings）；确认标记被写成
+  能回答一切（事实早已不行）；把 dispatch 写成万能入口（含糊请求它会拒并要用户挑）；没写没有出生时刻怎么办、显式时区压过地名的夏令时、择日条件极性、
+  `name` 怎么让存档按人可查、运限 `period` 的形状、阅读视图多大；45 KB 里混着安装与维护者材料，小模型读不完。initialize 说明书第 4 条「每个结果都带
+  technique_card」在知识 / 导出工具上是假话；四份薄镜像与 `.agents` / Cursor 入口沿用旧说法与「11 个门面」。示例从没对过广告 schema：
+  `horosa_memory_show.response_sections` 广告成字符串数组，服务自己的续读提示却给 `[17]`。
+- **根因**：文档的每句话是写时对的；十三批改动各自只改了自己那几行文档，没有人按客户端的视角整份重读，也没有任何守卫核对示例载荷。
+- **修复**：SKILL.md 按「先调什么 → 怎么传人 → 怎么读结果 → 被拒怎么办 → dispatch / 直调 / 合参 → 起课时刻 → 报告 / 记忆 / 知识 → 精简面」重写，
+  安装与排障进 references（新增 `references/techniques.md` 收技法选择细节）；说明书五条全部重写为真话并守 2048 字节（八种变体实测 ≤ 2026）；
+  镜像模板、`.agents` 与 Cursor 入口改成事实 / 设置两分。每条示例对共享引擎真跑（19 条全 ok）。
+- **守卫**：`tests/test_skill_examples.py`：抽出 SKILL.md 与 references 的全部 ```call 示例，离线逐条核对工具在面上、过广告 JSON Schema、每个参数名
+  是该工具真读的字段、过逐字段校验与澄清闸；负向对照十条（拼错工具 / 参数、CST、字符串确认位、缺性别、未答设置、缺起课时刻、未知门面参数、类型错）各自红，
+  把真示例改坏（`gendr`、`zone: CST`）同样红。
+- **规则**：客户端文档里的调用示例只写在 ```call 块里，一行一个 `<工具名> <JSON>`；新示例先对共享引擎真跑再提交。行为改了，同一 change 里按客户端视角重读 SKILL.md 相关节。
+### v0.50.0-dev / 2026-11-12 — 深审余项：缺时区、纪元串到别的日期、择日入参报「重试」、按设计不出的段读成失败
+
+- **症状**（共享引擎实测，全目录探查）：
+  - 缺 `zone`：小六壬占时起课 → `tool.internal_error`（KeyError 'zone'）；飞宫时支起 / 小成图占时 / 轨策占时 / 神数正传 → `transport.http_error`
+    （/nongli/time 收到 null）。参评 / 河洛 / 一掌经（vendored baziLunarLocal：`parseZoneHours` 缺省 8）与八个读时区的神数
+    （taixuan / fendjing / beiji / nanji / chunzi / xianqin / cetian / qizhengkin：后端 `timezone_to_float(zone, 8.0)`）悄悄按 +08:00 算；
+    世运盘悄悄按上游缺省地点起盘、不说。
+  - 公元前生人 `ad=-1`（入口已折进出生日期的负号）：天星 / 七政 / 印度择时把 2028 年的窗口读成公元前 2028 年（印度直接 electionscan_failed）；
+    七政四余 [流年流曜] 乙亥（应丙午）；六壬行年没给 guaAd 时起课盘也成了公元前。
+  - 择日入参问题报成引擎故障（恢复建议「重试，再不行跑 doctor」）：印度择时公元前窗口 `electionscan_failed`、奇门 / 八字 / 太乙 / 六壬择时
+    `scan_failed`、黄历择吉 `engine_failed`「须给起止日期」；紫微 / 三式择时在 lunar-javascript 域外照样出结果；黄历择吉多给的 `hour=25`
+    入口说「没有哪个设置读它」，却流进展示盘、崩成 `base_chart_failed`（transport）。
+  - 卦义查询把认不出的名字原样发给后端（只认六位码）：「不存在卦：无」、乾 / 屯 / 既濟什么都不印，ok=true。
+  - 日子馆不传 role：快照「undefined（甲）」，合婚行整行缺席（按 self / spouse 找人）。十年大运印「起运主星：Jupiter」「AI输出模式：l1_all」「宫制：1」。
+  - election 的 `topic`：runner 私下 `topicId or topic` 读、不经词表，入口却报「没有哪个设置读它」。
+  - `_vocab_key` 去掉「-」「.」：'-1' 与 '1'、'1.0' 与 '10' 同键（纪元只能绕开词表另写；dayunLength 会把 1.0 读成 10）。
+  - 13 宫盘 [古典格局] / [占星地图]、卦义三段断卦、紫微规则库六段命盘、没要的默认关段：印「本次本地计算结果未返回…」，读起来像失败。
+  - dispatch 说明行「原文见 results.<tool>.warnings」在 memory_show 阅读视图里指向空（占位只有 {ok, see}）。
+- **根因**：可选字段（有免起课路径、沿用神数基类）缺了没人判，引擎各自兜底；`ad` 被当成「这次调用的纪元」到处转发，而它只属于出生日期；
+  择日的错误分类只看「哪一层失败」，不看「失败的是不是入参」；共用导出键的工具没法说「这段我本来就不出」。
+- **修复 / 守卫**：
+  1. `agent_guidance.questions`：`ZONE_FACT_TOOLS` + `place_fields_required`（占时起课只在按时刻起课那条路要 date/time/zone/lat/lon）+
+     `ZONE_FREE_TOOLS`（附理由）+ `ZONE_DOCUMENTED_DEFAULTS`（世运盘：照用、进 warnings）；入口 `_require_result_facts` 逐字段报缺
+     （`input_normalization.missing_fields_error`，与 pydantic 缺字段同一份条目、提示「或传 place」）。旧码族 `cast_geo_required` 并入删除。
+     守卫 `tests/test_zone_requirement.py`（每个 zone 可选的技法都要有归属；live 换两个时区逐字节证明「无关」）。
+  2. `ad` 只跟它配对的日期：窗口恒 ad=1（日期自带负号，上游天星同），起课 / 流年 / 四柱取数 `_ad_of_date(那个日期)`。守卫
+     `tests/test_era_pairing.py`（源码扫描：读载荷 ad 的请求体，date 必须是同一载荷的 date；例外逐个写理由）+ live。
+  3. `options_zeri.window_field_error` / `zeri_engine_input_error`：本地扫描窗口越出公元 1–9999 → 扫描前 `tool.date_range_unsupported`；
+     引擎回报的窗口 / 条件树 / 坐标 / 域外问题（本地 JS 与后端 /…scan 信封）→ 逐字段错误；搜索窗三种坏法逐字段；展示盘只吃择日技法自己声明的键，
+     展示盘因入参被拒时原样带出输入错误。守卫 `tests/test_zeri_input_errors.py`。
+  4. 卦义：`data/gua64_names.json`（vendored Gua64 生成，node 在场时对拍）；日子馆角色词表（第一个人缺省本人，其后缺了就问）；十年大运照上游
+     `utils/decennials.js` 取星名；`topic` 进全局别名（只在模型真有规范键时改名）；`_vocab_key` 数字按数值规范化、`parse_with` 只留 input_fields 一份。
+  5. `exports.registry.SECTIONS_NOT_PRODUCED_BY_DESIGN`（工具 → 段 → 理由）与缺席的默认关段走 not_requested（`not_requested_reasons`）。
+     守卫 `tests/test_sections_not_produced.py`（live 照样例跑）。memory_show 阅读视图的调度占位留 warnings（`tests/test_dispatch_notes_pointer.py`）。
+- **规则**：缺用户事实不许由引擎兜底——模型里可选的字段由 `place_fields_required` 这类「这次调用要什么」的谓词判；`ad` 永远不跨日期转发；
+  择日 / 引擎回报的失败先问「是不是入参」，是就逐字段；共用段表的工具按设计不出的段登记理由，不留失败式占位。
+- **报告不修**：金口诀 [用神强弱]「当令旺」与四位表「水死」不一致、「空亡：子丑」而 ken xunKong 为空——vendored 上游 JinKouCalc.normalizeKinjinkouData
+  的行为（强弱用本地四位旺衰表 fallback.wangShuai、表行用 ken 后端月令；xunKong 空时回落本地旬空），vendored 文件与 pin v3.13.2 只差 import，只报上游。
+
+### v0.50.0-dev / 2026-11-12 — 中式技法：同一个输入，盘头一种读法、正文另一种（日界 · 公元前 · 设置词表 · 起课输入）
+
+- **症状**（深审 C-09 / CN-N2 / C-14 / C-22 / CN-N7 + 六爻同族清扫，live 引擎实测）：
+  - 太乙不给日界开关：快照「换日：24点算第二天」，日柱却按 23 点进位（引擎缺省 1）；`options.after23NewDay=0` 只到了 JS 快照，
+    /nongli/time 与 /taiyi/pan 用顶层（缺省）→ 盘头日辛酉、正文日壬戌，技法卡还写「缺省」。奇门择日「参数」行把布尔印成 `true`、缺省印空。
+    同一个开关三种规矩：大六壬把 options 里的日界键当未知键拒、奇门 / 神数照收、太乙只收一半。`after23NewDay='bogus'` / 2 悄悄读成 24 点换日。
+  - `ad=-1` + 不带负号的日期：太乙农历按公元前、年柱按公元；金口诀月将卯（带负号写法是戌，公元前 500 年 4 月日在戌宫）；正传 / 小六壬 /
+    轨策 / 小成图 / 神数 ×14 / 灵棋 / 河洛 / 参评 / 老黄历 / 通书整个丢掉 ad，起出公元 500 年的盘；星盘族的行星时块按公元算星期。
+    带负号写法：巴比伦 / 老黄历 / 通书「Invalid date」；河洛 / 参评 / 一掌经 JS 回 ok:false，runner 照回 ok:true，导出每段「未返回」占位。
+  - 飞宫 `mingGender` 只认字面 "female"（「女」「Female」「0」按男排命宫 3 震 vs 4 巽）；小六壬 `school="道家"` / "bogus" → 主流六宫；
+    天文地占未知传本 → european_classical；紫微 `timeAlg=2` → 真太阳时；河洛 5 个、一掌经 15 个、小成图 / 飞宫 / 正传 / 参评 / 灵棋问类等旋钮
+    `x === 'a' ? 'a' : 缺省`；八字反查 count 越界夹到 1–10、读不出当 3；统摄法缺轴 / 乱写悄悄用 巽 / 坤 / 震 / 震。
+  - 「给了却用不了」：小六壬 nums 不是三个正整数 → 悄悄以时起课（或 [0,1,2] 时 JS 回 ok:false 而信封 ok:true）；灵棋 counts 长度不对 → 重掷、
+    越界 → 夹到 0–4；梅花卦义给六爻码 / 卦名 → 后端 null，快照印「无」而 ok:true。
+  - 南半球样例（suzhan / hellen_chart / firdaria / decennials / otherbu 共用）写着北纬 41n26、gpsLat -41.43、西经 174w30、时区 +00:00，标「Wellington」。
+- **根因**：同一个事实由每个消费方自己读：开关在顶层还是 options、纪元在 ad 还是日期负号、性别 / 流派的哪些写法算数，各 runner / adapter
+  各写一份三元式，认不出就落到「缺省」分支；入口校验（phase 1）只管当事人字段，没管技法自己的设置与起课输入。
+- **修复**：
+  1. 入口只留一种形态（`input_normalization`）：`_lift_day_switches` 把 options / 三式合一三层口径里的日界键合到顶层（两处不同 →
+     `tool.field_conflict`），取值 `parse_day_switch` 只收 1 / 0；`_fold_era` 把 `ad=-1` + 不带负号的日期改写成带负号日期（上游 chartAtMoment 同形），
+     `ad` 只收 1 / -1（0 拒：上游 DateTime 的 0 是公元前，Python 后端 `int(ad or 1)` 读成公元）；不读 ad 的技法折完即拿掉。
+     消费方：远端只收显式值（缺省不发 = 引擎缺省 1 / 1），JS 快照吃补了缺省的生效值（`options_cn._resolved_day_switches`）。
+  2. 派生盘的 ad 随它自己的时刻（择日的展示盘曾沿用调用方 ad=-1，入口一改写，公元后的命中时刻就被当公元前、黄历择日铸盘失败）。
+  3. 本地历法域（lunar-javascript 公元 1–9999）外明确拒：老黄历 / 通书（`_split_ymd`）、河洛 / 参评 / 一掌经（`_raise_if_insufficient`）→
+     `tool.date_range_unsupported`（details.accepted）；巴比伦按带符号年读。
+  4. `cn_vocab.py`：十二个技法的枚举设置一张表（规范值 = adapter / 上游选项表的线上值，标签取上游挂载齿轮），`cn_field_validator`
+     挂 schema；飞宫 `mingGender` 走 `parse_gender`、`gender` 是别名（两者不同 → 冲突）；梅花卦义只收三爻经卦码（卦名按引擎码表换码）。
+  5. 起课输入用不了就拒（`tool.<技法>_invalid_cast`，族 `invalid_cast`），结果带 `cast_method`（小六壬 nums / time、灵棋 counts / time、
+     塔罗 seed / birth_fields、金口诀 time + manual_overrides）；统摄法没给的轴照上游缺省并点名（`selection_source` + warnings）。
+  6. 样例坐标取地名库（惠灵顿 41s17 / 174e46 / +12:00），不手写。
+- **守卫**：`tests/test_cn_day_boundary_era.py`（取值表、提升 / 冲突、太乙三方同值、全目录公元前同形、live：全部 45 个带开关技法 × 顶层 / options
+  盘头与正文一致、10 个技法公元前两写法相同且 ≠ 公元 500 年）；`tests/test_cn_vocab.py`（每张表的接受 / 拒绝、规范值锚到消费方源码、
+  起课输入拒绝、飞宫女命各写法、神数 ×14 gender=2 顶层与 options 都拒）。负向对照：去掉提升 / 折叠 / 太乙补缺省 / 词表 / 起课拒绝 / 飞宫解析，各自红。
+- **规则**：同一个事实只在入口读一次；技法设置不许 `x === 'a' ? 'a' : 缺省` 或 `payload.get(k) or 缺省` 吞掉认不出的值——进 `cn_vocab`（中式）/
+  `western_vocab`（西占）；派生请求的 ad 跟它自己的时刻；给了起课输入就要用上，用不了就拒，结果说清起课方式。
+### v0.50.0-dev / 2026-11-12 — 守卫红不了：十把守卫各自漏掉它声称要抓的那类缺陷
+
+- **现象**（深审 C-18，逐把用影子副本变异体实跑）：
+  1. `verify_runtime_live.py` 用五个原因子串的**黑名单**判「live 用例没跑」；`test_live_shenshu_gender._pair` 函数体里
+     `pytest.skip("backend unavailable")`、`test_sync3131_mingli` 导入闸模块失败时兜成 `mark.skip("gate unavailable")`，都不在名单上 → lane 绿着没测 runtime。
+  2. `_extract_archive` / `_assert_extracted_within`：没有任何测试喂过恶意归档，删掉 tar 的 `filter="data"`、断言恒真、不调断言，全量照绿。
+  3. `verify_schema_knob_wiring` 在原文里找子串：`vargaVariant` 被 JS 的 `j.vargaVariants` 冒充，`pdYears` 被 agent_guidance 里描述它的句子冒充。
+  4. `test_layering::test_the_allowlists_name_only_real_offenders` 在空集合上循环，一条断言也不执行；扫描也看不见相对导入。
+  5. `test_mcp_robustness` 三条并发测试把 `service.run_tool` 换成 `time.sleep` 桩，真调用路径上的串扰看不见。
+  6. `verify_value_goldens` 只要值级块里「出现技法名」：calendarExtras / qimenzeri 的金标测的是 vendored 函数，从没走 tools/ 那层接线
+     （而当年的 bug 就在接线）；placeResolve 靠一行注释过关；15 个技法没有值金标。
+  7. `test_table_selftests_all_pass` 跑闸门数据文件自带的 self_tests：期望与被测物同住、只覆盖少数工具，改 `tool_table.py` 全绿。
+  8. 约 50 条测试要 `HOROSA_SOURCE_ROOT`（没有工作流设它），跳过原因十几种拼法；三处没设时**猜**维护者路径，猜到别的版本就直接红
+     （`test_mundane_and_election_presets_mirror_upstream_order`）。
+  9. `verify_error_recovery` 规则 4 在测试原文里搜码名：注释、docstring 里提一句也算「测过」（八个码这样混过去）。
+  10. 写新金标时撞上的第十一把：`selfcheck.mjs` 中途 `await Promise.all(pending)` 之后登记的 async check，失败打印 FAIL、退出码却是 0。
+- **根因**：守卫只证明过「现状下它是绿的」，没证明过「它要防的缺陷出现时它会红」。名字出现 ≠ 被调用，说明文字 ≠ 断言，黑名单 ≠ 覆盖。
+- **修**：跳过原因带七种标签（`tests/skips.py`），未标签即失败、跑完按标签计数，live lane 改白名单；恶意归档逐形状测试；旋钮按代码记号认、基线带上游
+  读者指针；豁免名单断言为空、相对 / 动态导入入扫描；真 MCP 客户端并发打六个本地 JS 技法；值金标要求块里调用 `src/tools/<名>.js` 的导出（新补 7 个，债
+  15 → 10）；闸门 114 技法 × 四形状的行为录像搬到 `tests/fixtures/gate_matrix.json`；上游路径只认 `HOROSA_SOURCE_ROOT`；错误码只认测试代码里的字面量
+  （还 24 个、四个如实回债，80 → 60）；selfcheck 收尾前再等一次。
+- **守卫**：每一条都配了变异体（把那个缺陷注回去）实跑红：`test_live_lane_skips_are_an_allowlist_not_a_denylist`、`test_runtime_archive_containment.py`（五个变异体）、
+  `test_a_substring_or_a_sentence_is_not_a_consumer`、`test_the_scan_sees_relative_and_dynamic_imports`、`test_real_local_techniques_run_concurrently_without_cross_talk`、
+  `test_a_tool_named_in_a_title_or_comment_is_not_covered`、`test_every_technique_gate_behaves_as_recorded`、`test_skip_tags.py`、
+  `test_a_code_named_only_in_a_comment_or_docstring_is_untested`。
+- **规则**：新守卫先写出它要抓的变异体并看它红，再看它在真树上绿；证据只认调用 / 字面量 / 代码记号；期望不和被测物住一个文件；跳过要说出标签（AGENTS §9.5）。
+
+### v0.50.0-dev / 2026-11-12 — JS 每次 spawn 加载全部技法模块；create_mcp_server 1.9 s
+
+- **现象**：`cli.mjs run <tool>` 每次 spawn 约 0.13 s，几乎全是 `tools/index.js` 静态 import 51 个技法模块（连同 vendored 引擎）；天星择日一次调用 spawn 7 次 ≈ 1.1 s。
+  `create_mcp_server` 全量面 1.9 s：`mcp_schema._appears_as_term` 每个别名重编一条带整段汉字区间的 IGNORECASE 正则（393 次 0.78 s），
+  pydantic 为约 9500 个字段默认值各建一个 TypeAdapter 编码。
+- **修**：`tools/index.js` 每项 `lazy(specifier, export)`，只载用到的模块（`lunarYearCache` 补丁仍静态装在最前）；loadcheck 逐项 `resolveRunner`。
+  `_appears_as_term` 字符类只编一次、逐候选位置查两侧；输入模型 schema 用 `_PlainDefaultsJsonSchema`（JSON 原生默认值短路）；签名按进程缓存。
+- **结果**（本机，负载 5–7）：spawn 0.13 → 0.04 s；天星 1.11 → 0.44 s、chart 0.62 → 0.31 s；114 个样例技法 live 的 129 次 node 调用 stdout 修前修后逐字节相同；
+  `create_mcp_server` 1.88 → 0.9 s（同进程再建 0.56 s），全量 / 精简面 tools/list 逐字节相同。奇门「jieqi/year 取两次」不成立：两次是上一年与当年两个种子年。
+- **守卫**：`test_appears_as_term_answers_like_the_lookaround_regex`（对旧正则逐例，自重叠病例）、`test_plain_defaults_generator_is_byte_identical_to_pydantics`、
+  `test_cached_signatures_build_the_same_tools_list_as_a_cold_build`、loadcheck 的 runner 表解析（写错导出名即红）。
+### v0.50.0-dev / 2026-11-12 — 合参把一个技法包装成交叉印证，模板里没有盘面事实，复用不了已算的盘
+
+- **现象**（深审 H-1 / H-2 / H-3 / F16，冷启动客户端 s07）：`tools: ["bazi_birth"]` 或问句只路由出一个技法时，合参照样回 `all_clear: true`
+  的「合参模板」；没给 `tools` 时借 dispatch 的单技法路由。模板每个技法只有段名 + 「去 memory_show 取全量」（3.4 KB 里没有一条盘面事实），
+  memory_show 那条 dispatch run 336 KB；已经算过的三个 run 不能拿来合参，只能重算；摘要与契约说明只有中文。
+- **根因**：合参是 dispatch 外面包的一层模板，没有自己的选择规则、没有自己的存档；「至少两个技法」从没写成判断。
+- **修**：`engine/hecan_select.py`（闸门与服务共用）——没点名按意图类缺省配一对（`IntentClass.hecan_pair`：命理 八字+紫微 / 起课 六壬+奇门 /
+  运势 八字直断+紫微 / 卜卦 六爻+卜卦占星；点名一种补同领域另一个；择日不配对：各法条件词表不同），披露；`tools` 可混写 run_id（复用，不重算；
+  `memory.run.not_found` / `hecan.run_not_reusable`；复用的本命盘出生时刻与这次不同 → 警告）。算成少于两个 → `cross_validation: false`、
+  `all_clear: null`、警告与摘要明说。每个技法带有上限的正文节选 `evidence`（4000 字，按段，没放进的段列名 + 续读调用；`service/hecan_template.py`）。
+  合参自己一条 run（`entrypoint=hecan`），新算的子技法记进同一 run / group，结果存 `hecan_result`（`child_runs`）；memory_show 把复用的子结果
+  从原 run 接上（`from_run`）；库重建按 `record_meta.kind` 认回。摘要 / 警告 / instructions 中英双语。
+- **大小**（留给维护者定：全文内联还是有上限的节选）：节选上限 4000 字 / 技法；实测见 CHANGELOG 与合参批报告。
+- **守卫**：`tests/test_hecan.py`（24 条；六处变异全红：恒 cross_validation、不配对、不补位、不接子 run、复用变重算、去掉节选）。
+- **规则**：合参的产出必须让「少于两个技法」可见；选择规则只有一份（闸门与服务同一个函数）；模板自带可引用的正文，不只给指针（AGENTS §3）。
+
+### v0.50.0-dev / 2026-11-12 — 技法卡只回显少数几个键：六爻缺省男却口径为空，紫微原样印性别布尔值，岁差哪里都没写（`result_setting_specs`）
+
+- **现象**（深审 F10）：技法卡的口径行来自一张手写的 15 键表 + 按 domain 过滤；闸门会问的设置大半不在卡上（六爻占类 / 流派 / 性别缺省男），
+  值原样印（`gender: false`、`hsys: 1`），回归黄道时引擎回报 `siderealAyanamsa: ""`，卡上写「岁差=」；也看不出值是用户给的还是缺省。
+- **根因**：「哪些设置改结果」写了两份（闸门指引表一份、卡片一份），卡片那份只覆盖了一小部分；来源信息在 run_tool 里有，没传给卡。
+- **修**：`reports/technique_card.result_setting_specs` 从闸门指引表推出全表（`ask_if_missing` 带选项的问题 + `safe_defaults`，伪名按闸门别名表展开，
+  时刻 / 纯确认类 / NON_BLOCKING 不算）；每项 `{label, value, text, source}`，人读写法：码表 > 缺省说明 > 闸门选项 > 原值；空值按缺省补并写适用条件
+  （「恒星黄道缺省 Lahiri（仅 zodiacal=1 生效）」）；没下发也没缺省的写「未下发，引擎按自己的缺省算」。来源由 run_tool 标（调用方写了的键路径 /
+  档案填的 / 地名补的 / 缺省）。性别是否适用按 `questions.gender_required`（与闸门、入口同一个判断）。六爻性别缺省男补进指引表 safe_defaults。
+  知识库 / 导出域不挂卡（`CARDLESS_DOMAINS`）。
+- **守卫**：`tests/test_technique_card_settings.py`——全部带卡技法：闸门解析器（`answer_groups`）独立列出的设置键都在卡上、各有人读值与来源
+  （去掉全表 94 红）；三处审计个案；档案 / 地点来源；不挂卡。
+- **规则**：「改结果的设置」只有闸门指引表一份；新问题 / 新缺省进指引表，卡片自动跟上（AGENTS §3）。
+
+### v0.50.0-dev / 2026-11-12 — 择日条件的极性没人说：冲煞生肖 + 取反拿到的正是冲马的日子（`condition_echo`）
+
+- **现象**（深审 F5，s04）：用户属马、要避冲马日，客户端写 `{type: chong_shengxiao, negate: true, params: {values: ["马"]}}`——这一类自带判法
+  `mode`（缺省 without = 不冲所选肖），再取反就是「冲马」；schema、guidance 都没写极性，结果里也看不到引擎把条件读成了什么（只有快照里的「非·」）。
+- **根因**：条件的含义只存在于上游注册表（label / summary / fields），skill 只列了键名。
+- **修**：horosa-core-js `zeri_conditions`（skill 自有）：catalog 读十张注册表；echo 把条件树按引擎读法写成人话（取反写「不满足〔…〕」、连接词左结合）。
+  生成件 `data/zeri_condition_meanings.json`（`scripts/gen_zeri_condition_meanings.py --check`）：282 类各一行中英说明（≤4 选项的自带判法逐项写），
+  negate 规则写明「判法与 negate 叠加 = 双重否定」；guidance `condition_types`；十个择日结果都带 `data.condition_echo` + 摘要一行「条件按此理解」。
+- **守卫**：`tests/test_zeri_conditions.py`（十技法 × 每类回显、生成件与引擎一致、十个结果都回显；真引擎：不加 negate 排除冲马日，加 negate 只剩冲马日，
+  两者互补成整月，命中日的「冲」由黄历本身读出）。
+- **规则**：条件 / 选项的含义从上游注册表生成，不手写；结果回显它被读成了什么（AGENTS §4.4）。
+
+### v0.50.0-dev / 2026-11-12 — 结果里的噪声与几处没说实话的地方（跟进批）
+
+- **现象**：通用摘要「工具 `x` 已返回结构化结果」「顶层字段：…」（阅读视图删了，CLI / 存档 / dispatch 摘要还在）；注册表回答带 2.9 KB 技法卡；
+  只查「立春」的节气盘报「结果不完整」并给 12 段占位；报告模板 38 KB 里正文抄两遍；决策层 enforce 时确定性路由已命中仍每次发约 18.5 KB；
+  `HOROSA_TRACE_OTLP_ENDPOINT` 设了 instructions 仍说「nothing is sent」；精简面检索说明叫客户端调不存在的 `horosa_knowledge_read`；
+  逐字段追问不点名技法；「2027年立春」+ 地点北京被追问时区；奇门存档带空 `"context": {}`。
+- **修**：`envelope.export_headline`（「已生成<技法>（N 段）：<起盘信息头两行>」）；`CARDLESS_DOMAINS`；`export._sections_not_requested` +
+  `not_requested_sections`；模板只留一份正文；`_decide_routing_inner` 在路由命中 + enforce 时不问；instructions 第三种说法（四组合 ≤ 2048 B）；
+  检索说明按面写读法；`field_issues_error(tool_name=)`；dispatch / 合参 context 无日期时按问句里的日子取时区（`place_and_query_date`）；
+  `QimenInput.context` 缺省 None。
+- **守卫**：`test_summary_noise.py`、`test_instructions_name_every_path_that_sends_data_off_the_machine`、
+  `test_enforce_routing_only_fills_a_no_match…`（FakeJev 无 dispatch 调用）、`test_knowledge_search_names_a_read_tool_that_exists_on_each_surface`、
+  `test_per_field_prompt_names_the_technique`、`test_context_place_without_a_date_takes_the_zone_from_the_date_the_query_names`、
+  `test_stored_inputs_carry_no_empty_internal_keys`；各自负向对照已跑。
+- **规则**：凡把数据送出本机的开关都要在 instructions 自陈；摘要第一行必须有信息；「没要」不是「缺」（AGENTS §4.4 / §9.3）。
+### v0.50.0-dev / 2026-11-12 — 西占 runner：口径行写的不是算的，派生盘挂本命结论（古典口径词表、`[古典格局]` 范围、分钟进位）
+
+- **现象**（深审 C-01 / C-03 / C-10 / C-11 / C-22 西占 / CN-N5 / CN-N6，共享引擎实测）：
+  1. 十三分 / 十二分 / 希腊分 / 调波 / 龙盘的 `[古典格局]` 与本命盘逐字节相同（后端 `/astroextra/analysis` 按常规黄道以本命参数重算）；
+     上游钉版 `pipeline.js:513-518` 的 `CLASSICAL_SKIP_KEYS` 明说这是「本命结论冒充派生盘结论」而跳过，skill 的注释却说「headless 无此顾虑，是 extra」。
+  2. 分析请求只带十来个键；上游是 `{...chartObj.params}`（含这张盘的非缺省古典口径）。实测 westNodeType / termsVariant / triplicity /
+     orbSystem / lotProjection / almutenTripMode / planetaryHourMethod / topocentricMoon / lotsDocReverse / erosConstruction / 恒星轨档都改
+     分析结果——用户改了口径，主盘照改、`[古典格局]` 照缺省。
+  3. 古典口径键原值下发：`westNodeType: True` / `"真交点"`、`triplicity: "ptolemaic"` / `"托勒密"`、`sectBuffer: 5` 后端不认按缺省算，
+     `[起盘信息]`「古典口径（非默认项）」行却照抄原值（`三分集=ptolemaic`、`区分判定=5`）；`vocMode "byOrb"` / `orbSystem "whole_sign"` /
+     `lotProjection "Sign"` 静默按缺省、行里也不写。`termsVariant=4` 无 `customTermsDay` 时后端回落埃及界、行写「自定义界表」。
+     反方向也有：表外容许度（`combustOrb: 9`）后端照算，行与分析请求却按上游「值域外不发」丢掉。
+  4. 行星周期 01:59.5 写成 01:00（`round(分) % 60` 不进时）；波斯向运点位 12°59.7′ 写成 12°00′。
+  5. 十年大运 `orderType: "chaldaean"` 等四键认不出 → 缺省、`[十年大运设置]` 照抄；调波 0 / −3 → H1、1000 → H360；七政择日
+     `kind: "月食"` 搜日食、`plate: "bogus"` 照收而山位行缺、`ziZheng` 的 JSON 布尔被类型层拒而 `"false"` 照收。
+  6. 扫尾同族：行星周期 `p1: "土星"` 后端换木星、配置行写「土星」；卜卦 `category` / `school`、择日 `topicId` / `school` 引擎静默回落
+     general / classical / marriage / modern_main；宿占 `houseStartMode: 2` → 0；世运卜卦 `mhKind` → war；七政择日 `eleLifeMode` /
+     `nodeType` / `lilithType` / `body` 认不出 → 后端缺省；占星地图 `pointHsys` 认不出 → 整宫（连缺省 placidus 都不是）；卜卦 / 择日
+     `options` 判读层覆写（HORARY_PARAM_SPEC / ELECTION_PARAM_SPEC 的 select / switch 键）值认不出 → 引擎按缺省、无回执。
+- **根因**：值域只在上游页面的下拉框里，headless 入口没有它；runner 里 `x or 缺省` / `== 'x' else 缺省`；口径行由镜像上游的 builder 直接读原值
+  （上游 UI 写不进表外值，所以它的 builder 从来不用防）。派生盘那条是把上游的有意跳过当成了性能取舍。
+- **修**：
+  - `western_vocab.py`：一个设置一张 `input_fields.Vocabulary`（phase-1 机制；新增 `numeric` 模式：数值按数比、`17′` / `8.5°` 认，绝不落进别名表——
+    `_vocab_key` 吃小数点，`1.5` 与 `15` 撞键）。古典口径键值域取自 `CLASSICAL_PARAM_SPEC_NON_DEFAULT`，挂在 BirthInput（前端名 fixedStarOrb* 走模型级前置校验）；
+    容许度类（float）另收量程内任意数（后端与判读层照算，`judgeLayerHeadless`「数值键不设档」是既定口径），`classical_backend_overrides` 对 float 不卡档（有意偏离上游，口径行照写）；
+    `_calibre_phrase` 不在表里就不写（第二层）；`termsVariant=4` 缺表即拒。十年大运、调波（1–360 整数，越界拒、不夹）、七政择日、行星周期、卜卦 / 择日、宿占、世运卜卦、
+    占星地图落点宫制同机制。卜卦 / 择日的 `options` 字典在 JS 侧按引擎词表判（`horosa-core-js/src/shared/specOptions.js`，进既有的 `invalid_inputs` 回执；卜卦在起盘前就拒）。
+  - `engine/registry.py`：`ASTRO_CHART_FAMILY_TOOLS`（[埃及历] 吃本盘，全族挂）与 `CLASSICAL_ANALYSIS_TOOLS = {chart, relocation}`（镜像钉版 skip 名单）分开；
+    四个跳过键的 preset 去掉 `古典格局`（与上游 preset 同），`export_section_debt.json` 重算收紧。分析请求带 `classical_backend_overrides_from_fields(payload)`。
+  - 重置盘：钉版（1108）照本命出生地挂分析（`chartObj` 是本命盘，注释「本命语义仍成立」），skill 同；上游 HEAD `dacdc905`（pipeline.js:543-560）改为按重置后地点、
+    随重置盘快照进正文——re-vendor 时跟进，测试 `test_chart_and_relocation_keep_the_analysis` 会因此红，是预期。
+  - `civil_calendar._round_hour_to_minute`：四舍五入到分钟后 divmod 进时、进日（民用历轴，跨改历缺口）；波斯向运点位同法进度、满 30° 进下一座。
+- **守卫**：`tests/test_western_vocab.py`（37 张词表表驱动认 / 拒；词表值域 ≡ spec；古典口径每键每档的变体写法「要么读成规范值且整份入参与口径行逐字段相同、
+  要么拒」的性质测试；口径行不写原值；表外容许度照写）；`tests/test_western_runner_fixes.py`（派生盘不拉分析、不出段；chart / relocation 照挂；分析请求带口径；
+  集合 ≡ 钉版 pipeline.js skip 名单；分钟进位；十年大运 / 调波 / 七政择日端到端；共享引擎 live 一条）；`test_sync311_western.py::
+  test_judge_layer_override_values_are_checked_against_the_engine_spec`。负向对照都实跑红过（另：checkSpecValue 恒 ok → 红）：词表改成原样返回 → 87 红；
+  口径行恢复照抄原值 → 红；float 恢复卡档 → 红；集合加回 chart13 → 两条红；去掉口径转发 → 红；进位换回 `% 60` → 两条红。
+- **规则**：枚举类设置在 schema 层过词表，runner 不写 `or 缺省`；镜像上游 builder 时，上游靠 UI 值域兜住的输入，headless 入口要自己兜；
+  上游的「跳过」先当口径读，别当性能取舍。
+
+### v0.50.0-dev / 2026-11-12 — 并行九批合并的衔接坑
+
+- **现象**：深审第一阶段九个修复批次各在自己的 worktree 改一块、各自 25 道门禁全绿；依次合进 `improve/deep-review-work` 时撞出七处，
+  每一处单独看两边都没错：
+  1. 澄清闸（dispatch 批 `agent_guidance.questions`）在 `_gated_run` 里看原始参数，入参批的别名改名（`sex`→`gender`）与嵌套 `birth`
+     提升在 `run_tool` 里才做 → `{"sex": "女"}`、`{"birth": {...}}` 被闸门当成缺性别拒掉。
+  2. 「缺性别就拒」两份名单：入参批 `GENDER_DEPENDENT_TOOLS` 12 个（技法入口），闸门批 `GENDER_FACT_TOOLS` 17 个（MCP 闸）——正传 / 北极 /
+     南极 / 紫微择日经 CLI 与直调缺性别时照样按男排。共享引擎 1 / 0 两性逐行对比：这四个的大运 / 条文 / 命局随性别变（正传 230 行）。
+  3. `memory.run.not_found` 被 surface 批与 memory 批各登记一次（字典字面量后一个静默覆盖前一个，`test_no_duplicate_dict_keys` 抓到）。
+  4. 「报告格式不对」两个码：`report.invalid_format`（报告批，`details.allowed`）与 `report.format_unsupported`（surface 批，`details.accepted`）。
+  5. 「值不在可选表里」的详情键三种写法：`accepted` / `allowed` / `valid_domains`。
+  6. `env_carry.is_secret_env_name` 子串匹配把阅读视图的 `HOROSA_MCP_RESULT_MAX_TOKENS` 当成密钥（不写进客户端配置）。
+  7. tools/list 预算：入参批给每个收地点的技法广告 `place`、surface 批给全部字段写说明，合起来 263,498 B 撞 256 KiB 硬顶；而量尺用
+     `model_dump(by_alias=True)` 把每个工具没设的 `_meta` / `icons` / `outputSchema` / `annotations.title` 的 null 也算进去——SDK 写线上
+     用 `exclude_unset=True`（`mcp/server/stdio.py`），实测 stdio 一次 tools/list 的 tools 数组 252,621 B。
+  8. 第二阶段西占批给卜卦 / 择日的判读层 `options` 加了值域检查（`shared/specOptions.js`），只在离线门禁里验过：1 / 0 两档的 `tradition`
+     按字符串比，`true` ≠ `'1'` 被拒，卜卦样例与 live 用例全红；另有两条 live 用例仍钉着「认不出的问类 / 用事静默按缺省」——批次只跑离线门禁，
+     live 才看得见。修：1 / 0 两档的 select 认 JSON 布尔（selfcheck 守卫，去掉即红）；两条用例改成断言拒绝（不碰引擎，转为离线用例）。
+- **根因**：批次按文件分，事实却跨文件：同一个判断（性别名单）、同一个契约（错误码 / 详情键）、同一个载荷（闸门与执行）各批各写一份，
+  只有合在一起跑才看得见；预算守卫量的不是线上真发的东西。
+- **修**（全在集成分支的合并提交里）：`surfaces/mcp_requests.gate_view_arguments`（闸门看同一次归一化之后的载荷）；`service/api/tools.py`
+  的 `GENDER_DEPENDENT_TOOLS` 直接取 `agent_guidance.questions.GENDER_FACT_TOOLS`；删重复登记；保留 `report.format_unsupported`；
+  可选值一律给 `accepted`（旧键并存一版）；密钥判定按下划线分段；`verify_mcp_list_budget.py` 与 `test_mcp_list_budget.py` 按
+  `exclude_unset` 量并重锁基线（仍是上界：量尺 259 KB，线上 252.6 KB）。
+- **守卫**：`test_mcp_input_arguments.py::test_alias_keys_are_read_and_noted` / `test_nested_birth_on_a_technique_tool_is_lifted`
+  （去掉 `gate_view_arguments` 那一行即红）；`test_gender_requirement_has_one_source_for_gate_and_entry`（把入口名单改回 12 个即红）；
+  `test_no_duplicate_dict_keys`；`test_mcp_error_contract`（读 `accepted`）；`test_client_env_carry`。
+- **规则**：并行批次合并后在集成分支重跑全量门禁；交叉处按「同一事实只有一份」收口；预算类守卫量线上真发的形状（AGENTS §2）。
+
+### v0.50.0-dev / 2026-11-12 — MCP 结果把原始引擎树当正文交给模型
+
+- **现象**（深审 MCP-02/03/06/13，共享引擎 v0.49.0 实测）：114 个技法的 MCP 缺省结果中位 17.4 万字符 / 约 8.2 万估算 token，
+  72 / 111 超过 Claude Code 的 5 万字符落盘线（超了客户端把结果写进文件，模型只看到一句提示），最大 72.5 万（draconic）。
+  `horosa_dispatch` 八字 + 紫微 292 万字符、无任何告警（v0.46.1 的线上预算只认 `data` 与记忆两种形状，调度落在中间）；
+  `horosa_agent_guidance(include_all=true)` 126 万字符；3 MB 的 `clarification_notes` 原样回显进 `input_normalized` 与技法卡，结果 600 万字符，
+  存档也是 6 MB；`horosa_memory_show` 读回的八字只剩占位——存下的正文经 MCP 拿不回来。
+- **根因**：结果形状是「给程序的信封」：正文两遍（`snapshot_text` + `export_text`）+ 分段正文一遍 + 整棵引擎树，SDK 再按 `indent=2`
+  序列化（三成是空格）。模型要读的只有正文那几千字，体积上限只按线上 1 MiB 设计，没有「模型能读多少」这条线。
+- **修**：`horosa_skill/result_view.py`（纯函数）+ `HorosaMCPServer.call_tool`：视图参数（`response_view` / `response_sections` /
+  `response_offset` / `response_tool`）进工具前取走；缺省阅读视图；模型预算（`HOROSA_MCP_RESULT_MAX_TOKENS` 20 000 / `_MAX_CHARS` 48 000）
+  按段裁，`warnings` 给照抄可用的 `horosa_memory_show(...)` 续读；调度 / 合参的 `results.<tool>` 各成阅读视图、共用预算（合参在 MCP 面
+  另附各技法信封）；`horosa_memory_show` 同一视图；`include_all` 回索引；自由文本截断（备注 2 000 / 问题 4 000 字）；JSON 不缩进
+  （`HOROSA_OUTPUT_SCHEMA=1` 的 structuredContent 照旧）；`full` 视图的线上预算也管调度。CLI 输出与存档不变。
+- **守卫**：`tests/test_result_view.py`（规则；续读调用照抄回放、拼回原文逐字一致）、`tests/test_result_view_catalogue.py`（整张技法表 +
+  调度 + 合参，简繁两种输出，缺省结果 ≤ 5 万字符 / 预算 token / 线上预算；正文与原始结果逐字一致；live 变体打共享引擎）、
+  `test_dispatch_results_are_fitted_across_techniques`。负向对照：不调 shape_result / render 不看额度 / 恢复缩进 / 去掉调度裁剪 /
+  不出索引 / 不截断 → 各自红。
+- **规则**：工具结果先问「模型读的是哪一段」，体积上限按客户端的落盘线与 token 上限定，不只按传输层；裁剪必须告诉模型下一次怎么拿到其余部分。
+
+### v0.50.0-dev / 2026-11-12 — `response_view` 跟着载荷进了 runner 的子调用
+
+- **现象**（冷客户端审计 F4）：`horosa_cn_huanglizeri` 带 `response_view:"sections"` 返回 7 段「本次本地计算结果未返回…细项」并多一条假的
+  「结果不完整：预设 14 段中 7 段未产出」；不带视图时完整。离线整表复现：黄历 / 八字 / 太乙 / 紫微 / 六壬 / 三式 / 七政择日在 `sections` 与
+  `titles` 下都坏。
+- **根因**：择日 runner 先用自己的载荷再调一次 `run_tool` 算展示盘，再读子信封的 `snapshot_text`；载荷的排除表里没有 `response_view`，子信封
+  照样被视图裁剪（`snapshot_text` 清空），外层读到空串。视图是「返回体长什么样」，不是算法输入，却走了算法输入的通道。
+- **修**：`service/_context.py` 的 `_run_tool_scope` 记调用深度；`run_tool` 深度 > 1 时先摘掉 `PRESENTATION_KEYS`、存档后也不套视图——
+  一处管所有 runner（择日、三式合一、七政、报告补算），不在各 runner 的排除表里补。
+- **守卫**：`tests/test_result_view_catalogue.py::test_service_views_never_change_what_was_computed`（整张技法表，每种视图的段序号 / 标题 /
+  正文与告警与原始结果一致）+ 嵌套调用看不到展示键的断言 + 十个择日的 live 变体。负向对照：深度判断恒为 False → 两条红。
+- **规则**：只影响返回体形状的参数在入口摘一次，子调用永远拿原料；「去掉哪些键」不要散在各 runner 的排除表里。
+### v0.50.0-dev / 2026-11-12 — doctor 不分模式：新机器、网关可达、网关不可达给同一份报告（`runtime:not_installed`）
+
+- **现象**：审计在三种现场跑 doctor（全新机器 / `HOROSA_SERVER_ROOT` 指向可达的引擎 / 指向不可达地址）：三份报告的 issues 都是同样 12 条
+  `missing:*`，summary 都是「The offline runtime is not installed yet.」，下一步都是 `client openclaw-setup --workspace …`；命令一律 `uv run`
+  前缀（wheel / uvx / MCPB 用户照抄就错），话一半中文一半英文。网关用户因此永远看不到 ready。
+- **根因**：`manager.doctor` 不看模式，逐个比对载荷文件；summary 先判 `installed` 再判别的，网关模式根本没有自己的分支；「就绪后去配
+  OpenClaw」是早期只有 OpenClaw 一个客户端时写的，后来改成客户端中立时只改了 ready 分支，没装 / 没起两个分支还指向 OpenClaw；
+  命令字符串散落在十几处，各自写死前缀。旧测试 `test_doctor_adds_user_facing_summary` 断言 `"openclaw-setup" in next_action`——把缺陷钉成了契约。
+- **修**：先定 `deployment`（managed / external / not_installed），issues 从模式推（`runtime:not_installed` / `external:unreachable` /
+  `runtime:root_not_writable`）；summary 中英成对；`runtime/hints.py` 的 `cli_prefix` / `cli_command` / `contextualize` 是唯一的命令来源；
+  OpenClaw 命令只给设了 OPENCLAW_WORKSPACE 的人；doctor 多一节 `js_engine`，`selfcheck` 真跑一次纯 JS 技法。
+- **守卫**：`tests/test_doctor_modes.py`（三模式各一条、命令随上下文、OpenClaw 只给确知的人、根不可写、JS 引擎缺失时网关仍 ready 但写明、
+  selfcheck 没引擎不说全部通过）。负向对照：missing:* 不分模式 → 4 红；去掉网关分支 → 2 红；去掉 contextualize → 1 红；OpenClaw 给所有人 → 3 红；
+  selfcheck 不看 JS 一步 → 1 红。
+- **规则**：诊断先回答「你是哪种部署」，再说缺什么；给人照抄的命令只有一个来源。
+
+### v0.50.0-dev / 2026-11-12 — 不说 HTTP 的监听者让 start 等满预算（`runtime.port_taken`）
+
+- **现象**：审计在 java 端口上放一个只 listen 不应答的进程：`runtime start` 照样起启动器，Java 绑不上端口，45 秒后 `runtime.start_timeout`，
+  `conflicts` 为空；doctor 也只说服务没起。
+- **根因**：归属判定只在「HTTP 可达」的端点上跑；HTTP 探针对不说 HTTP 的监听者是隐形的。doctor 的 `_probe_port` 有 connect 结果，却没人用它下结论。
+- **修**：`ports.port_taken`（回环上有人 accept，或绑不上且点得出监听进程 = 占着；绑不上却点不出进程——TIME_WAIT——不下结论）；start 起启动器前
+  对不可达端点查一遍，非自家（不在 service_pids、不住本根）→ `runtime.port_taken`（不起、放锁、不杀）；`runtime.start_timeout` 带 `port_takers`；
+  doctor 的 port_conflicts 多一类 `silent_listener`。测试与 `classify_endpoint` 一样在 `_managed_mode` 里钉住（维护机 9999 / 8899 上跑着桌面端）。
+- **守卫**：`tests/test_runtime_port_taken.py`（只在 18805–18812 开自己的 socket）。负向对照：去掉起前检查 / port_taken 永远 None / 超时不带 takers /
+  doctor 不看 takers，各自变红。
+
+### v0.50.0-dev / 2026-11-12 — 环境变量文档只列了一小半（`docs/ENV_VARS.md`）
+
+- **现象**：`ENV_FLAG_REGISTRY` 登记 87 个变量，README 的「常见项」列了 17 个；另有 32 个 stable / experimental 的变量没有任何文档。
+  doctor 在 stderr 把同一句「未知环境变量」打两遍（Settings.from_env 一遍，doctor 用 `force=True` 再一遍）。
+  审计怀疑文档写的 `HOROSA_MCP_MAX_CONCURRENT` 与注册表的 `…_TOOLS` 不一致：当前文档里已没有这个错名（v0.47.2-dev 修过），未复现。
+- **修**：说明写在注册表旁的 `env_docs.ENV_FLAG_DOCS`，`docs/ENV_VARS.md` 由 `scripts/gen_env_reference.py` 生成；doctor 收集告警用 `log=False`。
+- **守卫**：`tests/test_env_reference.py`（每个登记变量有说明、文档逐字节等于渲染、用户文档只许出现登记过的名字——错名回来会红）；
+  `test_the_unknown_variable_warning_is_logged_once`。负向对照：加一个没说明的变量 → 3 红；手改文档 → 1 红；doctor 改回 force=True → 1 红。
+
+### v0.50.0-dev / 2026-11-12 — env 值被拒却说来源是 env（`env:rejected_value`）
+
+- **现象**：认不出 / 越界的值（`abc`、`-5`、`nan`、`maybe`）一律回落默认值，doctor 的 settings_provenance 仍写 `env:<NAME>`；少了 `http://` 的服务根
+  照用、连接失败时报的是别的错；`HTTPS_PROXY=http://user:pass@proxy:8080` 原样出现在 doctor 的 `network_hints.proxy_env`。
+- **根因**：`_env_int / _env_float / _env_bool` 只返回值；provenance 只看「变量设了没有」。另有两处模块自己 `float(os.environ[...])`。
+- **修**：解析器返回 (值, 原因)，`config.env_rejections()` 记下来；provenance `default:rejected env:<NAME>=<值> (<原因>)`（前缀仍是 default，
+  doctor 契约按冒号前一段分组）；doctor 告警 `env:rejected_value` / `env:invalid_url`（URL 形状不对照用——换默认值可能打到桌面端）；
+  `redact_env_value`：名字像 KEY / TOKEN / SECRET / PASSWORD / AUTH 的整段遮，URL 遮 userinfo；mcp_elicitation / service.remote 两处改走同一套。
+- **守卫**：`tests/test_env_rejections.py`。负向对照：provenance 回到 env → 5 红；不记拒绝 → 8 红；不遮 userinfo → 2 红；不查 URL → 5 红。
+
+### v0.50.0-dev / 2026-11-12 — 断点按文件名续、清单没摘要就不校验（`runtime.install_sha256_missing`）
+
+- **现象**：① 清单条目 `sha256` 为空（自建 / 镜像清单）时，install 下载 700 MB 后直接装，结果里看不出没校验。② `downloads/<文件名>.part`：
+  上一个版本（同名资产）或另一个镜像留下的半截被当成前半截续上，最后 sha 对不上，且错误说「换镜像」。③ 续传只带 `Range`，资源变了服务器照样回
+  206。④ 慢网上每次下一段就断，第 3 次断线就判失败。⑤ 两个 install 同时跑，后到的在挪文件时 FileNotFoundError（`runtime.install_write_failed`）。
+  ⑥ `--manifest-url` 指一个 HTML 文件：`JSONDecodeError` traceback。
+- **修**：没有摘要且走网络 → `runtime.install_sha256_missing`（下载前；`--sha256` 可补；清单与归档都在本机时放行 + `runtime.install_unverified`；
+  版本短路不受影响）。`manager._partial_paths` 按 sha 定名 + `.part.json` 旁注，来历不对不续，旧格式无旁注的 `.part` 清掉；`If-Range`；续错先从头重下
+  一次；有进展的轮次不计数（总轮数封顶 50）；下载锁（`runtime.install_download_in_progress`）；清单读不懂 → `runtime.install_manifest_invalid`（说它是
+  HTML / 空 / 别的 JSON）。注意 httpx 的 `iter_bytes(chunk_size=1 MiB)` 会攒满 1 MiB 才交出：断在一块之内的字节本来就丢，测试的分段要大于 1 MiB。
+- **守卫**：`tests/test_runtime_download_integrity.py`（18 条）。负向对照：去掉摘要拒绝 → 3 红；按文件名定名 → 2 红；去掉 If-Range / 干净重下 /
+  进展豁免 / 下载锁 → 各 1 红；本地清单裸 `json.loads` → 5 红。旧的两条断点测试按文件名预置 `.part`，从没用过「同名不同内容」，所以抓不到②。
+- **待定（维护者）**：清单与归档出自同一镜像时，镜像能同时换掉两者——摘要钉进包里（每个 wheel 带自己那一版的 sha）才挡得住，见报告。
+
+### v0.50.0-dev / 2026-11-12 — Node 太旧时每个 JS 技法都报 error: {}（`js_engine.node_too_old`）
+
+- **现象**：审计用一个只会在 stderr 打 `SyntaxError: Unexpected token 'with'` 的替身 node（= Node 18 加载 import attributes）跑 huangli：
+  `js_engine.execution_failed`、`details.error = {}`，原因只在 `details.debug.stderr`；恢复文案让人「装 runtime 或设 HOROSA_NODE_BIN」，可两样都已经有了。
+  `HOROSA_NODE_BIN` 指向不存在的文件时悄悄换成别的 node。doctor 的 node 探针只看 runtime 自带的那个，不是实际被用的那个。
+- **根因**：进程在输出任何 JSON 前就死了，空 stdout 被 `json.loads(stdout or "{}")` 当成 `{}`；没有人读 node 版本；解析顺序里「指定的不存在」与「没指定」同路。
+  另：每次 JS 调用把已装清单读 3 遍、解析 3 遍（C-20）。
+- **修**：`engine/node_runtime.py` 解析一次（来源 + 版本），版本按文件身份缓存、清单按 mtime 缓存；`js_engine.node_too_old`（found / required）、
+  `js_engine.node_bin_missing`（点名变量）；空 stdout + 非零退出 → `error.message` = stderr 里那行 `XxxError`；`js_engine.cli_missing` 双语并带
+  `details.searched`，恢复文案点名 HOROSA_CORE_JS_ROOT。doctor 的 `js_engine` 节报实际用的 node。
+- **守卫**：`tests/test_node_runtime.py`（替身 node；`NODE_FLOOR` 与 package.json 锁步）。负向对照：去版本闸 / 去启动崩溃分支 / 恢复悄悄回落 /
+  去清单缓存，各 1 红。
+
+### v0.50.0-dev / 2026-11-12 — purge 整个删掉数据目录（`runtime.purge_refused`）
+
+- **现象**：数据目录指到一个已有别的文件的文件夹（或家目录），`uninstall --purge-data --yes` 把整个目录 rmtree；dry-run 只列一行目录名，看不出代价。
+- **根因**：「数据目录 = 本工具专用」是假设，不是事实：MCPB / 插件设置里就能填路径。删除按「除了要保留的都删」做，而不是「只删认得的」。
+- **修**：`runtime/purge.py`：`OWNED_NAMES` 白名单（memory.db 及 SQLite 伴生 / `.corrupt-*` 备份、runs、traces、jev_events.jsonl、OpenClaw 自检结果，
+  点了头才删的知识库 / 回收站 / 档案，配置指到数据目录里的产物 / trace 目录）；其余 `left_in_place`；数据目录只 rmdir；链接只摘链接；
+  家目录 / 家目录上级 / 文件系统根 / 包着 runtime 根 → `runtime.purge_refused`（任何删除之前，dry-run 同样拒）。
+- **守卫**：`tests/test_uninstall_purge.py`，含锁步一条（各存储真写一遍再全清，数据目录必须消失——新增落盘文件忘登记会红）。负向对照：全当自己的 → 1 红；
+  不拒 → 9 红；账本不登记 → 3 红；跟进链接 → 1 红。拒绝用例把两个删除入口都换成只记账，负向对照时也不会真删。
+
+### v0.50.0-dev / 2026-11-12 — 归档格式按后缀判（`runtime.install_archive_invalid`）
+
+- **现象**：README / INSTALL_RESTRICTED_NETWORK 的受限网络配方把资产存成 `runtime.zip`；macOS 资产是 tar.gz → `zipfile.BadZipFile` traceback。
+  代理登录页存成 .zip、下到一半的 tar.gz 都是 traceback（`tarfile.ReadError` / CLI 只印 Aborted）。tar 的路径穿越被 `filter="data"` 拒时也是 traceback。
+- **根因**：按后缀分流；读归档的异常没人接；手工下载的归档没有任何核对手段。
+- **修**：`runtime/archives.py`（魔数认 zip / tar.gz / tar.bz2 / tar.xz / tar，认出 html / json / empty）；读不了 → `runtime.install_archive_invalid`
+  （`detected_format`、`size_bytes`），穿越 → `runtime.install_path_traversal`，磁盘错误仍是 IO 错误；`install --sha256`（与清单不一致下载前就拒）；
+  结果带 `archive_sha256` / `sha256_verified`。文档配方改为任意文件名 + 从清单取 sha256。
+- **守卫**：`tests/test_install_archive_formats.py`（35 条；文档里每个 `--archive <名>` × 两个平台的资产真装一遍）。负向对照：按后缀认 → 6 红；不包异常 → 7 红；
+  不比对摘要 → 2 红。测试是在修复之后写的，复现靠审计证据（d_badzip / d_html / d_trunc）与上面三个负向对照。
+
+### v0.50.0-dev / 2026-11-12 — 锁目录不可写被当成有人在启动（`LockDirNotWritableError`）
+
+- **现象**：runtime 根只读（或父目录建不出来）→ `try_pid_lock` 把任何 OSError 答成 False（= 有人持锁）→ `starting, started_by_other_process`，
+  用户去等一个不存在的启动者。另：持锁进程死后 pid 被别的长命进程复用，「活持有者不回收」让锁永远在。
+- **修**：只有 `FileExistsError` 算有人持锁；目录写不了是 `LockDirNotWritableError`（OSError 子类），start / install 报 `runtime.root_not_writable`；
+  锁里记 `start_token`（Linux /proc stat 第 22 列、macOS libproc `proc_bsdinfo` 的启动时刻、Windows `GetProcessTimes`），pid 活着但口令不同 = 已被回收；
+  口令取不到 / 取法不同 / 旧格式按「不知道」走原规则（宁可多等，不抢真在启动的锁）。doctor 只读报 `runtime:root_not_writable`。
+- **守卫**：`tests/test_runtime_lock_identity.py`（19 条）。负向对照见该文件各条注释。
+### v0.50.0-dev / 2026-11-12 — 地名：上游的 high 不等于「对的城市」；写法、提示语与档案名
+
+- **现象**（深度审计 PL-1…PL-4、IN-14、PR-1，冷客户端 N1 复现）：`place:"NYC"` 起盘落在银川、`HK` 落在海口、`St. Petersburg`
+  落在美国佛州，都是 `confidence: high`、照常出盘。反过来 `北京市朝阳区`、`上海, 中国`、`London, UK`、`Taipei, Taiwan`、`台中`、`北平`
+  全是「找不到」或「歧义」，而 `place.not_found` 的提示正推荐「带省 / 国家，或英文名」——这些写法当时一个也不通。坐标写进 place
+  （`31.2,121.5`）当地名查；只有一个候选也说「对应不止一个地点」；`horosa_place_search` 的 time 写坏静默忽略、limit 被截断不说。
+  地名解析成功的说明只在 `warnings`，dispatch 把它算成「降级」。档案：「媽媽」另存成第二个人；写坏的出生字段让 AI「请补充
+  horosa_profile_data 所需参数」（字段不缺，工具也不存在）。
+- **根因**：v0.48.0 的自动补全把「唯一命中」定义为上游 `resolvePlaceOffline` 的 `confidence == "high"`。上游 `cityMatch.js` 把拼音
+  首字母（`c._pi === q`）与本名、英文名并列为 score 0 的「精确」；`place.js` 的头尾回退里，地区提示只要在任一字段里出现（`St.` 在
+  `St. Petersburg` 的英文名里）就取 `exact[0]` 判 high；不拆逗号、不去「市 / 区」后缀，限定写法整串去比。这是上游 AI 助手的
+  检索评分，不是「何时可以不问用户」的判据；skill 把它当成了后者。提示语是照「应该能用」写的，没人跑过。
+- **修**：skill 自己的接受规则放在上游之后（`horosa-core-js/src/tools/placeResolve.js`，上游字段原样留在回包，裁决另放 `verdict`）：
+  条目本名 / 英文名 / 全拼 / 行政区词干（朝阳区 → 朝阳、北京城区 → 北京）/ skill 别名（`placeData/aliases.json`：缩写、台湾城市中文名、
+  外文旧译、旧称、昵称，每条指向库里唯一一条，坐标从条目取）等于规范化查询才 resolved；限定词（国家、中国行政区上级链）能核对就
+  拿来缩小，州 / 省一级库里核对不了的只核国家并说明；同名多地一律问用户，**不**加「挑大城市」规则（留维护者）。拆分只在用户写的
+  分隔符上做，跨逗号不把词粘成一个键（`León, ES` 粘起来是 `leones` = 阿根廷 Leones）。新码 `place.too_broad` /
+  `place.looks_like_coordinates`；单候选措辞是「请确认」；找不到给拼写相近的建议；place + 经纬度不给 zone 时按坐标补 zone；
+  解析说明进 `summary`，只有旧称 / 核对不了的限定词 / 没补上时区进 `warnings`。档案名身份键折繁简（显示名不改写；旧库两条照旧
+  各取各的），加 rename、CLI export / import，出生字段写坏时说「写法不对」并点名 `horosa_profile`。
+- **守卫**：`tests/test_place_acceptance.py`——551 条语料逐条期望（人工审过，不是快照）；全库 50 077 条「本名, 本地区」必须回到自己
+  （负向对照：去掉「跨逗号不粘连」→ 9 条解析到别处，红）；别名目标在库里唯一；提示语与 errors.py 里 place.* 引起来的每个写法都跑引擎
+  核对能解析；旧 runtime（回包无 verdict）只收与条目名逐字相同的地名。负向对照：精确键加回拼音首字母 → 语料与 P0 用例红；
+  接受改回只看上游 high → NYC 落银川，红。
+- **教训**：上游给的「置信度」是它自己场景的评分，借来当「可以不问用户」的判据之前，要先拿真用户的写法量一遍；提示语里的例子
+  就是接口，必须有测试跑过。
+### v0.50.0-dev / 2026-11-12 — 入参「认不出就原样往下传」：东八区、辰时、480、40n75、性别「其他」都算出了一张别的盘
+
+- **现象**（深审 IN-01…IN-15，审计探针 `audit-1111/inputs`）：同一个值在不同技法上三种结局。`zone="东八区"` 星盘回 `tool.backend_param_error`、
+  八字悄悄按 +08:00 算；`zone=480` 变成 `+480:00`；`time="辰时"` / `"不详"` / `"上午8点"` 在八字上变成 00:00；`03/05/1990` 成乱码日期，
+  `1990-02-30` 照算；`lat="40n75"` 进位成 41n15，经纬对调（lat=121e28）盘偏约 6 小时而盘头仍写真太阳时；性别「其他」→「未知」按男排，紫微
+  不给性别 schema 缺省就是男；`hsys="Placidus"` 是 int_parsing 错误、`hsys=99` 照算；六爻 `gua_code="大有"`、七爻、`numbers` 都悄悄改成以时起卦；
+  MCP 顶层的 `place` / `timezone` / `sex` / `latitude` 被 SDK 丢掉而 schema 写着 `additionalProperties: true`；确认位传 `"true"` 被闸门当成没确认、反复追问。
+- **根因**：归一化只认识「它会改写的写法」，认不出的值**原样**留给下游——下游有的报错（星盘后端）、有的用缺省（八字 JS `Number(...)`、
+  神数 `_split_birth_ymdhm` 读不出就 00:00）。校验是各 runner 各写一份（八字 / 档案 / 择日各有一张时区表），所以同一个值的命运取决于技法。
+  MCP 层另有一道：FastMCP 按签名生成的 arg model 在函数体之前丢掉未声明键。
+- **修**：`input_fields.parse_*`（时区 / 时刻 / 日期 / 经纬度 / 性别 / 宫制 / 黄道 / 词表）只有「读懂」与「结构化拒绝」两种结局；
+  `input_normalization.normalize_request_payload(payload, model=…)` 在当事人位置严判、深层引擎结构保留旧的宽松归一；run_tool、MCP、档案共用。
+  每个出问题的字段一条恢复条目（`details.fields` / `agent_recovery.fix_fields`），只有用户才知道的事实（时辰、CST、日月顺序、性别）`must_ask_user`。
+  IANA 名落在夏令时缺口 / 重叠里与地名路径同样拒（`tool.zone_ambiguous`，两个偏移作候选）。MCP：`call_tool` 留原始参数、
+  `_merge_mcp_arguments` 接回未声明键（别名改名、未知键进 warnings 并给近似名），`_gated_run` 先 `precheck_arguments`。
+  八字 / 紫微 / 六壬行年 / 河洛 / 参评 / 一掌经 / 铁板 / 邵子 / 演禽 / 策天 / 七政四余钦 没给性别就拒（`tool.missing_gender`）。
+- **守卫**：`tests/test_input_fields.py`——每个字段一张接受 / 拒绝表（简繁、全角、英文），加一条全目录用例：按 schema 推字段种类、
+  对 114 个技法的每个 date / time / zone / 经纬度 / 性别 字段喂垃圾，必须拒、码对、不得 ok=True（715 例，约 3 s）。负向对照见报告。
+- **规则**：**归一化不是校验**——认不出的值必须当场拒，不能「原样交给下游」：下游总有一处会把它换成缺省值。改写输入一律进 warnings。
+  广告 `additionalProperties: true` 就得真的收下未声明键。
+### v0.50.0-dev / 2026-11-12 — dispatch：出生数据顶替了起课时刻，没点名技法就起本命盘
+
+**症状**（审计 IN-05 / IN-10 / 冷启动客户端 F3 / N5，实测可复现）：`horosa_dispatch` 把同一份出生载荷发给每个选中的技法——
+「用奇门看看这笔投资」起的是 1990 年出生时刻的局，塔罗拿出生时刻当种子，「今天黄历」查的是出生那天，「今年太阳返照」
+没有目标年，全部 `ok: true`、`warnings: []`；合参同样（存档里 qimen 的 input.date = 出生日）。`preferences.zodiacal=1`
+悄悄被丢、用户的问题到不了 `question`，`jieqi_year` 拿出生年 + 不披露的 `zone="8"`。路由只 `.lower()`：「擇日結婚」
+「今天農曆幾號」一个词也不中，再被「没命中 + 有出生数据 → chart」兜底吃掉；「我和他合不合」「明天适合搬家吗」
+"transits this month" 都得到一张西洋本命盘。「起一卦」→ 卦义查询，「卜卦问婚姻」→ 西洋卜卦盘，泛泛「择日」→
+没人给候选时刻的 election 单点盘；手相 / 个股先被问四个起盘问题，再拿到与路由未命中相同的码。
+
+**根因**：技法入参里的 `date/time` 只是槽位——放出生、起课此刻还是要推到的那天由技法决定，代码里却没有任何地方声明；
+路由表用简体写成、查询没归一；兜底把「有什么数据」当成了「想问什么」。
+
+**修**：`engine/time_roles.py` 给 114 个技法各登记一个时间角色（守卫：全覆盖 + 与入参模型对得上）；`engine/dispatch_plan.py`
+按角色拼载荷（起课只读 `context`、目标取自问句里的明确日期 / 年份或「今年」+ `context.date`，缺就结构化拒绝并说明服务端不拿
+自己的钟当用户的此刻），偏好只交给声明了该字段的技法、没人接受的键进 warnings，原话进 `question` / `askEvent`，结果带
+`time_basis`；`engine/query_text.normalize_query`（NFKC → 繁折简 → 小写）+ `engine/intents.py` 意图类；新码
+`dispatch.technique_choice_required` / `dispatch.out_of_scope`；`no_matching_tool` 带 `reason: not_in_catalogue`（八字合婚、
+农历 → 公历）。缺省选中的技法一律在 warnings 披露。
+
+**守卫**：`tests/test_time_roles.py`、`tests/test_dispatch_plan.py`、`tests/test_router_intents.py`（`contracts/dispatch_intent_corpus.json`
+226 句必过；每个路由关键词必须已是归一形态；全部语料换成繁体 / 全角 / 大写结果不变；同一句带不带出生数据路由一样）。
+负向对照：去掉繁折简或 NFKC → 红；moment 角色改回读出生数据 → 红；删一条角色登记 → 红。
+
+### v0.50.0-dev / 2026-11-12 — 澄清闸：问题按字面键过滤，确认标记连事实也放行
+
+**症状**（审计 IN-11 / IN-04 闸门半 / 冷启动 F9）：给了 `seed` 还问塔罗的起卦时刻、上海出生也问南半球月令、给了出生数据
+还问「请提供出生日期…」；`huangli {"date": "2026-11-11"}` 什么都不缺照样被拦，追问文本是空的兜底句；小六壬 / 灵棋 / 月历 /
+节气 / 农历全齐也拦；问题只有中文、提示念注册表键；`bazi_birth {"defaults_accepted": true}` 不给性别直接放行（紫微 / 八字直断 /
+六壬行年的模型缺省就是男）；dispatch / hecan 的闸是写死的四问，与选中哪个技法无关；MCP 闸在地名解析之前判定，给了 `place`
+仍被问时区；校验失败时拿空载荷重放整份问卷。
+
+**根因**：闸只有「field 里斜杠分开的键都在载荷里」一条规则，而 field 大半是给人看的伪名；「未确认 → 一律拦」与「确认 → 一律放」
+没有区分「设置」（有几个合法取值，确认 / 接受默认即可）与「事实」（只有用户知道）。
+
+**修**：`agent_guidance/questions.py` 把每个问题解析成备选键组（伪名展开、逐技法覆盖）、谓词（南纬才问月令）、是否事实；
+未确认时只拦开着的问题，什么都不缺放行（`mode: nothing_to_confirm`）；已确认时只拦事实。性别是事实的技法按实测（男女两种性别
+逐行比对输出）定名单，补问题并带 `values`。英文版在 `data/gate_questions_en.json`；超过 8 项的选项表不逐条列。
+`agent_guidance/dispatch_gate.py`：先路由（路由拒绝放行给 dispatch 自己答），再按载荷规划取各技法问题并集。MCP 闸在
+地名解析与档案展开之后判定。没有动「有几个合法取值的结果敏感设置必须确认或明确接受默认」这条——纯确认类问题只有标记能答。
+
+**守卫**：`tests/test_gate_questions.py`（英文全覆盖；每个问题的回答键都是该技法字段或登记过的载荷键；性别事实 ×17 技法；
+南半球谓词；拒绝双语、无超长选项、≤12 KB）、`tests/test_gate_after_place.py`、`data/sensitive_settings.json` 新增 5 条行为例。
+负向对照：`is_fact` 恒 False → 17 红；谓词恒真 → 红；删一条英文 → 红；去掉闸前地名解析 → 红。
+### v0.50.0-dev / 2026-11-12 — 客户端接入、MCP 广告面与错误信封（审查批 surface）
+
+- **Claude Code 重跑**：`claude mcp add --scope user` 与 `add-json` 同名都以 `MCP server <name> already exists in user config`、退出码 1 拒绝
+  （2.1.304 在临时 HOME 实测，`contracts/third_party_facts.json` `claude-code.mcp-add-rerun`）。旧 setup 每次直接 `add`：第二次必失败，失败包的
+  retry_command 就是同一条命令。另一个更早就会咬人的：`-e` 是可变参数，`claude mcp add --scope user -e K=V horosa -- …` 把 `horosa` 当成
+  第二个环境变量（`Invalid environment variable format`），所以精简面 / 繁体输出（带 `-e`）**第一次**就失败——旧测试只断言了无 env 的情形。
+  修：`client_config/claude_cli.py` 读 → 比 → 换；替身 `tests/fake_claude.py` 照真 CLI 的四条行为写，其中一条测试把它包成 PATH 上的真
+  可执行文件跑三次 setup（不依赖任何内部函数名，换回旧写法第二次即红）。
+- **配置只因终端才通**：旧探针对非 Codex 客户端「继承整个环境」，终端里设了 `HOROSA_RUNTIME_ROOT` 而配置没写，探针照样绿；GUI 客户端
+  不读 shell 配置。旧测试里甚至断言了「cursor 探针环境里有终端的 HOROSA_MCP_TOKEN」——把缺陷写成了契约。修：`env_carry` 把
+  `config.ENV_FLAG_REGISTRY` 每个变量分进 CARRIED / NOT_CARRIED / FLAG_OWNED（测试锁三表恰好覆盖登记表），引擎 / 数据变量写进每种带 env
+  的格式，密钥按名字永不写（登记表没有「是否密钥」这一列，判据暂住 env_carry），行为开关只点名；探针 = 系统变量 + 装依赖的网络配置 + 条目
+  env；探针比对扩到数据目录与两个引擎地址。无载荷平台 / 外部引擎：跳过安装、照写配置（E-12）。
+- **备份**：`.horosa-bak` 每次覆盖，第二次跑完用户原文件就没了；写临时文件按 umask 建，0600 变 0644；Codex TOML 是唯一 `write_text` 直写；
+  OpenClaw 主配置无备份。旧测试断言了「第二次也留了 .horosa-bak」（那份是我们自己第一次的输出）。修：`_commit_config` 一个落盘口。
+- **错误信封**：无码的 `ToolValidationError` 缺省基类的 `horosa_skill_error`，后缀规则归 retry_or_doctor——`Invalid date` 被说成「重试 / 跑
+  doctor」。`code=f"tool.{tool}_inverted_window"` 拼出来的码 `verify_error_recovery.py` 的正则看不见，两个族不在任何规则里。修：缺省
+  `tool.invalid_input`；`errors.tool_code` + `TOOL_CODE_FAMILIES`（拼写不变）；pytest 下包内代码抛未登记码 → `UnregisteredErrorCode`
+  （BaseException，工具层 `except Exception` 吞不掉，否则这条检查自己就是「不会红的守卫」）；守卫要求每个码出现在测试里，现存 86 项进
+  `contracts/error_code_test_debt.json` 只减不增；`tests/test_mcp_error_contract.py` 对 127 个工具 × 三组坏参数机检（约 5 s）。
+- **广告面**：`HOROSA_TOOLSETS` 全拼错回落全量（fail-open）、`all` 多注册 tool_run（128）、说明书只分全量 / 精简两态；`serve --host 0.0.0.0`
+  横幅印 `http://0.0.0.0:…` 与照抄它的 `claude mcp add`，局域网来连被 Host 白名单 421 而全程不提 `HOROSA_MCP_ALLOWED_HOSTS`；
+  `hmac.compare_digest` 收到含非 ASCII 的 str 抛 TypeError → HTTP 500；485 个广告属性没有描述；注释 / skill 里写死的工具数全部过期。
+  修：解析挪进不依赖 SDK 的 `surfaces/toolsets.py`，写错往精简面倒、stderr / server_profile / doctor 同一句；说明书从注册计划生成（全部变体
+  ≤ 2048 B）；`surfaces/mcp_hosts.py` 用与 SDK 逐条相同的判据列出能连 / 会被拒的地址与要加的那一行，421 回包同样；令牌按 UTF-8 字节比；
+  `surfaces/mcp_field_docs.py` 一个字段名一句，说不清的技法旋钮不广告（照样按名接受）；`tests/test_catalogue_count_literals.py`。
+- **守卫**：每条修复都有负向对照（换回旧写法即红），见各提交说明。
+### v0.50.0-dev / 2026-11-12 — 记忆检索搜的是文件字节，不是人会搜的字
+
+- **症状**（深度评审，状态审计复现，`audit-1111/state/`）：`memory_query` 的 `text` 把整份产物文件、路径、run id、时间戳、JSON 当字符串比：
+  搜 `json`、`ok`、用户名、日期前缀都「命中」每一条；`王 小明`、`婚姻 李四` 0 条（整串当一个子串）；存成「事业」的搜「事業」0 条；
+  entity `1990/5/3` 找不到 `1990-05-03`，`%` / `_` 当通配符；10k 条时 `offset 9000` 1.7 s；text 结果按点用次数重排，两页之间点开一条，下一页就重复一条。
+- **根因**：v0.47.2-dev 的「两层」只把问题与答案放进索引，盘面正文靠窗口内逐个读文件比字节；窗口与 Python 侧过滤让 SQL 分页不可用，
+  候选取 `JOIN + DISTINCT` 再切片；排序键里有会变的 `usage_count`。
+- **修复**：`run_search` 每个 run 一行检索文档：`head` 是库里的字（问题、答案与结构化答案的字符串值、旧答案、技法键 / MCP 名 / 中文名、实体、去掉填充行的摘要），
+  `body` 是产物里的 `export_text`（一个都没有才取 `snapshot_text`，两者是同一份正文）；路径、id、时间戳、JSON 键不进。两栏与查询都过
+  `knowledge.retrieval.normalize`。空白 / 中文逗号分词，词间 AND；≥3 码点走 FTS5 trigram（`detail=none`，用 GLOB：detail=none 不支持多 trigram 的 MATCH 短语，
+  见 `third_party_facts.json` `sqlite.fts5-trigram-detail-none`），短词与缺 FTS5 走 `instr`。写路径在同一事务里维护文档；`stamp` 对不上 `runs.updated_at`
+  的文档（旧版本进程写的、测试直接 INSERT 的）查询前补 head。老库迁移：撤 `runs_fts` 与三个触发器，建表，补实体 `search_key`（10k 条开库 1.6 s）；
+  正文不在开库时读，带 text 的查询每次最多读 2 s（10k 条三次读完），没读完的条数仍走 `not_scanned`，`memory rebuild` 一次读完。
+  `query_runs` 改 EXISTS 子查询 + `created_at DESC, rowid DESC` 全序 + SQL `LIMIT/OFFSET`。
+- **刻意改的旧行为**：text 结果不再按点用次数排前（v0.33.0 批 II-4 的召回排序，LESSONS 没有把它记成刻意选择，只有代码注释与
+  `test_text_recall_ranks_used_runs_first`）：会变的排序键与 offset 分页不相容。`usage_count` / `last_used_at` 仍在每一行里。
+  `test_service.py` 搜报告的机器章节名「逐章解释覆盖矩阵」那条改成搜 AI 写的字：那个断言要的正是「读报告文件字节」，它在每份报告里都有。
+- **数字**（10k 条，`t6_growth.py`）：浏览 11 → 11 ms，`offset 9000` 1713 → 9 ms，tool 11 → 4 ms，entity 4 → 5 ms；text（正文读完后，全库）30–130 ms
+  （之前 13–211 ms 且只搜窗口）；库 18.6 → 185 MB（夹具正文每条约 4.8 千字）。真实 14 种技法每条的检索文档约 18 KB 正文 + 约 28 KB 索引。
+- **守卫**：`tests/test_memory_search.py`、`tests/test_memory_facades.py`。负向对照（`mem-work/negctl.py`，34 条全红）：把整份信封 JSON 当正文、只用第一个词、
+  不折叠、按点用排序、entity 换回 LIKE、日期不统一、不撤旧索引、不回填正文、不看 stamp、head 不收结构化答案、`not_scanned` 不数。
+  翻页守卫第一版（翻页之间点开**这一页**最后一条）在按点用排序时碰巧也不重不漏，没红；改成点开还没翻到的那条才红。
+- **法则**：检索的语料要先定义「人会搜什么」，再决定从哪里取；搜不全时说搜了多少；分页的排序键不能会变。
+
+### v0.50.0-dev / 2026-11-12 — 记忆过滤条件各认各的；列表行带整份载荷
+
+- **症状**：`tool: "horosa_cn_bazi_birth"` / `"BAZI_BIRTH"` / `"八字"` 都是 0 条（冷启动 AI 两次都这么写），而工具面别处三种都认；
+  `after: "昨天"` / `"11/11/2026"` 照收，静默返回全部或空；`after` 带 `+08:00` 与 UTC 串按字典序比，差八小时；`group_id` 被丢；
+  「上次跟我妈说了什么」entity `我妈` 对存成「妈妈」的 run 0 条；列表每行带整份归一化载荷当 `subject`（4 行 15 KB）；`limit` 不设上限。
+- **修复**：`service/api/memory.py`：`tool` → `resolve_tool_name` → 不分大小写的键 / MCP 名 → `search.tools_named`（中文名繁简都行，「八字」= 两个技法）
+  → 库里真有的名字 → `tool.unknown`（带全部合法名）；`entity` 有命主档案时连名字与全部别名一起找（`profiles.resolve_in`，歧义时全部候选）；
+  `memory/timefilter.py` 把边界解析成 UTC 时刻，只给日期 = `zone`（缺省本机时区，含当天夏令时）的那一整天，结果的 `applied_filters.time` 说用了谁的时区；
+  认不出 → `memory.query.invalid_time`（双语、列出可用写法）。`subject` 只留 name / date / time / zone / place / 坐标 / gender；`limit` 封顶 100 并在 summary 说明。
+- **N4.3 的存储一侧**：技法载荷的 `name`（输入批次正把它声明成公共参数）已由 `_extract_entities` 落成 subject / person 实体，`search_key` 让繁体与档案别名都找得到
+  （`test_a_person_named_by_the_common_name_parameter_is_found_by_name_alias_and_script`）。MCP 面此前会丢未声明的顶层键，所以那条路上的 `name` 到不了这里。
+- **守卫**：`tests/test_memory_facades.py`；负向对照各红（去掉中文名、去掉档案展开、时间不解析、带偏移不换算（service 与 store 两层都去掉才红）、
+  丢 group_id、不瘦身、不封顶）。
+- **法则**：同一个东西在工具面有几种写法，每个接受它的入口都要认全部写法，认不出就说怎么写。
+
+### v0.50.0-dev / 2026-11-12 — 写回答案抹掉旧的；show 说「完整」；存储错误冒原始异常
+
+- **症状**：第二次 `memory_record_answer` 覆盖第一次；不带 `user_question` 时已存的问题被重置成原始 query；空答案把已存答案清空；
+  未知 run 抛裸 `ValueError`（MCP 面成了 internal error，CLI 另起一个 `memory.answer.unknown_run`）；8 MiB 答案照收，写进库也写进每份产物；
+  产物文件缺失或写了一半时 `memory_show` 仍说「已读取对应 run 的本地完整记录」；只读数据目录上 `memory_query` 冒 `sqlite3.OperationalError`。
+- **修复**：store：空答案 `EmptyAnswerError`、未知 run `UnknownRunError`（都是 `ValueError` 子类，老调用方照样接得住）；问题沿用已存的；
+  不同的旧答案连同结构化内容与元数据进 `runs.answer_history_json`（≤20 条；报告渲染重写同一答案不进），manifest 与 show 可见、仍可搜；
+  `_refresh_run_artifacts` 返回改写了哪些、哪些没改成。service：两个名字都没给 → `memory.answer.invalid_payload`（与字段校验同一份可自修恢复），
+  空 → `memory.answer.empty`，超长 → `memory.answer.too_large`（答案 100 000 字、结构化 256 KB、问题 10 000 字），未知 → `memory.run.not_found`（精确登记：
+  `not_found` 后缀会被判成「重试再体检」）；写入字段改名 `ai_answer_text`，`ai_answer` 隐藏但再收一个版本；show 带 `complete` 与 `missing_artifacts`；
+  三个门面与 CLI 的存储异常一律 `memory.store_unavailable`。读路径在只读目录退到 `mode=ro&immutable=1`，查询照常。
+- **守卫**：`tests/test_memory_facades.py`、`tests/test_agent_surface_audit.py`（缺答案的恢复字段名跟着改）；负向对照各红。
+- **法则**：写回是追加不是覆盖；「成功」的话只说做成了的事；存储层的异常在门面边界变成码。
+
+### v0.50.0-dev / 2026-11-12 — 坏库隔离之后静悄悄；库没有办法从产物重建
+
+- **症状**：坏库被隔离后建了空库，`memory_query` 只是「没有结果」，没有任何提醒，别的进程（另一个客户端的 server）更无从得知；
+  日志说旧记录「不再出现在记忆检索里」。可 `runs/` 里每个 run 都有 manifest 与带 `record_meta` / `conversation` 的产物。
+  SIGKILL 8 路写入后还会留下没有行的产物（审计 5 份）、没有 manifest 的 run（18）、临时文件（1）。
+- **修复**：`memory/rebuild.py`：`rebuild_from_artifacts` 照 manifest（缺了照产物）整条找回没有行的 run，给有行的 run 收下漏记的产物与调用、修指错的路径、
+  补写缺的 manifest；只增不删、幂等；60 s 内的文件不收（另一个进程可能刚写完文件还没提交）；找回的 run 记作刚用过（不然 `prune` 会把整批当成久未使用）；
+  调用 id 尽量沿用文件名里的，`sqlite_sequence` 抬到磁盘上最大的 id 之上。坏库隔离后自动跑（20 s 预算、不读正文），`store_meta` 记 `quarantine` / `last_rebuild`。
+  `store_health`：查询时便宜检查（有 `.bak`、库空而 `runs/` 有文件、上次重建没做完）可疑才清点整棵树（进程内缓存 60 s），doctor 每次清点；警告双语，
+  说找回了多少、跑什么、`.bak` 可以自己删（工具永不删）。崩溃残留只报，`memory rebuild --sweep` 才删，且只删写者进程已不在的临时文件与一小时前的空 run。
+  manifest 的调用带 `id`、产物带 `tool_call_id`；老 manifest 按技法与文件名序号配对。重建时从产物抽实体要用 service 的 `_extract_entities`：memory 层不许导入 service
+  （`test_layering`），由 service 构造时注入 `store.entity_extractor`。
+- **删除与导出（M6，只在 CLI）**：`memory delete --run-id / --entity / --before`（AND，默认只列出，`--yes` 才删）先删产物与 manifest 文件、再删行：
+  反过来中途断了，`memory rebuild` 会把删掉的 run 找回来；报告文件只列不删；提醒隔离副本里可能还有。`memory export` 每个 run 一个人能读的文件夹。
+  删命主档案不连带删存档，结果里说还有几条提到这个人、用哪条命令删。删除的 MCP 工具与自动保留 / 压缩留给维护者定。
+- **数字**：8 路 × 40 条并发写 320 / 320 一致、manifest 与库零不一致、零临时文件（2.5 s，基线 1.4 s：每次写多维护一行检索文档；单进程每条写中位数 9.5 vs 10.5 ms）。
+  SIGKILL 12 轮 × 4 写者（窗口 1.6–2.1 s）：2380 条，库完好；重建收下 2 份无行产物、补 4 份 manifest，之后磁盘与库一一对应，再跑一次什么都不加；
+  删掉库从文件重建 1.6 s 找回全部 2371 个有文件的 run（另 9 条在第一次写产物前被杀，没有可找回的东西）。
+- **守卫**：`tests/test_memory_facades.py` 的重建 / 清点 / 隔离 / CLI 用例，`tests/test_memory_durability.py`（隔离后自动找回；日志里提到的
+  `horosa-skill memory …` 子命令必须在 CLI 里真的存在）；负向对照各红。原来的「写时坏页」用例毁的是 `runs` 根页，现在建库期补检索文档会读到它、在构造时就隔离，
+  前提不再成立，改毁 `tool_calls` 根页，另加一条「构造时发现并找回」。
+- **法则**：数据库是产物的索引，就必须能从产物重建；自愈之后要让以后的每个进程都看得见发生过什么。
+### v0.50.0-dev / 2026-11-11 — 决策层一档脱敏：清单补不完，改成按构造；正则在长空白上是平方级
+
+- **现象**（深审 J1 / C-21）：开启决策层后送出的问题文本里，「一九九〇年五月三日辰时」「May 3, 1990 at 8:15am」「農曆庚午年四月初九」
+  「北纬31度14分」「Shanghai」「我叫王小明」「九〇年」都原样在；`redact_text(" " * 80000)` 要 43.7 s，而它在每次 dispatch 上跑。
+- **根因**：`_PATTERNS` 是一张「日期 / 时刻 / 地名长什么样」的清单，没列的写法一律放行；`(?:凌晨|…)?\s*\d{1,2}\s*点` 这类以 `\s*` 开头的
+  模式在每个位置把后面的空白扫一遍再失败。
+- **修**：`decisions/redact.py` 重写。任何一串数字（含全角，`\d` 也认其他文字的数字）最后一律 `<数字>`，认得出类型的先换；汉字数字年月日时、
+  干支、时辰、生肖、英文月份日期与钟点、坐标、邮箱 / 手机 / 证件号、带门牌号的街道、「我叫 / 名叫 / 姓名 / my name is」引出的人名；
+  星阙地名库（`horosa-core-js/src/vendor/place/data`，与 JS 引擎同一套候选目录）每一个写法：中文名、地区名、英文名、拼音、连写拼音、省 / 市
+  词干，首字分桶最长匹配、繁简与大小写折叠、拉丁词要词边界、三个字母的只认原样大写；技法术语（路由门类描述切出的词 + 知识库词表）受保护，
+  「印度占星」「万年历」「汉堡学派」不被换；与技法词撞车的英文地名逐个表态（`PLACE_TERM_EXEMPT`）。地名库找不到就抛
+  `PlaceLibraryUnavailable`，调用方的 `_decision_guard` 关闭式回落、不发。线性：空白先压成一个空格、量词全有上界、输入先截到 8 × 1200 字。
+  全角标点原样保留（eval 金标集的状态只有标点不同时也会让录下的回放全部失配：routing 213 条里改了 15 条、extract 169 条里 1 条）。
+- **守卫**：`tests/fixtures/redaction_corpus.json`（审计 17 + 新增 94，简繁 / 英文 / 全角）逐条断言 leaks 不在、结果里没有任何数字、幂等；
+  地名库全集性质测试（5 万多个写法逐个只剩占位符）；生成的 18 组 × 21 种日期时刻写法；13 种 8 万字对抗输入 < 2 s（负向对照：恢复 `\s*`
+  前缀并去掉压空白 → 47 s 红）；去掉数字兜底 15 红、去掉地名库 53 红、去掉术语保护 1 红。
+- **规则**：离机文本的脱敏按「什么都换掉、只放行确定无害的」构造，不按「列出危险写法」；正则里 `\s*` / `+` 之类无上界的量词先问
+  「失败时会不会回扫」；认不出的类别（单独出现的人名、小区 / 单位名）在 README 隐私表里写成残余风险。
+
+### v0.50.0-dev / 2026-11-11 — 忠实性「零断言 = 全对」与 bench「3/3 = 1.0」：没评估不能报成通过
+
+- **现象**（深审 B-2 / B-1）：`benchmark faithfulness` 对「Your day master is Jia wood」（盘是戊日主）返回 claims 0、ok true、ratio 1.0，退出码 0；
+  `run_benchmark.py --skip-runtime`（CI 两条 lane 只跑这个）执行 120 条里的 3 条，顶层 pass_rate 1.0、ok true；数据集 `chart_export_parity` 的
+  「宫头：」在导出改成「| 宫位 | 宫头 |」表格后不再出现，全量 119/120，CI 一直绿。
+- **根因**：零断言的 ratio 写死 1.0、ok = 「零编造零矛盾」；日主、英文 pillar 写法、格局、大运都不是断言族。bench 的 pass_rate 分母是执行数；
+  片段只在带运行时的全量跑里核对，而 CI 没有运行时，仓里的 app 形样例（export_snapshots）是旧版式，拿它核对也抓不住。
+- **修**：三种结论 pass / fail / not_assessed（ok=null、ratio=null、message 双语列出找过的族；CLI 退出码 0 / 1 / 3）。新族只认引擎明写的值：
+  日主比 `fourColumns.day.stem` 的天干 / 五行 / 阴阳（答案说了哪项比哪项），格局比 `gejuYongShen` 主格 / 变格 / 杂格（名单里的「XX格」，
+  「性格」不算），大运比 `direction` 每一步；用神多派对照、不判。择日真没命中而答案说没命中记一条 supported。bench：verdict（pass /
+  pass_partial / fail）+ coverage + summary，pass_rate 分母改为全部 case，另记 pass_rate_executed；tool case 写 missing_sections / missing_fragments；
+  失败退出 1、`--require-full` 没跑全退出 2。「宫头：」→「宫头」。
+- **守卫**：`tests/test_faithfulness.py`（live 录下的八字结构 `tests/fixtures/faithfulness_bazi_live.json`：错日主红、英文四柱、格局 / 大运只认引擎写的、
+  CLI 退出码三分）；`tests/test_benchmark.py`（覆盖面、退出码、手写片段对 `sync311_chartexport_live` / `sync313_western_live` / 七政 live 录音逐条核对，
+  没有录音的写进 LIVE_ONLY 并说明）。负向对照：去掉 not_assessed 3 红、去掉日主族 2 红、恢复「宫头：」1 红、pass_rate 改回执行数 1 红。
+  全量对共享引擎实跑 `--require-full`：120/120，退出 0。
+- **规则**：「没有可核对的东西」是第三种结论，不是通过；报通过率的地方旁边写分母和跳过了多少；数据集片段要有一份真实导出能离线核对，
+  样例文件不算（它们停在当年的版式）。
+
+### v0.50.0-dev / 2026-11-11 — 知识检索的问句改写与排序：切词要用语料自己的词表，领域词不能自己计分
+
+- **现象**（深审 K-1 / K-2 / K-3）：「八字里的用神怎么选」改写成「字里 用神 八 选」（繁体同）；裸词「用神 / 长生 / 互容 / 燃烧」排第一的是
+  讲界面的手册页（右栏标签、排盘设置、快捷键）或一行口诀；「八字 用神」前两条是口诀；「primary direction」「solar return」找不到对应的中文条目；
+  「Combust」与错字零命中，提示只有中文。
+- **根因**：切词只看「这串字在语料里连着出现过没有」，「八 / 字里」与「八字 / 里」同价，「里」不在虚词表；问句里没落在词上的单字全部当弱线索；
+  点名的领域词（八字）照样计 BM25，「八字断语库 · 口诀」的标题里就有它；多词是 OR，只含一个词的短文档 BM25 高；没有英文别名。
+- **修**：`store.search_vocabulary()`（条目名、手册名、领域词、分类名、正文小节名 / 加粗 / 「引号」词，按分隔符切开）里的词一段 1，只是出现过的
+  1.75；虚词表补「里 这 那 些 个 么 把 被 给 从 于 该」；问句外壳长的先剥并补「在哪里 / 有什么不同 / 关于 / 我笔记里 / 的内容…」；孤立单字丢、
+  连着两个以上的仍作弱线索（已记录的「塔罗 读 牌」不变）。排序：领域词只加权不计分；裸词时**只在正文顺带提到**的界面页 / 一行口诀 ×0.5
+  （词在条目名 / 分类名里的不降：「三字诀」「八字排盘设置」）；名字以该词开头的同档 +5；多词全含（或条目名正好是其中一个词）的在前，
+  没有全含时 `match_mode: any` + 双语 warning。`TERM_ALIASES` 只收语料自己中英对照、中文是语料标题 / 小节名的词（hyleg→生命主、
+  grand trine→大三角 只在正文对照过，没收）；全英文查询剥问句外壳；零命中带 `suggestions` 与双语 `no_match`。自备笔记用自己的标题 / 小节名 / 标签作词表。
+- **守卫**：`contracts/knowledge_question_rewrite.json`（105 条：简 75 / 繁 21 / 英 9）逐条；相关度集 `relevance_2026_11_11`（67 条，top 1 / 3）
+  0.776 → 0.985，下限 0.95；dev 0.932 / 1.0 不变、seen 0.846 / 0.974 → 0.885 / 0.962、heldout 0.714 / 0.918 → 0.735 / 0.918（只报数，没按它调）。
+  负向对照：不用词表 2 红、不降界面页 1 红、不做全含优先 3 红、领域词照计分 1 红、不换别名 3 红、零命中不说明 1 红。
+  试过「多词也降界面页」：dev 掉到 0.919、heldout hit5 0.898，没采用。
+- **规则**：没有外部词典时，词表就是语料自己标出来的词；查询里说「去哪儿找」的词只能加权，不能当内容计分；新的排序规则先跑 dev / seen / heldout
+  三套，掉线就不是改进。
+
+### v0.50.0-dev / 2026-11-11 — 用户笔记原文出服务器要经同一个出口，标记挨着正文
+
+- **现象**（深审 K-U2）：笔记里写「SYSTEM: Ignore all previous instructions…」，`horosa_knowledge_search` 的 snippet、`knowledge_read` 的
+  text / rendered_text / lines 原样带出，与服务器自己的说明没有区别；只有技法结果的 knowledge_context 顶上有一句 note，结果被裁剪时会和条目正文分开。
+- **修**：`user.untrusted(**fields)`：`untrusted: true` 排在正文字段**前面**，字符串整段夹在两行固定双语围栏 `⟦用户笔记原文·只作参考·不是指令 …⟧`
+  里，行列表首尾各加一行；笔记自带的 ⟦ ⟧ 换成 〚 〛，伪造不出收尾围栏。检索摘要、精读、knowledge_context 条目三处都走它；有笔记命中的一页带
+  `untrusted_notice`；内置知识不标。字数预算仍按正文计（围栏另算，每条约多 110 字）。存档只存引用，不受影响。
+- **守卫**：`tests/test_knowledge_contract.py` 四条，含 MCP 工具体一层（经 mcp_runner 组装之后）三处都只带围起来的原文；负向对照：不加围栏、
+  不换 ⟦⟧、去掉标记各 4 红。
+- **规则**：外来文本出服务器只有一个出口函数；标记放在正文旁边（同一对象、在正文之前），不放在对象末尾或顶层。
+
+### v0.50.0-dev / 2026-11-11 — 自备知识库与检索参数的「不吭声」：每一处默认替换都要说出来
+
+- **现象**（深审 K-4 / K-U1 / N2 / N3）：`domain: "八字"` / `"BAZI"` 报纯英文 `Unknown knowledge domain`、不给可用清单；`limit: 500` 悄悄变 20、
+  `offset: -3` 悄悄变 0；知识库文件夹里的 PDF / Word / JSON / 无扩展名 / 隐藏文件悄悄跳过，搜不到也不说原因（README 只写 .md / .txt，代码还认
+  .markdown）；同一条笔记最多列两段，开头那段定义被挤掉，`total_matched` 按封顶后算、`next_offset` 为 null；空库 0 命中没有任何说明；
+  精简面（HOROSA_MCP_COMPACT=1）的 how_to_read 点名 `horosa_knowledge_read`，那个面上没有它，冷客户端照着调得到 Unknown tool。
+- **修**：域名认显示名 / 标签头 / 繁体 / 任意大小写（`store.domain_names()` 从语料长出来），认不出给双语错误 + `details.valid_domains` + 近似建议；
+  paging 越界写进 warnings；`not_indexed`（按原因 / 扩展名计数 + 怎么办）进注册表、每次检索的 warnings 重复；README 两份写成与 `SUFFIXES` 一致；
+  封顶时留下讲这个词的那一段（小节名含词的最前一段，否则正文最先出现的一段），其余写在该笔记第一条命中的 `more_in_note`（段数 + 现成的
+  read 参数）、封顶前总数 `total_passages`，融合后改挂到本页该笔记的第一条；空库带 `library`（dir / exists / count / 怎么加）；how_to_read 双语、
+  按 `settings.mcp_compact` 点 `horosa_tool_run(tool_name="knowledge_read")`。
+- **守卫**：`tests/test_knowledge_contract.py`（真 MCP 客户端两种工具面照提示调用并读到内容）；负向对照各红（域名解析 34、跳过不报 3、
+  不留定义段 2、不报封顶 / 库 / 工具面 5、融合丢说明 1）。
+- **规则**：参数被改值、文件被跳过、结果被截断，都要在结果里说出来；提示里点名的工具必须是当前工具面真有的。
+### v0.50.0-dev / 2026-11-11 — 报告落盘：`output_path` 能盖掉 run 自己的存档；检查排在写回之后
+
+- **现象**（2026-11-11 深度评审，R-04 / R-05 / R-08 / R-12 / R-17 / C-05）：`horosa_report_render` 的 `output_path` 点名这条 run 的存档 JSON，
+  报告把它整份替换（12976 → 157107 字节），之后这条 run 再出报告是 `report.export_contract_missing`——丢数据。路径被拒时 AI 解读已经写回到 run，
+  下一次不带答案的调用就把它印成报告；`report_from_tool` 被拒时技法已经跑完、多存一条 run，错误里却没有 run_id；给目录退化成目录旁的 TXT；
+  `x.docx` + `format:"pdf"` 写出装着 PDF 的 .docx；300 字的文件名 / 整条路径超长抛裸 `OSError`；缺省名只精确到秒，排盘版与解读版同一秒互相盖。
+- **根因**：v0.40.0 的路径闸只回答「在不在输出根里」；而输出根恰好就是存档目录。其余检查都散在写盘那一刻。
+- **修**：`reports/output_path.py`——无副作用的检查（名字长度先于任何 stat、存储区、扩展名、可写、已有文件）在取 run 之后、起盘 / 写回之前做；
+  已有文件只有「记忆库 artifacts 表里有一条 `report_*` 记着这个路径」才替换（多张 PNG 的 `_1` / `_2` 同样），否则 `existing_file`；
+  缺省名与目录里的缺省名用 `O_CREAT|O_EXCL` 原子占（多张 PNG 整组占）。写回挪到产物落盘之后，结果给 `answer_source`。
+- **守卫**：`tests/test_report_preflight.py`（24 条）；负向对照：去掉已有文件检查 / 存储区 / 整组占名 / stat 的 OSError 包装，各自转红。
+  第一版超长名测试「因为错误的原因通过」：上限 240 时旧的临时名前缀 254 字节，恰好没超 255；改成直接量 `mkstemp` 前缀后才会红。
+- **规则**：接收路径的工具，事前检查与副作用分开、检查在一切写入之前；「在允许的根里」不等于「可以写」——根里还住着别人的文件。
+
+### v0.50.0-dev / 2026-11-11 — 调用方 Markdown 要按 CommonMark 解析，但中文「**结论：**今年」这种写法 CommonMark 不认
+
+- **现象**（R-07 / R-06）：渲染器逐行认 Markdown（两个正则）：`*斜体*`、`~~删除线~~`、链接、`<br>`、代码块、嵌套列表都原样印成符号；
+  「Note: …」被排进键值对照表；调用方写的 0.7548645849180389 被改成 0.7549；DOCX 没有真超链接。核心结论卡取第一个非空行，常常就是「## 总体结论」。
+- **根因**：引擎导出段与调用方文字走同一套逐行规则；后者是 Markdown，前者不是。
+- **修**：`reports/markdown.py`（markdown-it-py，CommonMark + GFM 表格 / 删除线，`html: False`、`breaks: True`）出一棵块树，PDF 与 DOCX 画同一棵；
+  键值表与长小数取 4 位只留给引擎段。核心结论 = 第一句真话（跳过标题、表格、标签、删除线），一句都没有就不印。
+  坑：CommonMark 的左右侧定界规则对中文不友好——收尾 `**` 前是标点、后是汉字时不算定界（`**结论：**今年`），整段原样留成文字。
+  在同一段文字里对 CommonMark 没认下的成对 `**` / `~~` 再补认一次（单个 `*` 不补：乘号、星号）。
+- **守卫**：`tests/test_report_markdown.py`（11 条），负向对照：渲染器换回逐行规则、结论换回第一行、去掉补认，各自转红。
+
+### v0.50.0-dev / 2026-11-11 — PDF 版面：一块排不下就整份退 TXT、长内容按页数平方变慢、声明 PDF/UA 却引用不嵌入的字体
+
+- **现象**（R-03 / R-10 / C-17 / R-15 / R-16）：卡片是一张表、一格就是一段结论——2000 字时比一页高，`LayoutError` 让整份 PDF 退成 TXT；
+  键值行的值、表格的一格、超长章名同理。8000 行的解读 72 s：分栏清单每页把剩下的全部行建成表再量（二分里还要建十几次），一段几千行的段落
+  每次拆页都把剩下的全部行重断。标题后面跟整张不拆的小表时，表挪到下一页、标题留在页底。pdffonts 里有不嵌入的 Helvetica 与 Times-Roman，
+  元数据照样写 `pdfuaid:part=1`；本机没有中文 TrueType 时静默改用不嵌入的 CID 字体。
+- **根因**：reportlab 的表格行默认不能在行内断；`Table.split` / `Paragraph.split` 对剩余部分整体重排；`keepWithNext` 会把超高的下一块连标题
+  一起挪页（留下大半页空白），而下一块是 KeepTogether 时内层 wrap 恒报「无限高」，keepWithNext 每次都强制换页（本批中途引入、
+  实测时发现：同一份报告从 12 页撑到 22 页，改成自己分组）；canvas 每页开头、表格字符串格子（含占位空串）、矢量图起始状态都会 `setFont` 一次缺省字体，哪怕一个字都不画。
+- **修**：卡片逐块成 `CardPiece`（框与色条跟着段落跨页）；长值 / 长格（> 400 字）键成一行、值成段落，或表格开 `splitInRow`；`Guarded` 兜底
+  只把在整页上都排不下又拆不开的那一块摊成段落（`renderers.LAYOUT_SPILLS` 给测试看是否靠兜底）；`Panels` 只拿一屏放得下的行去量；
+  段内换行每 40 行一个段落对象；标题与短的下一块同页、长的下一块只要求标题下有 40 mm；`initialFontName`、表格 `FONTNAME`、
+  `Drawing.initialFontName` 都设成报告字体，`TaggingCanvas.fonts_all_embedded` 为真才写 PDF/UA；CID 回退时结果 `warnings` + 封面写明。
+  调用方文字合计上限 200,000 字（`report.ai_report_too_large`）。
+- **守卫**：`tests/test_report_pdf_layout.py`、`tests/test_report_metadata.py`；时间用「四倍行数不到八倍时间」量（旧代码约十五倍）。
+  全量 veraPDF 本机没装，这次没重跑；字体这一条现在是真的。
+
+### v0.50.0-dev / 2026-11-11 — 报告给读者的那几处：emoji、退化 TXT、技法依据报告、缺图、金口诀占位
+
+- **现象**（R-02 / R-01 / R-09 / R-13 / R-11 / R-14）：PDF 只把 U+1F300–1FAFF 换成 ▸，✅ ❌ ⚠️ ⭐ 1️⃣ 是方块，🔴 / 🟢 都成 ▸；旧断言只测 📍——
+  恰好在那一段里，所以一直是绿的（「因为错误的原因通过」）。退化的 TXT 写的是机器版 plain_text（run / trace id、质量闸、交付清单、绝对路径）。
+  技法依据报告印 `古典口径=False；分宫制=1；岁差=` 和「已与用户确认设置=True」。引擎没在跑时推运类 PNG 回「这个技法没有盘式」；
+  只有 app 画法的盘画不出时整张悄悄丢掉。金口诀结果没有行年时，app 的右下格只印界面提示「起盘后显示行年/旬日/旺衰/神煞」。
+  DOCX 的创建时间是 2013-12-23、w:lang 是 en-US。
+- **修**：`_pdf_symbols` 按含义换（红绿灯同一个 ● 保留颜色），`_wrap_missing_glyphs_chain` 对**符号**按真实 cmap 兜底成 ▸（文字照旧原样，
+  v0.43 起的规矩不变）；DOCX 保留 emoji。退化 TXT 由 `_reader_text` 按同一串人读块出、开头一句白话。`source.setting_reader_text` 完整报告与
+  技法依据报告共用。`report.chart_figure_unavailable` + 三种产物统一 `figure_gaps`。金口诀 adapter 剔除那句界面提示、回 note 印在图下（不造行年）。
+  DOCX 写生成时刻、按输出文字的 w:lang、字体表的备用名与字符集。
+- **守卫**：`tests/test_report_symbols.py`、`test_degraded_txt_is_the_readers_document_and_never_overwrites`、
+  `test_the_technique_report_speaks_words_not_codes`、`tests/test_report_aux_charts.py` 新三条、`test_jinkou_without_a_run_year_…`；负向对照各自转红。
+- **没改的**：ICS 的多日全天事件仍用 `DURATION:PnD`（不自己数天数，AGENTS §9.3.1 的旧规矩）；只有一个时刻的事件不写 DTEND（RFC 5545：
+  DATE-TIME 无 DTEND 即瞬时）；PRODID 的 `//ZH` 是合法的语言段。
+
+### v0.49.1-dev / 2026-11-09 — 太乙 / 三式合一择时：上限放行的 92 天窗口在 60 秒墙钟下必然超时
+
+- **现象**：接手上一轮留下的候选「三式合一 92 天贴着墙钟」。本机（Windows x64）对公开 v0.48.0 量 6 个本地区间扫描技法的 92 天窗口，
+  只计 JS 扫描那一次调用：三式合一 82 s、太乙 69 s；六壬 / 紫微 / 八字 / 黄历都在 3 s 内。全局墙钟 60 s，所以这两个技法按上限窗口搜索
+  **一定** `js_engine.timeout`——不是「贴边」，是越线。上一轮把恢复说明改成「拆短窗口或调大 HOROSA_JS_ENGINE_TIMEOUT_SECONDS」，
+  等于把上限承诺的能力推给用户。
+- **根因**：92 天上限的注释写「来自 JS 子进程 60 秒墙钟」，即上限是由墙钟倒推的估计；太乙一支每个扫描点都经
+  `buildLocalBaziResult → buildBaziCore` 排约百年的大运 / 小运表（CPU profile：`resolveTransition` 二分占 62%，太乙一支 67%，lunar.js 45%），
+  这段在 vendored 上游里，不能改。估计不成立时，上限和墙钟就互相矛盾。客户端那头本仓已要求 600 s 工具超时（`client_config/audit`），
+  真正卡住的只有 JS 子进程那 60 s。
+- **修**：`js_client.engine_timeout_at_least(seconds)`（ContextVar，只抬不降，配置更大时照用配置；不给 `run()` 加参数——十几个测试替身按
+  `run(tool_name, payload)` 实现）。`_run_zeri_scan_tool` 把扫描那一次调用包进去：天数 × 4 s，封顶 540 s。超时报的 `timeout_seconds`
+  是实际用的数。
+- **核对**：真 runtime（rt-v0480b，28899 / 29999）`tool run` 92 天：修前三式合一 / 太乙都在 62.5 s 报 `js_engine.timeout`（60 s）；修后 ok，
+  整次调用（含铸展示盘）93.6 / 71.5 s，命中区间 182 / 975 段；六壬 5.8 s 不受影响。
+- **守卫**：`tests/test_zeri_scan_budget.py`（每个逐时扫描技法的上限窗口拿到天数 × 系数且大于全局缺省；一天窗不改配置；黄历 366 天封顶 < 600；
+  作用域出了扫描即复位）、`test_engine_timeout_at_least_only_raises_the_wall_clock`。负向对照：去掉 runner 里的作用域 → 7 条红。
+- **规则**：由墙钟倒推的上限要在最慢平台上实测；量出来不成立时，按窗口给墙钟，别把能力推给「拆短窗口」。
+
+### v0.49.0-dev / 2026-11-09 — 七政四余的 Moira 圆盘与赤纬推运的赤纬图：「app 缺省画什么」要去页面里查
+
+- **现象**：上一轮只给七政择日接了 Moira 圆盘，七政四余报告仍是 GLChart 方盘；可七政页本身（`GuoLaoChartMain`）引擎缺省星阙七政、盘式缺省
+  Moira（`getStoredGuolaoChartStyle` 没存值时回 moira），方盘只是可选盘式之一。赤纬推运报告画的是本命轮，app 页（ProgMethodPanel
+  mode=declination）画的是赤纬图 `AstroDeclinationLadder`，根本没有星盘。
+- **七政四余**：Moira 所需的补算（规则全集 + 流年盘 + `/qizhengelection/pan` 静盘宫位、流年钉回原结果、重起与存档逐键一致）从七政择日抽成
+  guolao runner 的 `_aux_guolao_moira`，两页共用。差点漏掉的：盘面四角注记读页面 fields 的宿度制，两页缺省不同（七政页 0 荀爽距星，七政择日
+  2 回归今宿），adapter 的回退值是择日页的——载荷没写宿度制的七政盘会印成「回归今宿」。改为 runner 把实际起盘用的宿度制 / 命度法 / 罗计月孛
+  交给 adapter（`test_guolao_chart_moira_uses_the_runners_own_settings_and_the_stored_moment`，负向对照红）。
+- **赤纬图**：组件是一张卡片——svg（轴、脊柱、真值点、平行线）上叠绝对定位的 HTML（标题、图例、列头、去碰撞后的星符与度数，位置由私有
+  helper 算）。svg 原样留，HTML 部分从 SSR 出的 DOM 读位置 / 颜色 / 文字重画成 svg 文字（`adapters/declination.js`）。与 app 的 SSR 标记 +
+  令牌 / app CSS 在无头 Chrome 里并排截图对照，修了三处：①`left:0;right:0;text-align:center` 的标题被当成「以 left 为中」画到卡外；
+  ②svg 丢 `<text>` 首尾空白，图例「　反平行」的全角空格没了、后面的色块往前挤——空白折成 x 前进量；③卡片高 = 内容高 + 上下内边距。
+  星符后面度数的 x 要星符字宽：取随包 ywastro 字体的字宽（reportlab TTFont 量）。数据全在结果里，不补算。
+- **守卫**：`tests/test_report_aux_charts.py` 新增四条（Moira 换下方盘 / 画不出留方盘、宿度制按 runner 口径、赤纬图逐项对上数据与版式、画不出
+  留本命轮 + 说明），七条负向对照各自红（第 6 条红在标题坐标为负、正则取不到）。其余 32 种盘与合并后的 bundle 逐字节一致。
+- **法则**：「app 画什么」以页面缺省状态为准（盘式 / 引擎 / 所选推运法都去 store 的 getter 里看缺省），不以报告原来画了什么为准。混合组件的
+  HTML 部分照 DOM 重画时，先确认定位语义（谁横跨、谁以点为中）与 svg 不保留的东西（首尾空白）。
+
+### v0.49.0-dev / 2026-11-09 — 河洛与神数的信息板：先量它比正文多什么，再决定画不画
+
+- **现象**：盘图「凡 app 有盘面的都补」做到河洛与 14 种神数时，这些页的中栏是「信息板」——标题、标签 / 值卡片、四柱格、条文卡。
+  照搬会让报告里每个神数多一两页「把正文再印一遍」的图。
+- **怎么判的**：dev-only 打包里加一个 SSR 入口，对每个板方法喂真实引擎结果（vendored 实例 8880 / 9980，样例载荷），抽出 HTML 的全部
+  文字片段，繁转简后逐段在 `snapshot_text` 里找。没找到的几乎都是卡片标签或把正文两项拼成一格（「3 / 162」「1113 · 干宫」）。
+  荆诀 29 段缺 4、神易数 46 缺 8、皇极 57 缺 9（卦符 ䷛ 与元会运世位次正文已有）、邵子 30 缺 2、分定经 42 缺 3、北极 70 缺 20、
+  南极 70 缺 11、蠢子 52 缺 12、铁板 99 缺 29（框架推演那几段正文也有，只是写法不同；八卦滚卦画对应的卦名正文已列）、
+  太玄 45 缺 9（四行 ▅ 是筮数 2·2·1·1 的字符图）、正传 75 缺 17（推算式字串与「辟卦基数＋序数」）。河洛 179 段缺 107：
+  起卦详情 14 行、纳甲六亲世应、卦旨 / 互覆卦 / 理数标签、易经爻辞与推命、大限吉凶都只在板上。所以只加河洛。
+- **河洛板的三个坑**：
+  1. 板要的 `m` 里有两样结果没有：年柱纳音（getModel 从八字取）与 chartExtras。不在 adapter 里补算（铁律 1），由 core-js
+     `tools/heluo.js` 同一次调用照 getModel 同式交进 `board_context`；没有它（旧 runtime）就不出图。
+  2. 整块中栏约 760 × 2400 px，按「高 ≤ 600 pt」收窄后字小得没法读。按 app 自己的卡切成四张（起卦详情 / 先天卦 / 后天卦 / 大限），
+     规格带 `app_options.part`。
+  3. HeLuoMain 早被列进 `APP_UI_ONLY`（KinAstroMain 的兄弟页，拖进诗文库）；adapter 用 `@horosa-app/` 直引拿真模块，KinAstroMain 的
+     那条仍是桩。卦辞库 heluoTiaowen.json 388 KB，进 bundle 却涨了 0.76 MB：esbuild 缺省 ascii 字符集把每个 CJK 字写成 `\uXXXX`。
+     bundle 3.71 → 4.47 MB，上限 4 → 5 MB。
+- **守卫**：`tests/test_app_charts_heluo.py`。负向对照：保留表头交互提示 → 红；adapter 自己用 chartExtras 算 → 「改结果里的值板跟着变」红；
+  figures 不要求 board_context → 「旧结果不出图」红。core-js 测试在实现前红（KeyError board_context）。
+- **顺带看到的上游问题（只报）**：kinastro 后端的快照把「乾」繁转简成「干」（邵子「卦名：干」、北极「干宫 · 码 1113」），app 板上邵子读
+  `raw.shaozi.guaName` 印的是「乾」，同一盘两处不一致。
+- **法则**：一块 app 板进报告之前先回答「它比正文多什么」，用抽文字对照来答，不凭印象；长板沿 app 自己的卡切。
+
+### v0.49.0-dev / 2026-11-09 — 塔罗牌阵图带真实牌面：浏览器里 app 自己的发牌动画把牌位冲掉了
+
+- **做了什么**：报告的塔罗图跑 app 的 `TarotMain.renderCenter`（SSR → 读 DOM → 照 `12-india-tarot-geomancy.less` 与 `22-tail-fixes.less` 排成 SVG），牌面用上游 `public/tarot-art` 的 144 张图（RWS 78 + 马赛 / 维尔特 / 埃及各 22 大牌），按 app 的 `cardImageUrl` 取图。core-js `tarot.js` 把产出正文的同一个 reading 放进 `board_context`（牌只记 id + sid），app 侧按牌组表取回牌对象，sid 对不上就不出图。
+- **对照方法**：把同一份 reading 用 app 代码 SSR 成 HTML、套 app 的样式表在浏览器里量每张牌的框。量出来与 SVG 相差 ≤ 1 px（凯尔特十字、三张、马蹄铁、生命树、雷诺曼、31 张月历大阵、开钥五操作、十二宫 + 指示牌）。第一次量开钥差 41 px：迷你牌名按两行估了，实际一行；改成按实际折行算。参考页没有 antd 的全局样式（line-height 1.5715、border-box），要手动补上，否则每张牌矮 7 px，会误以为 adapter 错了。
+- **上游 bug（只报）**：`.horosa-tarot-geo-slot { animation: horosa-tarot-deal … both }` 的终帧 `transform: translateY(0) scale(1)` 按 CSS 层叠盖过内联的 `translate(-50%,-50%) rotate(90deg)`（动画优先于内联样式）。在 Chrome 里实测，计算出的 transform 是单位矩阵：牌以左上角而不是中心落在牌位上，凯尔特第 2 张不横置、整张盖住第 1 张。只有开了「减少动态效果」的系统才看得到设计的几何。报告图照内联几何画：画成 bug 的样子会把一张抽到的牌完全挡住。
+- **晚加载的样式表会赢**：`22-tail-fixes.less` 的 `.horosa-workspace-shell .horosa-tarot-card-name { font-size: max(15px, …) }` 和 geo-slot 的 12 px 同为两个类，后加载的赢。所以几何牌阵里牌名其实是 15 px、牌最小高 152 px。只读 12 号样式表会照错尺寸。
+- **牌面图来源**：上游没有 README、没有署名文件，提交信息也没写扫描件从哪来。只有 `cardArt.js` 一行注释说这些牌组「公有领域」，而且说的是历史设计，不是这批扫描件。第三方事实账本如实写「来源未记录」和「维护者 2026-11-09 准许分发」，不写成已核实的公有领域。图逐字节拷贝：它们本就是约 q75 的 300 px JPEG，按 q75 重压反而大 1%，optimize 只省 0.2%。保留逐字节，preflight 才能拿 sha 与 pin 对。
+- **符号牌面的方块字**：没有图的牌组（托特、雷诺曼…）用 app 的符号牌面，雷诺曼的符号是 emoji（🐎 👤），补字链（Apple Symbols / Segoe UI Symbol / DejaVu）都没有，PNG 会因缺字整张拒绝。符号改走 `horosa-optional-glyph`：哪款字体都印不出来就去掉这个字，牌名照印。正文文字从不这样处理。
+- **体积**：wheel 2 420 667 → 4 416 999 字节；bundle 3.71 → 4.14 MB（单牌详情抽屉桩掉，省 0.21 MB；其余 30 种盘输出逐字节不变），上限放到 4.5 MB。DOCX 的牌阵位图存 PNG，31 张大阵 2.0 MB，改存 JPEG（q88）约 0.6 MB。PDF 里的牌面图是原 JPEG 直通（DCT，不重编码）。
+- **守卫**：`tests/test_tarot_figures.py` 九条 + `test_app_charts` 参数化与体积两处；每条负向对照都改一处守卫，十条都红（不旋转逆位牌面、缺图仍出 `<image>`、不核 sid、换种子取 board_context、不内嵌、`<image>` 白名单放宽、位图不画、DOCX 不出 JPEG、不去可省符号、改一字节图）。`verify_wheel_contents.py` 按 manifest 逐张查 wheel。只删 pyproject 的 include 行它不会红：hatch 按 packages 本来就收进包。删一张图会红。
+- **法则**：对照 app 的样子前先确认参考页里的 CSS 就是 app 里生效的那套（全局 antd、加载顺序、动画）。第三方素材只写查得到的事实，查不到的写「未记录」。
+
+### v0.49.0-dev / 2026-11-09 — app 另取的那张盘：出报告时经真引擎补算（推运双盘 / Moira 盘 / 选中时刻盘）
+
+- **现象**：星阙 app 有几页在工具结果之外另取一张盘来画，报告只能少一张图或画错图：推运图族（演进推运 / Bezza / 周日小限）的双盘外圈是同一请求带 `withChart` 时后端另起的整盘（工具特意发 `withChart: 0`，~100 KB、正文不读）；推运 / 恒星推运用次限推运时刻另起 `/chart`；天星择日画选中命中时刻的盘（结果只有区间）；产前朔望画朔望那一刻的整盘（结果只留星体位置）；七政择日内嵌的七政页缺省画 Moira 圆盘（`GuoLaoMoiraWheel`），要 Moira 规则全集 + 流年盘 + `/qizhengelection/pan` 的静盘宫位，结果只留正文用的几键，报告画的是另一种盘式（GLChart 方盘）。
+- **做法（协调者定：一套机制，不加大工具返回体与存档）**：`reports/aux_charts.py` + `ReportsAPI._report_figures`。出图前按存档的 `input_normalized` + 结果里实际用过的时刻 / 口径，经 runner 的同一份请求体补算（请求体抽成共用函数：`_directed_figure_body` / `_tianxing_moment_payload` / `_zeri_backend_base_payload` / `_prenatal_syzygy_chart_body`），交 app 原版代码画（`app_request` 原样转交 `app_charts.plan`）。七政 runner 在 `figure_capture()` 作用域里交出规则全集与流年盘，作用域外 no-op。
+- **差点埋下的坑**：
+  - `_call_remote` 探不到后端会去 `start_local_services`：出报告不该起 runtime。补算前先 `probe`，没在跑就照原样出报告并说明（`test_a_report_never_starts_the_runtime`）。
+  - 缺省「今天」：推运目标日缺省今天、Moira 流年缺省「今天正午」。隔天出报告，补算的盘就不是正文那张了。推运用结果里存的 `target` / `request`；流年钉到存档基底盘 `technique_card.generated_at` 那天（按盘的时区）；重起的七政盘与 Moira 规则须与存档逐键一致，否则不画。
+  - **bundle 带进 react-dom 客户端**：`GuoLaoMoiraWheel` 为悬浮提示 import `createPortal`，`react-dom` 在放行名单里，于是整个客户端渲染器进了 bundle（+228 KB）；它一加载就起 React scheduler 的 `MessageChannel`，**载入 bundle 的进程永不退出**——`build.mjs` 自己的 kinds 探测就挂住了。`render-charts` 恰好主动 exit 才没露馅。改为 app 文件只放行 `react-dom/server`，客户端渲染器走桩；桩版 / 放行版 Moira 输出逐字节一致，其余 29 种盘与改前 bundle 逐字节一致（`test_loading_the_bundle_leaves_nothing_that_keeps_node_alive`，负向对照超时红）。
+  - Moira 盘的西占宫位格来自页面另发的 `requestElectionData`（`/qizhengelection/pan` 的 `staticHousesBySystem`）：不读页面代码只看盘组件会漏掉，盘照样画、只是静默少一环。
+  - 名字对不上号：协调者写的「Jay（jaynesprog）」——双盘页是周日小限 `jayprofection`；`jaynesprog`（赤纬推运）在 app 里画的是赤纬梯图（HTML + SVG，数据已在结果里），不属补算，未做。Bezza 推运图与演进推运同一页类，一并接上。
+- **失败时**：补算或出图不成，原图不动，「缺了哪张、为什么」进 `document["figure_gaps"]`，印在「盘图」节下（PDF / DOCX），PNG 进 `warnings`，报告结果的 summary 也带上。
+- **守卫**：`tests/test_report_aux_charts.py`（实例实抓夹具 `report_aux_charts_live.json.gz`）二十一条，十三条负向对照各自红：补算不带 withChart、改用今天的目标日、不先探引擎、子盘存档、丢说明、版式不印说明、恒星推运不重取恒星黄道、合盘图注、Moira 不换下方盘、流年不钉、不比对存档、react-dom 客户端放行、plan 不转交 `app_request`。全量 pytest 加约 6 s。
+- **法则**：报告要一张结果里没有的盘，就在出报告那一刻用存档入参经真引擎补算，**不**加大工具返回体；任何「缺省今天」的输入都要钉回原结果，并核对补出来的盘与存档那张一致。新接 app 组件前查它 import 的包是否在放行名单里、载入后进程能否退出。
+
+### v0.49.0-dev / 2026-11-09 — 出一张图白等 2.5 秒：app 代码留下的定时器拖住了 Node 退出
+
+- **现象**：接手时比对门禁耗时，feat/app-style-figures 的 pytest 是 610–680 s，main 约 480 s，慢了三成。v0.48.0 发版时 Windows x64 lane 已用到 2504 / 2700 s（93%），照比例会超时，发版卡在那条 lane。
+- **根因**：`node bin/cli.mjs render-charts` 空调用墙钟 2.75 s、CPU 0.3 s；加载 bundle 只要 70 ms。`process.getActiveResourcesInfo()` 显示剩一个 Timeout：app 原版代码在模块加载时挂着轮询用的 `setTimeout`，事件循环要等它到期才自然退出。所以**每出一份带图的报告用户都白等 2.5 s**，不只是测试慢。
+- **修**：`render-charts` 把结果写进 stdout、等写入回调之后 `process.exit(0)`。不去关 app 代码里的定时器：那是 vendored 原版，改它脆弱，而且定时器跟出图无关。
+- **差点埋下的第二个坑**：直接 `process.stdout.write(body); process.exit(0)` 在管道下会截断，负向对照实测输出正好停在 **65 511 字节**（管道缓冲）。报告图多的技法输出几百 KB，这样改等于让大报告的图静默丢失。
+- **守卫**：`tests/test_app_charts.py::test_the_render_process_exits_as_soon_as_its_output_is_written`，两条断言分开：大输出（真实星盘请求 × 12，约 765 KB）不截断；空输入 < 1.8 s（本机 0.2 s，被拖住 2.6 s）。负向对照：不主动退出 → 2.70 s 红；不等写完就退 → 65 511 字节红。**第一版守卫两条对照都不红**：输出太小，不到管道缓冲；时间门槛按图数放宽得太松。
+- **结果**：全量 pytest 472 s，回到 main 的水平。最慢的几条（六壬择时扫描 21 s、全技法报告 20 s）是 main 上就有的。
+- **法则**：带 Node 子进程的功能要量墙钟与 CPU 两个数，差得多就是在空等。子进程主动退出前必须等 stdout 写完。
+
+### v0.49.0-dev / 2026-11-09 — 报告盘图改用星阙 app 原版绘图代码：五处「看起来对、其实不对」
+
+用户要报告里的盘图与 app 一致。路线（用户定）：app 里用 D3 / SVG 画的盘直接跑 app 原版代码（`horosa-core-js/app-charts/`
+→ esbuild 从 Horosa-Public 打包成 `dist/app-charts.cjs` → Node + linkedom 出 SVG → `reports/app_charts.py` 用 svglib 转
+reportlab 矢量）；HTML 网格类在 Python 里照样重画（下一批）。第一批：西洋单轮（31 个技法、37 张图）+ 紫微。踩到的：
+
+- **svglib 字体映射只认 PDF 标准 14 字体。** `FontMap.register_font(family, rlgFontName=已注册的 TTF 名)` 不报错、但查找时
+  落回 Helvetica——中文全成方块，PDF 也不再全嵌字体（PDF/UA 声明随之失真）。数字字重（`font-weight="400"`）会去找
+  `family-400` 这种名字，同样落回 Helvetica。守卫做法：规整时把所有非符号字族改成两个占位名、映射到 Courier / Courier-Bold，
+  转完把这两个名字换成报告嵌入的 TTF；`tests/test_app_charts.py` 断言转出的图里没有 Helvetica / Courier（负向对照：去掉换字 → 红）。
+- **`fill="transparent"` 在 svglib 里是黑色。** 西洋轮的宫位环整圈涂黑。规整：transparent → none；`var(--x, 回退)` 取回退值
+  （app 浅色主题值就写在回退里）；rgba → 颜色 + opacity。
+- **上游 bug：紫微中宫经度。** 引擎给 `"121e28"`，`Number("121e28")` 是合法科学计数法 1.21e30 → `formatLonDms` 印 1°7′4″E；
+  所有东经盘都错，app 自己也一样。按「上游问题只报」写 `notes-local/upstream-reports/2026-11-09-ziwei-center-lon-sci-notation.md`；
+  adapter 只做无损记法换算（度 + 分/60 → 十进制度）交给 app 自己排版（负向对照：去掉换算 → 红）。
+- **打包产物里带机器路径 / 不可复现。** macOS 的 `os.tmpdir()` 是 symlink，esbuild 的模块键算成 `../../../var/folders/…` 相对路径，
+  换一台机器字节就变。做法：构建目录先 realpath，再用固定名 symlink（`stage/app`、`stage/core`、`stage/node_modules`）+
+  `preserveSymlinks`；两个不同路径的同一上游检出 `--check` 逐字节相同才算过。产物来源（上游 commit、130 个 app 文件 sha、esbuild /
+  d3 / linkedom 版本、bundle sha）写进 `contracts/app_charts_bundle.json`；`scripts/verify_app_charts_bundle.py` 进 preflight。
+- **app 的 helper 拖进整个 UI 栈。** 绘图模块经 `utils/helper.js → request.js` 引到 antd / react-dom / dva / node-forge，6 MB。
+  app 文件发出的裸 npm 引用只放行绘图栈（d3 家族、moment），其余换成什么都不做的桩；放行 / 桩化两版对同一份数据逐像素一致
+  才采用（linkedom 与 jsdom 也逐像素一致）。随机 id 用种子重置、`navigator` 钉成与 OS 无关的值，输出逐字节稳定。
+
+- **产物差点没进 git。** `horosa-skill/.gitignore` 的 `dist/`（给 Python 构建产物的）把 `horosa-core-js/dist/` 一起吞了；本机门禁 25/25 全绿，
+  因为文件就在磁盘上——推上去 CI 才会红（`test_committed_bundle_matches_its_manifest` 读不到文件）。加 `!horosa-core-js/dist/` 例外；
+  提交前看一眼 `git status` 里新产物在不在，别只看门禁。
+
+- **CSS 变量的回退值不一定是亮色。** 紫微的 `var(--horosa-ziwei-chart-bg, #f6f1e7)` 回退恰是亮色，六壬底色却是
+  `var(--horosa-astro-panel, #090b0e)`（暗色）。「取回退值」会让部分盘印成深底。改为构建时从 app 自己的样式表
+  （`layouts/app/*.less`）抽亮色主题令牌（`:root` / `html` < `:root[data-horosa-appearance=light]` < `body`，后代选择器不算），
+  烤进 bundle、出图时解析（`app-charts/theme.mjs`，200 个；负向对照：关掉解析 → 两族残留 `var(` → 红）。
+- **桩模块对「具名导入」是 undefined。** esbuild 把 CJS 模块的具名导入变成「拷贝它自己的属性」，Proxy 没有自有属性，于是
+  `import { Select } from 'antd'` 拿到 undefined；西洋 / 紫微从没在加载期碰它，90° 盘的页面模块一加载（`XQSelect.Option = Select.Option`）就崩。
+  改为每个（包, 导入方）各生成一个 ES 模块桩，逐个导出那份文件引用的名字（都指向同一个空操作 Proxy）；改后旧四族输出逐字节不变。
+- **位图里半透明全成实色——是旧 bug。** `drawing_to_png` 在 RGBA 底上画半透明，Pillow 只覆盖像素 alpha，最后转 RGB 时整块实色；
+  自绘图不用半透明所以一直没暴露，app 的图（紫微宫线、90° 盘扇区）一进来就显形。改为 RGB 底 + RGBA 画笔（负向对照：换回 RGBA 底 → 红）。
+  另：svglib 把 fill-opacity 同时并进颜色 alpha 与 fillOpacity，两者别相乘。
+- **`<title>` 悬停提示被 svglib 当正文画出来。** 90° 盘每颗星的提示「本命 · 海王星」用符号字体印成方块；规整时剔除 title / desc。
+  app 用 system-ui 画的 ℞（U+211E）报告字体没有字形，接报告渲染器的补字字体链（`_PDF_GLYPH_FALLBACK_CANDIDATES`）。
+- **六爻只在变卦对得上时换 app 画法。** app 从动爻自己翻出之卦；样例载荷的 changed_code 与动爻不符，app 会画一个正文里没有的之卦。
+  沿用自绘图的规矩：两栏（变卦一致）或无动爻才换，否则留自绘图只画本卦。
+- **React 类组件不必真渲染。** UranianDial 的 render 只是空 `<svg>`、图在 draw() 里按 id 画——直接 new 出来、挂上同 id 的 svg、调 draw()。
+- **六壬盘要的数据结果里原本没有。** app 的 RengChart 要起课时刻那张盘（太阳宫定月将、昼夜），runner 取过这张盘但只交给 JS、没留；
+  现在 runner 原样留 `board_context`（objects / isDiurnal + 实用贵人 / 性别，不另算）。runner 取盘时没要 nongli，照 app `lrChartFor` 的做法
+  用 gods 的农历覆盖（缺省时间算法下两者同一时刻）。交互件「圆形盘」切换钮剔除。
+- **原先没图的技法：app 专属图（`kind="app"`）。** 金口诀、宿占以前报告里没有盘图，自绘版本也不存在；规格只登记「交给 app 画」，
+  画出来才进报告，画不出来（老 runtime 没带 bundle、数据缺）整张图连标题一起去掉，不留空框、PNG 出图不报空成功（`_png_outputs` 看实际出图数）。
+- **宿盘中宫要四柱，chart 服务给的盘里没有。** app 的盘恒来自 Java `/chart`（带 `chart.nongli`）；样例载荷是 ASC 宫起点（houseStartMode 1），
+  runner 改走 chart 服务，盘上没有 nongli，app 中宫直接抛错。runner 另取同一时刻的四柱放 `board_context`（不并进 chart，宿占正文与导出快照不变）。
+- **app 用自动 JSX 运行时。** 巴比伦星盘文件里只 `import { Component }`、没有 React，esbuild 默认经典运行时报「React is not defined」。
+  app 是 umi 3 + React 17（自动运行时），打包改 `jsx: 'automatic'`；已接的十族输出逐字节不变（分进程各跑一次比对——同进程装两份
+  bundle 会共用 DOM 全局与随机种子，比出来的差异是假的）。
+- **页面模块会拖进整套页面 UI。** 飞宫的盘画在 `FeiGongMain.renderCenter` 里，一 import 页面模块就经时空面板带进地图与城市库，bundle
+  1.4 → 5.2 MB。把纯 UI 的 app 路径（`components/amap/`、`SpaceTimePanel`、`kentangCaseSave`、`divinationTimeDraft`、城市 JSON）列进
+  `APP_UI_ONLY`，与 npm UI 包同一种桩；回到 1.5 MB、飞宫 SVG 逐字节不变。守卫：bundle < 3 MB 且不含地图 / 城市库（负向对照：清空清单 → 红）。
+- **内联 style 里的字族 svglib 不按我们的映射走。** 巴比伦七曜用 `style={{ fontFamily: AstroFont }}`，规整只认属性，svglib 拿到没注册的
+  `ywastro`，符号印成字母 A–G；楔文转写是斜体，svglib 映到 `HorosaReportText-Italic`，不在占位表里，Ḫ 印方块。规整时把 style 里的字族 /
+  字重 / 斜体提成属性；斜体注册到 Courier-Oblique 占位再换回报告字体（负向对照各一条）。
+- **令牌也有页面级的。** 飞宫中宫干字用 `--horosa-huangji-text`，它只在页面容器 `.horosa-workspace-shell .horosa-huangji-redesign`（及亮色版）
+  里定义；全局表里没有 → 取回退值 = 暗色主题的浅米色，字几乎看不见。theme.mjs 另收「工作区壳下一层页面容器」的令牌（base < light，
+  注意 norm() 会吃掉 `]` 后的空格），adapter 回 `themeScope`（负向对照：去掉 → 红）。
+- **巴比伦盘的口径从 JS 拿，不在 adapter 里重算。** 派系档解析（档默认 + 显式覆写）只在 core-js `tools/babylon.js` 里有一份；它多回一个
+  `board: {jdn, opts}`，runner 存 `board_context`，adapter 用 app 的 `buildHoroscope` 按同一口径再起一次——盘与正文不会各走各的。
+- **金口诀显式昼夜时仍要取一次 /chart。** 以前调用方给了 isDiurnal 就不取盘；app 的盘图要起课盘，现在照取，但只给盘图，昼夜仍以调用方为准
+  （盘图切片里的 isDiurnal 也改成调用方的值）。旧测试「显式昼夜时不发 /chart」据此改写，保留「调用方昼夜胜出」那条断言。
+- **svglib 不认 dominant-baseline。** app 图里 middle / central 上千处（紫微星曜、宫名、星盘度数）都按基线画，整体上移约 0.35em；
+  演禽竖排星名的首字直接压出格子上沿才被看见。规整时折成 `dy`（em 随字号），已接各族一起变准。守卫 + 负向对照。
+- **被桩掉的计算库会被 app 的 try/catch 吞掉。** 策天 / 演禽后端不给四柱，app 用 lunar-javascript 本地排；那个包不在放行表里 → 桩
+  → 抛错 → app 的兜底 catch 静默回落占位符，中宫只剩「年 月 日 时」空标签，没有任何报错。lunar-javascript 放行（core-js 本就依赖，
+  MIT，版本同 app）；放行后已接 13 张盘逐字节不变（证明此前没有别的族被同样吞掉）。新接一族时逐项核「盘上该有的数据」都画出来了。
+- **组件自己的 less 才是颜色来源。** 坚七政圆盘的颜色全是 `--qz-*`（默认暗色，`:root[light] .horosa-qizheng-kin-wheel` 覆盖）加类规则
+  （`.qz-wheel-bg { fill }`）；svglib 两样都不认。`app-charts/css.js` 只对这一份样式表照浏览器做：令牌 base < light，类规则里的呈现属性
+  写成属性（CSS 规则本就压过呈现属性）。负向对照：去掉 → 暗底残留 → 红。
+- **模块私有的转换函数，从页面方法的返回元素里取。** 策天 / 演禽转紫微盘的 `buildKinAstroZiWeiChart` 没有导出；在裸对象上调页面方法
+  `renderZiWeiCopiedCenter(pan)`，返回的 React 元素 props 里就是 app 自己转好的盘。该页面模块会拖进参评 / 河洛 / 正传 / 一掌经等兄弟页
+  （诗文库 ~2.4 MB），同样列进 `APP_UI_ONLY`（输出逐字节不变）。
+- **HTML 盘：照 app 尺寸用 JS 重画，数据一律走 app 自己的代码。** 奇门（DunJiaBoard）、南印（IndiaSouthChart）、八字（BaZiFineChart）
+  在 app 里是 HTML + less。重画时宫格尺寸 / 字号 / 颜色抄 app 的内联样式与 less，配色表与数据函数直接 import；八字的生克连线、
+  十神、藏干、神煞计算都是模块私有，就 SSR 渲染组件、从标记里读出来再排版。看 app 原样：SSR 出 HTML + 把 layouts/app/*.less
+  轻度预处理成 CSS（Chrome 原生嵌套），起本地静态服务在浏览器面板里截图对照。
+- **行内 tspan 在 svglib 里会压字。** svglib 按占位字体（Courier）字宽排同一行的 tspan 片段，之后我们换成报告字体，宽度对不上
+  ——南印「Ma 6°」的度数压在名字上。自带 x 的 tspan（太乙逐行起笔）没事。adapter 不用行内 tspan；守卫扫所有 app SVG。
+- **守卫被 heredoc 的转义废掉，负向对照才看出来。** 上面那条守卫最初用 Python heredoc 写进测试，`\b` 成了真退格符，正则什么都
+  匹配不到——测试永远绿。负向对照（改回行内 tspan）没红才查出来。写正则走 Edit / raw 字符串，写完必跑负向对照。
+- **画法说明不该跟着换了画法的图走。** 「每宫自上而下：八神 / 九星 天盘干 / 八门 地盘干」「○ = 动爻」「0° 在上、逆时针」都在描述
+  skill 自绘图；换成 app 的图后版式 / 记号不同。规格里拆出 `legend`，只在自绘图下印；数据说明（局、主算客算）照留。
+- **app 的缺省值要逐项照页面查。** 八字页缺省「简盘」（细盘要用户存过）、`onlyZiGanShen` 缺省 true（不出副星行）；南印是缺省盘式、
+  星曜集是 `DEFAULT_OBJECTS` 不含 lots。照组件 props 的「未传」值猜会画出 app 里用户看不到的东西。
+- **antd 件在 SSR 里是桩，React 渲不出来。** 卜类页面方法里夹着 Popover（悬停说明）和 Tag（六戊日、载自事盘）；桩是一个
+  Proxy 函数，React 当组件调用后拿到的还是 Proxy → 渲染报错。Popover：子类覆写该方法、剥掉外壳只留 children；Tag：页面方法照常
+  渲（不走 Tag 分支），那一枚标签按 app 的判定函数（isWuDay）自己画。
+- **正文只回名称时，盘要的对象由算正文的那段 JS 一并交出。** 小成图的结果只有卦名（山水蒙），app 盘要爻 / 上下卦 / 互卦对象；
+  轨策只有本卦 / 变卦名，app 要 qiGua 的起卦结果。在 core-js 工具里把同一份 qi / gua 放进 `board_context`，adapter 用 app 的
+  buildPan / buildGuicePan 再起一次——不在 adapter 里按名称倒推，也不另算。
+- **参考图的 less 预处理要按块剥 `:global { }`。** 文件级的 `:global {` 换成裸 `{` 浏览器整块丢弃，卜类的 cnx 样式一条没生效；
+  要连同配对的 `}` 一起去掉（scratchpad 的 build_ref_css.py）。页面级类（`horosa-xlr-page` 等）也要套上，否则方格 / 居中规则不生效。
+- **CSS module 的类名在 SSR 里是空的。** 三式合一盘的标注靠 `styles.topBox` 这类 CSS module 类名定样式；esbuild 把 less 当文本，
+  `styles.x` 是 undefined，SSR 出来的元素没有 class，既排不了版也认不出是什么。构建时只对这一份样式表换成「styles.x 回 "x"」的
+  模块（`CSS_MODULES`），标记里就是规则名；排版再读同一份 less（`?text` 导入）。负向对照：去掉 → 三式两条测试红。
+- **d3-zoom 要 SVG DOM。** 天文地图的 rebuild 挂了平移缩放，d3-zoom 读 `svg.viewBox.baseVal` / `width.baseVal`；linkedom 没有这些接口，
+  直接抛错。给挂载的 svg 补只读值即可（只影响交互，不画任何东西）。
+- **大夹具按「证明代码路径」裁。** 天文地图一份结果里行星线坐标就 1 MB；夹具只留两颗行星（同一条绘制路径），payload 也只送出厂设置
+  会画的 meta + planets。
+- **测试里手写 `node --input-type=module` 会被守卫拦下。** Windows 上模块路径要转 file URL；一律走 `tests/node_esm.run_node_esm`。
+- **拆字段时要找全所有读它的地方。** 画法说明挪进 `legend` 后，`figure_notes` 改对了，PDF 九宫分支与 DOCX 格子盘图注却各自直接读
+  `text / lines`——自绘图的说明悄悄没了（只该在 app 图下不印）。看展示报告才发现；两处改走 `figure_notes`，守卫扫源码。
+- **高盘按宽排会把标题挤成孤行。** 三式合一盘 720 × 1110 按 470 pt 宽排高 725 pt，盘图标题下放不下，整张挪到下一页、上一页只剩标题。
+  app 图按宽高比收窄到高 ≤ 600 pt（`_app_figure_width`）。
+- **adapter 要照 pin 住的上游写。** 七政第一版照本机 Horosa-Public（已超前）引了 `utils/ascRaMode.js`，pin 上没有这个文件，打包直接失败。
+  读 app 代码一律去 pin 的公开克隆。
+
+另：本机 `Horosa-Public` 已在 pin 之后（`4c1a82ca` vs pin `10fb75de`），打包一律用 pin 住的公开克隆，否则 `--check` 必红。
+本地 runtime 没带 bundle（老 payload）时自动退回自绘图，规格写 `renderer: builtin` + 原因，不静默。
+
+### v0.48.1-dev / 2026-11-09 — v0.48.0 Windows 原生复验：CLI 档案不解析地名、PNG 拒绝提示自相矛盾、每份 PDF 重新解析字体
+
+- **现象**：
+  1. 端到端（公开 v0.48.0 runtime、28899 / 29999）：`profile save 妈妈 --input`（只给 `place: 上海`）成功，存下的 payload 却只有
+     date / time / gender；随后 `tool run chart` 带 `profile: 妈` → `tool.invalid_payload`（缺 zone / lat / lon）。发布说明写的是
+     「存档案时只给地名，会自动补坐标和时区」。
+  2. 八字 `format: png` 被拒（八字没有盘式，设计如此），但 `agent_recovery.prompt_to_user` 是「这个工具没有盘面……要报告就对起盘类
+     技法（八字、星盘、奇门…）出」——对八字自相矛盾。
+  3. live lane 里 `test_all_callable_techniques_can_generate_human_readable_pdf_and_docx` 196 s（9 月 `--durations` 记的是 54 s）。
+- **根因**：
+  1. 地名补全写在 `ToolsAPI.profile`（b95a3db），docstring 说「CLI `profile` 走同一个函数」，CLI 实际直接调 `profiles.run_action`。
+     `test_profile_place.py` 只测服务层，CLI 这条路没人走过。
+  2. 一个码两个拒绝点（无盘面工具的 chart 报告、无盘式的 PNG），恢复表的提示只照前一种写；PNG 拒绝点自己的报错文字是对的。
+  3. CPU profile：`_load_ttf` 1388 次、`TTFont.__init__` 728 次，共 106 s / 232 s。每份 PDF 都新建常规体、粗体与补字字体（Windows 上
+     是十几 MB 的雅黑 / 宋体 ExtB，一款约 0.15 s）。v0.47.2 只缓存了 .ttc 的字面名表，AGENTS 写「`TTFont` 对象每次新建（带每份文档
+     的子集状态）」——查 reportlab 源码：子集状态是对象里的 `WeakKeyDictionary`（键是文档）；`registerFont` 对同名只认第一次，
+     同一字形面换了注册名也映射回最早的对象，新建的对象从没被用来画字，纯属白费。mac 上字体小，这笔账不显眼。
+- **修**：CLI `profile` 改走 `_service().profile(body)`；恢复表提示写明 PNG 只画有盘式的技法（八字等没有盘图）、改出 PDF / DOCX；
+  `_TTF_CACHE` 按（类, 注册名, mtime, 大小）缓存解析好的 TTFont。
+- **核对**：真 runtime 重跑复现：只给「上海」存档 → 31n13 / 121e28 / +08:00（1965 年无夏令时），起盘 ok。字体缓存：同一测试同机 A/B
+  133 → 88 s；`reportlab.rl_config.invariant = 1` 下 6 技法 × 简繁 × PDF / DOCX × 首次 / 复用共 48 份，有无缓存逐字节相同。
+- **守卫**：`test_cli_profile_save_resolves_the_place_like_the_facade`；`test_png_refuses_a_run_without_a_figure_and_writes_nothing`
+  加断言提示；`test_a_font_file_is_parsed_once_per_process`；`test_one_font_object_keeps_subset_state_per_document`。负向对照：
+  CLI 改回 run_action → 红；提示改回 → 红；去掉缓存查找 → 红。
+- **顺带踩的**：第一版「reportlab 只认第一次注册」的测试真往全局注册表注册了 Vera，后面用例里同字形面的字体被映射成这个探针对象
+  （缺 `horosa_source`），9 条红。测试别往 reportlab 全局注册表里放字体。
+- **规则**：「X 走同一个函数」这类注释要配一条从那个表面进来的测试；写进 AGENTS 的设计理由（「必须每次新建」）先对着库源码核一遍。
+
+### v0.48.0 / 2026-11-08 — 发版矩阵：windows-11-arm 的 pytest 又撞天花板（3600 s，零失败），这次是两个版本没人看余量
+
+- **现象**：v0.48.0 draft 流水线（42525787839）只有 windows-11-arm lane 红，其余 lane、assemble、草稿资产 sha 全对。lane-report 里
+  安装 / doctor / 引擎 / 客户端（stdio 127 个工具）/ HTTP / 重启全 ok，唯一的问题是 `pytest timed out after 3600 s`，日志停在 86%、零个 F。
+- **根因**：v0.45.1 那次的规则是「发版后看各 lane 的 pytest 占比，>90% 就提前加」——v0.47.1 / v0.47.3 两次发版这条 lane 已是
+  3496 / 3466 s（97% / 96%），我没打开 lane 报告看。v0.48.0 加了 176 条测试（+5.4%），windows-latest 从 1813 s 到 2296 s（同 lane
+  两次发版之间本来就有 ±15% 的噪声，2132 → 1813 s），仿真 lane 按比例约要 4200–4400 s。本机 `--durations` 看，新测试文件合计约 29 s /
+  468 s，不是某一条新测试特别慢——是贴着线的 lane 吃不下任何增长。规则只写在文档里、没有机器提醒，就等于没有。
+- **修**：`EMULATED_PYTEST_EXTRA_SECONDS` 900 → 2700（仿真 lane pytest 5400 s）；`runtime-matrix.yml` job 超时 90 → 120 分钟（守卫要求
+  预算外再留 ≥15 分钟，本次其余步骤约 9 分钟）。lane 的 pytest 用掉 >85% 预算时：lane-report 的 pytest 步写 `budget_fraction` 与
+  `warnings`，在 Actions 里打印 `::warning title=lane pytest near its budget …::`——它出现在 run 的 ANNOTATIONS 里，`gh run watch`
+  每次发版结束都会打印，不用再记得去开报告。pytest 命令加 `--durations=25`，下次慢了能看出是哪些测试。lane 脚本取自派发 publish 的
+  提交（main），tag 与 draft 不用重做。
+- **守卫**：`tests/test_verify_runtime_live.py`——超线写 warning + 注解、低于线不写（参数化两例）；命令带 `--durations`；原有「加时后
+  仍装得进 job 超时」用例。负向对照：job 超时改回 90 → 红；阈值改成 2.0 → 红；去掉 `--durations` → 红。另用本机真 durations 日志
+  核过 `pytest_summary` / `forbidden_skips` / `failed_tests` 解析不受 durations 段影响（3425 passed / 62 skipped，0 误判）。
+- **规则**：口头规则要配机器提醒。lane 预算的余量现在由注解报给发版人；发版收尾读 ANNOTATIONS，看到 near-budget 就在下一版前加时
+  或查 `--durations` 里变慢的测试。
+
+### v0.48.0-dev / 2026-11-08 — 四路并行功能批：地名检索 / 命主档案 / 盘图与日历 / 工具面瘦身
+
+四个 agent 各在一个 worktree 里做一个功能，协调者合并。功能本身见 CHANGELOG；这里只记踩到的坑。
+
+**坐标与时区（地名检索）**
+- **坐标串差 1′**：skill 的 `_format_compact_coordinate` 把分四舍五入，上游 `AstroHelper.convertLatToStr`（`splitDegree`）是秒四舍五入、分向下取整、
+  逐级进位。约一半的十进制输入差 1′（31.2304 → skill `31n14`，上游 `31n13`），后端按文字串起盘，所以盘也差。改成逐步移植（含 JS `Math.round`），
+  金样由上游源在 node 里跑出：城市库 100 154 个坐标、2 万随机值、进位边界全部逐值相同。唯一刻意偏离：NaN / Infinity / |x| ≥ 1e21 上游会写出假坐标，
+  skill 拒收（`tool.invalid_payload`）。
+- **上游自己有两套坐标串**：桌面选点 `GeoCoordSelector.applyGps` 用 GCJ-02 偏移后的点写 lat/lon 文本，AI 地名解析 `resolvePlaceOffline` 用 WGS84；
+  96 个常用城市里一半差 1′（广州 113e15 / 113e16）。skill 跟 AI 路径；只报上游，不在 skill 偏离。
+- **本机 zoneinfo 比上游晚**：上游 `timezone.js` 的 `TZ_RULE_OVERRIDES`（IANA 2026b/2026c：温哥华、埃德蒙顿永久夏令时，卡萨布兰卡永久 +00）
+  本机 tzdata 没有，未来日期差 1 小时。Python 侧加同一张覆盖表，逐条锚定到 vendored `timezone.js`（测试）。
+- **凭记忆写的期望值错了**：上海 1990-05-18 写成 +08:00，实为夏令时 +09:00。期望值一律取自上游源 / 引擎，不取自记忆。
+
+**MCP 面（瘦身 / 档案）**
+- **`Any | None` 被广告成 `type:"null"`**：pydantic 出 `anyOf:[{}, {"type":"null"}]`，`_own_property` 合并时只剩 `"null"`。42 个属性（10 个择日的
+  `conditions`、`relocLat/Lon`、印度一串……）在严格客户端眼里只能传 null。修：合并时丢掉 `"null"`，无类型字段查 `schemas/tools/advertised_types.py`
+  的表（按 runner 实际接受的形状定类型）。这张表必须放在 `schemas/tools/` 里——放到 `surfaces/` 时，`verify_schema_knob_wiring` 把表里出现的旋钮名
+  当成「有人消费」，债务数假性下降。
+- **MCP 预校验把缺省值写成显式值**：`_normalize_mcp_request` 的 `model_dump` 把紫微 `gender=true` 之类缺省值写进载荷，档案里存的女性被它盖掉。
+  带档案名的载荷改走 `_mcp_payload`，不在 MCP 层预校验，交给 run_tool 先并档案、再归一化校验。
+- **错误码表重复键**：`RECOVERY_TABLE` 里 `tool.invalid_payload` 写了两遍，后写的「参数没解析成对象」静默覆盖「按校验错误逐项改」，
+  所有字段校验错误的 hint 都指错方向。CI 不跑 ruff，F601 无人看。合成一条；新增 AST 守卫 `tests/test_no_duplicate_dict_keys.py`。
+- **印度校时的 11 个死键**：`india_rectify` 广告了 `/india/rectify` 后端根本不读的 tripataki / prashna×6 / tajakaYear / annualChartType / varshaLat/Lon
+  （上游页面照发、Java 照转、`rectify_core` 不读）。改为照收、不广告、不下发、给了就警告。`prashnaSchools` 传数组时后端 `str(x).split(',')` 得到
+  `"['kp']"`，KP 段静默跳过；改为在 skill 边界并成逗号串（上游页面同样 `join(',')`）。
+
+**存储 / 报告**
+- **新 SQLite 库的首批并发写者**：rollback-journal 模式下几个进程同时首写会死锁，SQLite 直接回 `database is locked`、不走 busy_timeout。
+  档案库加跨进程写锁，读者不改 journal 模式。竞态是概率性的（无锁约 5–9% 轮次出错），守卫跑 80 轮。
+- **ICS 金样被 `.gitattributes` 归一成 LF**：仓库 `* text=auto eol=lf`，CRLF 金样一提交就变 LF，逐字节比对每次 checkout 都红。加 `*.ics -text`。
+- **「重导出逐字节相同」因为错误的原因通过**：两次渲染落在同一秒，DTSTAMP 本来就相同。测试改为挪动 `created_at` 再比。
+
+**测试与合并**
+- **替换全局 `time.sleep` 的测试偶发红**：doctor 复探测试 `monkeypatch.setattr(manager_module.time, "sleep", …)` 替换的是全进程的 `time.sleep`，
+  别的线程（subprocess 轮询 0.001 s）的 sleep 也记进来。复探改走自己的接缝 `_reprobe_sleep`，测试只替换它。
+- **合并时并列块的相同结尾被当成共同后缀**：档案分支的 `ProfileInput` 与地名分支的 `PlaceSearchInput` 都以同样三行（隐藏闸门三键）结尾，
+  git 只留了一份给后一个类，`ProfileInput` 静默丢了这三行。两个分支各自往同一处追加结构相似的块时，合并后逐块与原分支比对。
+- **字体注册名撞名，Windows 上两条红**（v0.48.0 发版 CI 42517406526 windows-smoke）：reportlab 的 `registerFont` 对 TrueType 只认第一次，
+  同名再注册静默忽略。注册名此前是 `HorosaSC{候选序号}`；Windows 上序号 0 恰是系统真字体，钉 Vera 的缺字用例拿回雅黑（DID NOT RAISE），
+  Vera 又占着 `HorosaTC0` 让繁体报告用例拿到缺中文字形的字体。macOS 上能载入的字体序号靠后、名字不撞，本机全绿。注册名改为前缀 + 字体文件身份
+  （路径 + 子字体序号）摘要；守卫 `tests/test_pdf_font_registration_identity.py` 用 reportlab 自带的 Vera / VeraIt 在任何平台复现；
+  本机把可用字体挪到序号 0 也复现了 CI 那两条（修前红、修后绿）。
+- **门禁跑着时在同一工作区合并**：冲突标记写进了正在被测试读的文件，那一轮结果作废。门禁跑着时不动它的工作区。
+
+### v0.47.4-dev / 2026-11-07 — doctor 凭一次探测判「半边没起」：把瞬时抖动报成服务没起
+
+**症状**：v0.47.3 的 main CI（42330590503 第一次尝试）windows-smoke 红：`client openclaw-setup` 的 start 段报 java_backend + python_chart 都可达，
+紧接着 doctor 只探到 java_backend，issues = `services:chart_not_running`，整体 `ok:false / needs_attention`；同一轮真实排盘、存档、读回全过。
+重跑即绿。main 历次失败里这是第一次出现。
+
+**根因**：doctor 对每个端点只探一次，一次失败就下结论。
+
+**没查清的**：抖动本身的原因。doctor 全程 0.374 秒，比单次探测的 1.5 秒超时还短，所以是快速失败（连接被拒 / 重置 / 5xx），不是响应慢；日志没记是哪种。
+接手时先猜成「1.5 秒超时」，被这个耗时否掉了——**看耗时数字再下结论**。修法因此不依赖抖动原因。
+
+**修**：`_service_status_settled`：只有一边通、一边不通才复探（最多 3 次，间隔 0.5 秒），全通或全不通一次定论，没起的 runtime 上 doctor 不变慢；一直不通照报。
+
+**守卫**：`tests/test_doctor_partial_reprobe.py`，负向对照三条实跑：doctor 直接调 `_service_status`（3 红）、复探把一直不通吞掉（3 红）、去掉「全不通不复探」（1 红）。
+
+**推上 main 后又红了一次（52007d4 → CI 42394875676，test + windows-smoke 各 2 红）**：两条测试断言整体 `report["ok"] is True`。
+夹具 `create_runtime_archive` 只造 macOS 布局，doctor 按 `os.name` / `platform.system()` 选 Linux / Windows 路径，那里报 `missing:*`，
+`ok` 为 False。本机门禁和 live 都在 macOS 上跑，**因为错误的原因通过**——那两条断言测的是平台，不是复探。修：只断言没有 `services:*` 问题
+（同文件里其余 doctor 测试本来就不断言 `ok`）。本机复现：用一次性插件把 `platform.system` 伪装成 `"Linux"` 跑同一文件，修前 2 红、修后全绿；
+负向对照在伪装 Linux 下照样 3 红。**教训：断言只写被测的那一块；夹具带平台布局时，整体 `ok` 不是平台无关的断言。**
+
+### v0.47.3-dev / 2026-11-06 — 端到端测试在仓库目录里跑，替 bug 选好了解释器
+
+- **现象**：v0.47.2 公开后用发布页的 wheel 冒烟，`setup --vectors` 退出码 2：`Because only horosa-skill[vectors]==0.47.2 is available and the current Python version (3.11.14) does not satisfy Python>=3.12`。同一个 wheel 不带 extra 能起（`--version` 正常）。保护起了作用：`config_untouched: true`，搜索不受影响。
+- **根因**：uvx 解析失败时会按 requires-python 换一个合适的解释器重试，这段逻辑认不出带 extra 的包，`horosa-skill[vectors]@…` 碰上 PATH 里排第一的旧 Python 就直接失败。
+- **为什么之前没抓到**：v0.47.2 开发时的真机端到端写着 `cd $PKG`，在 `horosa-skill/` 目录里跑；那里的项目配置替 uvx 选中了 3.12。隔离了 HOME、缓存、端口，唯独没隔离工作目录，**因为错误的原因通过**。更糟的情形：用户在某个钉了 3.12 的项目目录里跑 setup，探针能过，客户端从别的目录起 server 就起不来。
+- **修**：`VECTORS_PYTHON`：三种 uvx 启动器带 `--python 3.12`（`uv` 启动器由项目决定，不带向量的配置一个字不变）。守卫 `tests/test_setup_vectors.py`。
+- **真机验证**：同样的条件（`env -i`、工作目录 `/private/tmp`、隔离 HOME、PATH 第一个 Python 3.11），修前 `failure=deps`，修后向量就绪、经配置命令真搜到换说法的笔记。
+- **法则**：端到端要在**项目目录之外**、干净环境里跑。发布后的公开 wheel 冒烟要把主打功能走一遍，不能只跑 `--version`：这次就是它抓到的。
+
+### v0.47.2-dev / 2026-11-06 — 拆报告模块时踩的两处
+
+- **方法改函数，局部变量遮住同名函数**：`self._payload(...)` 机械改成 `payload(...)` 后，`payload = payload(source_artifact)` 抛 `UnboundLocalError`（同函数里只要有赋值，这个名字就是局部的）。`export_format`、`report_quality`、`search_index` 都是这个形状。快照第一次就全红，语法检查和未定义名检查都看不出来。修：函数用动词（`read_payload`、`build_report_quality`），重新从原文件生成，不逐处打补丁。
+- **负向对照自己也可能是假的**：拆分前要证明比对工具能抓到改动，三处小改只有 PDF 那处报了差异。不是工具漏了：DOCX 的 8.6 → 8.7 pt 经 `w:sz` 取整后相同，`ready_for_ai_review` 里的 `bool(ai_report)` 恒真，两处都根本没改动输出。换成确实改输出的对照后 DOCX 114 份、JSON 298 份都红。
+- **法则**：负向对照没红时，先确认它真的改了行为，再去怀疑守卫。
+
+### v0.47.2-dev / 2026-11-06 — 「回填只进机器 JSON」这句话是错的
+
+- **症状**：拆 `default_report.py` 时要决定八字机器文字要不要标注，先核对它的去向，发现架构审计的结论不成立。按模板写的完整 `ai_report`（含 `analysis_sections`）渲染 PDF，「AI 解读」部分（页面写着「以下是 AI 依据上方盘面所作的解读」）印 18 段，其中 16 段是机器写的：八字 3084 字对 AI 自己的 69 字，奇门 19 段、星盘 21 段同理。只给 `recommendations` / `limitations` / `evidence` / `analysis_focus` / `reading_steps` / `consultation_basis` / `follow_up_questions` 其中一项时同样如此，`style:"chart"` 也一样。
+- **根因**：`merge_ai_report` 只在「调用方给了 `answer_text` 且没写对应字段」时清空 `human_*`。`builder.py` 那句注释（Human DOCX/PDF should not turn those backfills into "AI-written" prose）说的只是这一条路；一旦调用方自己写了 `analysis_sections`，`human_analysis_sections` 取的就是 `_complete_analysis_sections` 补全后的列表。守卫 `test_report_from_tool_accepts_freeform_ai_answer_text`（`"可读解读" not in docx_text`）也只盖这一条路。
+- **我们错在哪**：审计时只试了 `direct_answer` / `executive_summary` / `answer_text` / 空，四种都走到清空分支，就写下「PDF 与 DOCX 不受影响」，随后又写进 AGENTS 9.3.1 与模块说明。结论的范围比证据大。
+- **处理**：结构重构那一轮要求输出不变，所以先只把说明改回实情，把选择交给维护者：a 只印调用方写的、b 另起标题标明机器生成、c 不动。维护者选 a。
+  `human_*` 一律取自 `read_caller_answer`，「核心结论」卡片也改读 `human_*`（它此前绕过这层，直接读回填后的 `direct_answer`，答案没写结论时印的是机器结论，再不然是用户的问题）。机器版 JSON 的回填不动。
+  `test_service` 里两条断言机器段落「大运流年与阶段判断」要进人读版，是这个旧行为本身，改成断言它不出现；年份断言留着，确认流年数据仍在「完整盘面」里，读者没丢信息。
+  分析报告没有任何 AI 内容时服务本来就拒绝出文件，所以「没有答案」只有 `style:"chart"` 这一条路，测试按真实路径写。负向对照 9 条全红（每个 `human_*` 换回回填 + layout 绕过 + 调用方文字被丢）。
+- **法则**：说「只进 X」之前，把每条进入路径都走一遍；证据只覆盖几个样例时，结论也只能说到那几个样例。
+
+### v0.47.2-dev / 2026-11-06 — 结构整理：派生清单、分层、CLI 流程、run_tool 分段（行为不变）
+
+- **起因**：审计第 7、8 条的结构项，全部要求行为不变。每个提交都与 e1e8b35 对拍：471 条请求（service / MCP / CLI + 真 JS 引擎）逐键相同，`tool list`、MCP 工具表含 schema、资源、提示词、全部 `--help` 逐字节相同。
+- **工具数写手差点改错别的数**：`bump_version.py --tool-counts` 第一版见到「工具」这类词的行就替换同值数字。放回 v0.47.0 那次 110→114 的父提交重放，它把「106 条基准用例」改了：用例数恰好等于旧闸门数。改成只动判官读的形状（`stated_counts`，与判官放在一起）。**重放还照出判官的盲区**：「114 个真实技法」「114 callable tools」「全量面 125」不在任何正则里；README 横幅的 alt 被 `EMPHASIS` 连标签一起剥掉，判官从没读到过。放宽形状后判官立刻红了两处陈旧声明：`SKILL.md`、`codex-config.toml` 一直写「全量 120」，手工那次也漏了。守卫 `tests/test_tool_count_sync.py`：在全部 COUNT_DOCS 的副本上模拟多四个技法，写手跑完判官必须没有意见，不跑必须有意见。一条负向对照起初是绿的（摘掉徽章形状，同一行的 alt 替它过了关），加了只有徽章的样例才红。
+- **派生之后旧测试会变空**：导出键表从注册表派生后，`test_every_business_tool_is_in_export_technique_map` 永远为真。真正的新风险是缺省键不存在（导出键与工具名不同却忘了写覆盖，解析抛 Unknown 被吞成 `export_snapshot=None`），所以断言改成「每个键都在 `AI_EXPORT_TECHNIQUES`、非业务工具集合相等、覆盖项无死条目」。负向对照 4 条全红。本地分派改写前后逐工具记录实参，114 个工具路由完全相同。
+- **没做**：`schemas/tools/__init__.py` 的再导出不派生。要派生只能运行时注入 `globals()`，`__all__` 对 F822 就不可见了，等于削弱 `verify_undefined_names`；每模块写 `__all__` 只是把清单挪个地方。`FAMILIES` 未动。
+- **命令挪出 cli.py，测试的隐含假设跟着暴露**：`serve` 与 `client openclaw-*` 进流程模块（`serve_flow.py`、`openclaw_flow.py`，共用 `refusals.py`）。命令函数只管打印与退出码，所以 `_print_json` 仍可替换，AST 守卫也还看得见它。两处意外：① 8 处测试写的是 `monkeypatch.setattr(cli.subprocess, "run", …)`，借 cli 模块的属性去改全局 `subprocess.run`；cli 不再 import 它就 AttributeError。只改路径，断言不动。② 摘掉 `openclaw-check` 的退出码、摘掉 `serve` 的传输校验，**全仓照绿**：这两条路径从没有端到端测试，旧测试只测单个函数。挪动之前先给要挪的路径做字节快照（拒绝路径前后逐字节相同），再补 `tests/test_cli_flows.py`，这两条负向对照才红。
+- **`run_tool` 分段差点丢掉失败路径上的入参**：`input_normalized` 在 `try` 里被重新绑定（上游推运缺省、印度流派预设），失败信封与存档读的都是新值。把计算段写成「返回新值」的函数，后端一失败新值就没了，而成功路径的对拍照样全绿，因为 471 条全是成功请求。所以动手前另做失败快照：全部技法 × 后端失败 / 内部异常 / JS 失败 / 存档失败 / 坏入参（821 条），修改前后逐键相同。**守卫自己也差点是空的**：第一版用样例载荷测失败路径，正向对照报「没有工具走到上游缺省」，样例都带着目标时刻，根本不触发重新绑定，这组测试和失败快照都考不到这个坑；改用真会补键的载荷（返照缺目标、印度给流派）才有效。`_ToolCall` 持有现场，模拟「计算段丢掉新值」的负向对照让 7 个用例变红。另有两条负向对照起初是绿的（自备知识库失败不进 warnings、失败信封丢降级说明），也是从没有测试，补上才红。
+- **资源与提示词移出 `create_mcp_server`**：六个闭包只用到 `mcp` 与 `settings`，原样搬到 `surfaces/mcp_catalog.py`，注册时机不变。提示词原先没有任何测试，不注册全仓照绿，补了 `tests/test_mcp_catalog.py`。
+- **自己踩的**：`EGYPT_AXIS_KEYS` 第一版放进 `schemas/tools/base.py`，全量测试才红：`verify_schema_knob_wiring` 只认 schema 包外出现的字段名，七个 `egypt_*` 旋钮成了「没人用」。`--update-baseline` 能让它绿，但那是削弱守卫；表挪到 `engine/registry.py`，基线不动，并折回当时的提交，保证每个提交自身都绿。
+- **法则**：写手要用判官读的形状，并把写手放回一次真实历史变更里重放：它该改的、不该改的、判官漏看的，三样都会现形。一条规则同时有判官和写手时，它们必须共用一份形状。对拍只覆盖走过的路：先问这次改动会影响哪条路，再确认样本真的走到了它。重构前先问这段代码删掉谁会红：没人红就是没人守，挪之前先补上。
+
+### v0.47.2-dev / 2026-11-06 — 每出一份 PDF 都把系统字体集重新解析一遍
+
+- **症状**：架构审计用 cProfile：一次 PDF 渲染里 `_register_pdf_fonts` 占七成多，其中 `_face_index` 最多；PDF 中位约 0.84 s，DOCX 0.05 s。
+- **根因**：TTC 按字面名找子字体（子字体顺序随系统版本变，不能写死序号），`_face_index` 每次都 `TTFont(...)` 逐个枚举，一份 PDF 要查好几次，没有任何缓存。
+- **修复**：`_face_names` 按文件缓存「字面名 → 序号」表，键是路径 + mtime + 大小，系统更新字体后自动重新枚举；一个子字体都读不出来时不记。只缓存序号，`TTFont` 对象仍每次新建：reportlab 的字体对象带每份文档的子集状态，复用要另外论证，不在这条里。
+- **核对**：同一张盘重复渲染，中位 0.959 s → 0.286 s（同一台机器、同样负载下测的，只看比例）；`pdffonts` 列出的嵌入字体前后相同（STSongti-SC-Regular / Bold）。
+- **守卫**：`tests/test_pdf_font_cache.py`。负向对照：缓存键去掉 mtime 与大小时「字体文件变了要重新枚举」红；失败也缓存时 `test_a_failed_enumeration_is_not_remembered` 红。
+- **法则**：长命进程里，「只是慢一点」的探测乘以调用次数就是主要开销；缓存系统文件时把文件的身份放进键里。
+
+### v0.47.2-dev / 2026-11-06 — JSON 报告的闸永远是绿的
+
+- **症状**：架构审计：`answer_text: "好。"` 时 JSON 里有 16 段分析、`coverage_ratio: 1.0`、`ai_analysis_complete: True`、`ready_to_deliver: True`；`style:"chart"` 完全没有 AI 也写 `has_ai_answer: True`，`completion_hint` 说报告含「AI analysis」。
+- **根因**：`_ai_coverage_status`、`_section_coverage_matrix`、`_report_quality`、`_delivery_checklist` 都拿 `merged_ai_report` 量，而它含 `_default_ai_report` 的确定性回填。回填本身是有意的（`builder.py`：Machine JSON keeps deterministic coverage backfills），问题在于闸把回填算成了 AI 写的。测试里 `ready_to_deliver` 全是 `is True`，从没有人写过它该是 False 的情形。
+- **修复**：`_caller_answer` 取调用方自己写的答案（run 里写回的 + 这次传的），闸全部改量它（`_caller_answer_view`），`report_index.has_ai_answer` 同样。`ai_report` 里的回填不动，PDF / DOCX 不动。
+- **设计判断（与原任务的差异）**：严格按「每章都要 AI 答」判 `ready_to_deliver` 时，`test_targeted_consultation_report_roundtrip_persists_and_retrieves_ai_analysis` 红：那份报告有直接结论、证据、建议和三段定向分析，只没有逐章解释。`_complete_analysis_sections` 写明「Preserve the AI's targeted answer while backfilling source-section coverage」，定向解读可交付是有意设计，所以**没有改这条断言**，改的是闸的语义：`ready_to_deliver` 要的是调用方写了结论、摘要、分析段、建议、证据；逐章覆盖照实写进 `section_coverage_matrix` / `coverage_status` / `checks.source_sections_covered`，但不拦交付（`not_blocking`）。`ai_analysis_complete` 仍要求全覆盖。`style:"chart"` 本来就不要 AI，AI 类检查不算缺。
+- **后果**：只写一段 `answer_text`（没有结构化字段）的 JSON 报告现在是 `ready_to_deliver: False`，`missing` 列出缺什么。这与模板要求的字段一致，但是行为变化。
+- **核对**：新旧 `ReportBuilder` 跑全部样例工具共 228 份文档：人读章节、`ai_report`、`figures` 零差异；变的只有这些闸字段与由它们派生的 `plain_text` / `search_text` / `content_outline.body_chars`。`ready_to_deliver` 只在 4 份上翻转（解析 / 注册表 / 知识类工具的 chart 样式，渲染时本来就被 `report.no_chart_content` 拒绝）。
+- **守卫**：`tests/test_report_gates.py`。五组负向对照：闸改回量 merged、逐章覆盖拦交付、chart 要 AI、`has_ai_answer` 读 merged、提示语恒说逐章覆盖，各自变红。
+- **法则**：闸要量被检查的东西本身；一个永远为真的字段比没有这个字段更糟。写 `is True` 的测试时，同时写一条它该是 False 的。
+
+### v0.47.2-dev / 2026-11-06 — 存档增长的三个便宜修法（不做自动保留）
+
+- **症状**：架构审计估算：每天 20 次星盘一年约 540 MB，八字形状（单份约 2 MB，读代码与 LESSONS v0.46.1 推算）一年约 14.6 GB。没有自动保留，`memory prune` 要手动跑，`doctor` 看不到存档占了多少。`attach_ai_response` 不记点用：写回了解读但没回读的 run 会被 prune 选中，而 `is_memory_worthy` 明明说有答案就值得留。
+- **修复**：`_write_json_atomic` 改紧凑 JSON。实测一份星盘产物 62,951 → 50,365 字节（省 20%），录制的引擎 JSON 结构更多，`indent=2` 在上面是 1.66–2.48 倍。写回答案算一次点用；prune 另判 `ai_answer_text`，覆盖升级之前写回、没有 usage 记录的行。`MemoryStore.storage_usage()` 进 `doctor.memory_db.usage`，库打不开时 `runs` 是 `null`，不写 0。
+- **没做的**：按范围不做自动保留、`VACUUM`、gzip 老产物。将来加 `VACUUM` 要注意：`runs` 是隐式 rowid，`VACUUM` 可能重排，外部内容 FTS 必须随后 `rebuild`。
+- **旧断言为何没抓到**：prune 的测试只造了「点用过 / 没点用过」两种 run，没有「答过但没回读」这一类。
+- **守卫**：`tests/test_memory_durability.py`。负向对照：去掉点用记账、去掉答案判断、库打不开时报 0，各红一条。
+- **法则**：先省不需要的（排版），再谈要不要删；删之前，「用过」的定义要和「值得留」的定义是同一个。
+
+### v0.47.2-dev / 2026-11-06 — install 不防并发也不防崩溃：五个要人动手才能恢复的现场
+
+- **症状（架构审计，假载荷复现）**：① 强制交错：stop 与换目录之间另一个会话的调用从旧树起了启动器，旧树随后被删，启动器脚下的文件没了，`install` 仍报 `ok: true`、`warnings: []`。② 被杀的 install 留下 `.hi-*`（真载荷约 730 MB 归档 + 1.2 GB 树），下次安装不清，`uninstall` 清单里也没有。③ 崩在 `current → previous` 与换入之间：工具一律 `runtime.not_installed`，离线重装失败，好副本就在旁边。④ `.part` 已完整时每次重试都 HTTP 416，错误还写着「重试会续传」，只能手删 `downloads/`。⑤ 镜像回 200 + HTML：清单 `JSONDecodeError` 冒出去，原始 URL 没试；归档被当成下载成功，install 校验失败，回退不生效。
+- **根因**：`install` 从不碰 `.runtime-start.lock`，R3 只保证了顺序，没保证中间没人插进来。清理全靠 `TemporaryDirectory.__exit__`，SIGTERM / 断电走不到。回滚只处理异常，不处理进程没了。`_download_with_resume` 把 416 当 4xx 换 URL。回退只看 HTTP 状态，不看内容。
+- **修复**：`_swap_in_payload` 从 stop 到换入全程持启动锁（`INSTALL_OWNER`，按时长封顶），换完放锁再重启；别的会话只见 `runtime.starting`。锁被占时等 `runtime_start_timeout_seconds`，等不到报新码 `runtime.install_start_in_progress`，current/ 不动（启动器正从那里起服务）。`.hi-*` 写 `.owner` 记 pid，install 一进来就清（磁盘预检要 4 倍归档大小，留着它重试会被拦）：属主死了、属主活着但超过 6 小时（pid 回收）、无标记且超过 1 小时才清。`_restore_previous_after_crash` 在 `previous/` 完整（清单有效 + 必需路径都在）时挪回 current/。416：`Content-Range` 总长等于分块就直接用，否则丢掉从头下。`expected_sha256` 传进下载循环逐候选校验，坏字节不留给下一个候选续传；全部失败仍是 `runtime.install_sha256_mismatch`。清单要是含 `platforms` 的对象才算数。
+- **设计取舍**：恢复只放在 `start_local_services` 与 `_swap_in_payload`，**不放** `_require_runtime`：卸载的停服务路径也调它，会把要删的东西挪回 current/（`test_uninstall_does_not_bring_previous_back`）。恢复要拿启动锁：install 两次改名之间同样只有 previous/，这时挪回去，新载荷会被 `shutil.move` 搬进 current/ 里面（`test_a_previous_is_left_alone_while_a_swap_holds_the_lock`）。`doctor` 保持只读，不自愈。
+- **边界**：坏了的 `.hi-*` 里完整的归档没有回收成 `.part`，被杀在解压阶段仍要重新下载。两次改名之间的窗口是微秒级，现场③少见；①②④⑤才是平常会碰到的。没有在真 runtime 与 Windows 上跑过。
+- **守卫**：`tests/test_runtime_recovery.py`。七组负向对照全红：扫目录不看属主、恢复不拿锁、恢复挪进 `_require_runtime`、不查完整性、换目录不放锁、坏字节留给下一个候选、install 不先恢复。R3 的 `["stop","swap","start"]` 顺序测试未改动，照常绿。
+- **法则**：顺序保证不了互斥；崩溃恢复不能靠 `finally`，要靠下一次进来的人能看懂现场。
+
+### v0.47.2-dev / 2026-11-06 — 启动锁撞上回收的 PID：永远 `starting`
+
+- **症状**：架构审计用一个无关的活进程冒充锁里的 pid（锁已 30 天）：连续三次 `start_local_services` 都回 `starting: true`，启动脚本一次没跑，那个进程一退出才恢复。agent 只会按 `retry_after_seconds` 一直重试。
+- **根因**：工具调用路径的预算只有 5 秒，冷启动都走 `_hand_lock_to` 把锁交给启动器；启动器退出后没有人释放它（重试走 `probe`，不再进 `start_local_services`），锁文件留在盘上。下次重启后若那个 pid 被回收，`pid_alive` 说「活着」，`reclaim_if_stale` 又规定活持有者永不回收。`start_horosa_local.ps1` 自己的注释就写着 Windows 回收 PID 很快。
+- **修复**：`pidlock._AGE_CAPPED_OWNERS`：只有交给启动器的锁（`LAUNCHER_OWNER`）按 `stale_after_seconds` 封顶，上限内照旧相信存活判定。960 s 大于首次 CDS 训练的 15 分钟，所以「合法的长启动必须被尊重」这条理由仍成立。别的持有者（`runtime-start` / `evaluation` / `runtime-state`）的 pid 就是持锁进程自己，规则不变，`test_second_process_does_not_launch_while_a_start_is_in_flight` 用 300 天前的 `runtime-start` 锁锁着这一点。`release_launcher` 在发现服务全起来、等到别人起好、停服务成功时收回，只动启动器的锁。
+- **边界**：工具调用的重试走 `probe` 不进 `start_local_services`，那条路上锁留到下一次启动，由时长封顶兜底，最坏挡 16 分钟。没有加看门狗线程（manager 的设计说明明确不要）。macOS 启动器 pid 文件的同类问题（`start_horosa_local.sh` 对被回收的 pid exit 1，manager 因为没有可达服务不跑停脚本）不在这条里，是读代码得出的，没有复现。
+- **守卫**：`tests/test_runtime_recovery.py`。负向对照：封顶对所有持有者生效时 `test_other_live_holders_are_never_reclaimed_by_age` 红；`release_launcher` 不看持有者时 `test_services_up_leaves_a_live_start_in_another_process_alone` 红。
+- **法则**：记下来的 pid 只是线索，不是身份；凡是记别的进程 pid 的锁都要有时长上限。
+
+### v0.47.2-dev / 2026-11-06 — 文本检索只看最近 400 条，而且不说
+
+- **症状**：架构审计：3000 条更新的 run 之后，最老那条的问题含「苍穹之眼」，`query_runs(text=…)` 回 0 条，同库的 FTS 表直接查能命中。用户得到的是「没有这条记录」。
+- **根因**：候选来自按时间倒序的 `LIMIT`（`limit=20` 时 400 条），FTS 命中只用来放行窗口内的行，从不把窗口外的行带进来。工具说明的例子 `{"text": "事业"}` 是两字词，trigram 要 ≥3 码点，连 FTS 都不走。
+- **修复**：`_indexed_text_rows` 用同一组过滤查问题与答案（≥3 码点走 FTS 子查询，短查询与缺 FTS5 走 LIKE 并转义 `%` `_`），命中并进候选后按新到旧排序。用子查询而不是把 id 列表拼进 `IN`，避开 SQL 变量上限。盘面正文（工具调用、产物文件）不进索引，仍只深扫窗口；`scan_report` 给出窗口外多少条的产物没搜过，`query_memory` 回 `not_scanned`，大于 0 时 summary 多一句怎么缩小范围。
+- **没动的**：`memory_query` 工具说明的「question / answer / snapshot」在 `surfaces/mcp_server.py`（另一条线的文件），CLI 的 `memory query` 直接打印列表，拿不到 `not_scanned`。读文件的双读（`store.py` 的 `_artifact_record_to_dict` 与 `_path_contains_text`）没改。
+- **守卫**：`tests/test_memory_search.py`。负向对照：去掉合并红五条，去掉 LIKE 转义、索引查询丢过滤各红。`not_scanned` 忽略过滤时第一版测试没红（过滤后不足一个窗口，根本走不到 COUNT），改成过滤后仍超窗口才红。
+- **法则**：加速路径只能让结果更快，不能决定结果有哪些；搜不全时要说搜了多少。
+
+### v0.47.2-dev / 2026-11-06 — 记忆库出问题拖垮整个服务：构造抛错、写时坏页不自愈、日志承诺不存在的工具
+
+- **症状**：架构审计复现：`runs` 表根页损坏（库头完好）时 `MemoryStore()` 照常构造，之后每次 `run_tool` 在 `create_run` 抛 `database disk image is malformed`，重启后 `corruption_recovery` 仍是 `None`，只能手动搬走库；只读库让 `MemoryStore()` 抛 `attempt to write a readonly database`，服务根本建不起来。隔离日志写「可用 memory 工具重建索引」，没有这样的工具。
+- **根因**：分类恢复只在 `initialize()` 里跑，而 `CREATE … IF NOT EXISTS` / `PRAGMA table_info` 只读 schema，碰不到坏的数据页。非损坏类错误（只读、路径不可用）直接冒出构造函数。可记忆库本来就是便利缓存，算盘不靠它。
+- **修复（只做存储一侧）**：① `MemoryStore()` 不再因存储问题抛错：建库的 `sqlite3.Error` / `OSError` 记进 `init_error`，`ensure_dirs` 失败不单独算数（建不出来的可能只是 runtime 根或 trace 目录），`connect()` 每次重试（连目录一起建），权限恢复或目录腾出来后自愈；`integrity_check` 如实报 `ok: false` + `init_error`（`Settings.ensure_dirs` 的 `config.unexpanded_template` 不是 OSError，照常抛）。② 写路径换 `_writer()`：malformed 时先用 `PRAGMA integrity_check(1)` 确认当前这份库真坏，才走 `_quarantine_corrupt_db` + 重建，本次写仍抛错（数据确实没进库），下一次写落在新库上。用 integrity_check 不用 quick_check：后者不比对索引与表内容，那类损坏同样报 malformed。③ 读路径不隔离：为一次查询失败搬走整个库不值得。④ 删掉重建索引的承诺，日志改说旧产物还在 `runs/`、但不再出现在检索里。`memory reindex` 要新增 CLI 命令，不在这轮。
+- **没改的**：`run_tool` / `dispatch` 的存档块由 `improve/core-call-chain` 处理（存档失败回图 + warning）。`TraceRecorder.__init__` 也调 `ensure_dirs`，数据目录建不出来且开着 trace 时服务构造仍会抛。
+- **守卫**：`tests/test_memory_durability.py`。负向对照：去掉写时恢复、`_database_is_sound` 恒判坏、读路径也走 `_writer`，各红对应一条。只读那条在 Windows 与 root 下 skip，`test_construction_survives_an_unusable_path` 全平台跑。
+- **法则**：错误文字只是线索，隔离（搬走用户的库）之前要亲自确认。
+
+### v0.47.2-dev / 2026-11-06 — memory_query 缺省把 20 份全量产物塞进一条消息
+
+- **症状**：架构审计用进程内 MCP 客户端实测（`limit:20`）：63 KB 的星盘 1,799,838 字节，2 MB 的八字形状 42,515,038 字节；`include_payload:false` 只有 89,107 字节。`horosa_memory_show` 读回大八字 2,110,245 字节。上限是 900 KB 预算与 v0.46.1 记下的 1 MiB SSE 单事件。
+- **根因**：`MemoryQueryInput.include_payload` 缺省 true，而工具说明写的是「Returns run summaries」。`_fit_result_budget` 第一行就要求顶层 `data` 是 dict，记忆结果形状是 `results[]` / `result`，整条跳过。references/reports.md 又教 agent 用 `horosa_memory_show` 读全量段落。
+- **修复**：`MemoryQueryInput.include_payload` 缺省 false（`MemoryShowInput` 仍是 true：说明写的就是取全量）。`_fit_result_budget` 按形状分派，信封走原逻辑（`_fit_envelope`），记忆走 `_fit_memory_records`：先把各产物 `payload.data` 下 ≥ 50 KB 的原始子树换占位（`_PROTECTED_DATA_KEYS` 不进候选），还超才整份换占位，路径与 sha 留着。不每裁一块重新序列化：一次 42 MB 要秒级，所以按字节估、估够再量。CLI 的 `memory query` 走 `store.query_runs`，缺省不变。
+- **旧断言为何没抓到**：`test_normalize_mcp_request_accepts_flattened_memory_query_fields` 测的是入参拍平，把当时的缺省值顺手写进了期望字典，不是在说缺省必须带载荷；预算测试只有技法信封一种形状。该断言随缺省改成 false。
+- **守卫**：`tests/test_memory_mcp_budget.py`。负向对照：缺省改回 true、去掉 `_fit_memory_records` 分支各红；去掉受保护键判断时，只有「快照比原始明细大」的那条红（快照小的用例因大小排序照样过，因为要裁的本来就不是它，所以单写了这条）。
+- **法则**：线上预算加在门面出口，不要假定结果形状；新增大结果先问它走不走这道闸。
+
+### v0.47.2-dev / 2026-11-06 — 答案写回把唯一一份盘面写成 0 字节
+
+- **症状**：架构审计在 12 MB 真卷（HFS+）上复现：剩 900 KB 时 `record_ai_answer` 抛 `OSError 28`，盘面产物变成 0 字节；腾出空间后重试返回 `ok: true`，产物仍是 0 字节（不是 JSON 的文件 refresh 直接跳过），`report_render` 报 `report.source_not_found`。tight loop 下 SIGKILL 第 22 次就撞上（只证明窗口存在，不代表概率）。并发读者 26/1851 次拿到 `payload_error`。另外写回后库与 manifest 里的 sha 还是写入时的值（`ed49c6…` vs 磁盘 `266fc5…`）。
+- **根因**：`Path.write_text` 先截断再写；`runs/` 产物又是这次起盘**唯一**的完整副本（`initialize` 的说明正是这么定义的），带 AI 正文的每次报告都经 `_record_report_ai_if_present` → `attach_ai_response` → `_refresh_run_artifacts` 走这条路。v0.33.0「写时落列」把 size / sha 存进库以消 O(n²)，但改写路径没跟上。`kind != 'run_manifest'` 还把 `report_json` 也算进来：交付出去的报告（可能在 `HOROSA_REPORT_OUTPUT_ROOTS` 的用户目录里）被塞进 `record_meta` / `conversation`。
+- **修复**：`store._write_json_atomic`（同目录临时文件 + fsync + `fsretry.replace`，失败清临时文件）用在全部三处；用 `os.open(…, 0o666)` 而不是 mkstemp，产物权限照旧按 umask，改写沿用原文件权限。`_refresh_run_artifacts` 排除 `report_*`，写完更新 `file_size` / `sha256`。fsync 实测无感（本机每次存档 3.6 ms vs 4.3 ms，差在噪声内）。
+- **旧断言为何没抓到**：`test_memory_store_attach_ai_response_updates_artifacts_and_manifest` 只断言 sha **非空**，没和磁盘比；没有任何测试让写入中途失败。
+- **守卫**：`tests/test_memory_durability.py`（真实写失败用 `RLIMIT_FSIZE`，效果同磁盘写满；`test_the_store_has_no_in_place_writes` AST 扫 `store.py` 的 `write_text` / `write_bytes`）。负向对照：改回 `write_text` 六条红；`0o666` 改 `0o600`、去掉 `copymode` 各红一条。Windows 上 RLIMIT 那条 skip，`test_a_failed_replace_cleans_up_and_keeps_the_original` 全平台跑。
+- **法则**：只有一份的数据，写它的每一步都要假设下一个字节写不进去。
+
+### v0.47.2-dev / 2026-11-06 — 核心调用链审计：表面层手抄的闸门、入参、错误路径各走各的
+
+- **起因**：只读审计从表面往下追调用链，每条都在进程内真跑复现（`tests/fakes.py`，后端钉 `:9`）。分层本身没问题：无顶层 import 环、service 内部严格按文档分层、114 个样例经 CLI / MCP 两条路 `input_normalized` 0 差异。问题集中在表面层：同一件事每个入口手写一份，抄的时候漏一处，守卫又是逐个点名入口，没点到的就没人管。
+- **坑 1 · 合参绕过澄清闸**：闸门在表面入口，不在 service；`service.dispatch` / `run_tool` 本身不拦。MCP 四个函数体与 CLI 三条命令各调一次闸，`horosa_hecan` 走表驱动门面、CLI `hecan` 直调 service，都没这一步。同一份缺性别的出生信息，`horosa_cn_bazi_birth` 与 `horosa_dispatch` 回 `agent_guidance.required`，`horosa_hecan(tools=["bazi_birth"])` 回 `ok=True`，违反铁律 2；docstring 还写着「复用……澄清闸」。修：hecan 与 dispatch 同闸（显式 `tools` 时不再问用哪种技法），一次确认覆盖选中的全部技法。**守卫 `tests/test_gate_coverage.py` 不点名**：MCP 侧枚举 `list_tools()`，CLI 侧 AST 扫每个 Typer 命令；附正向对照（同一份入参带确认就到得了 `run_tool`），否则「没到」可能只是入参不合法。负向对照 4 条全红，其中一条摘掉与本修复无关的 `horosa_report_from_tool` 的闸，证明抓的是「任何入口」而不只是 hecan。`test_facades_resolve_the_service_method_at_call_time` 补了确认位：它考的是按名取方法，断言不变；它从前用未确认载荷跑通 hecan，却只断言方法解析，所以没抓到这条。
+- **坑 2 · `request` 一出现，兄弟参数全丢**：`_merge_mcp_arguments` 在 `request` 非空时整体改用它。`horosa_astro_chart(hsys=3, zodiacal=1, request={完整已确认载荷})` 回 `ok=True`、盘按 hsys=1 / zodiacal=0 起，没有一句警告，同样的键平铺就是 3 / 1。`horosa_tool_run` 的描述还明确教这种写法（公共字段放顶层、技法专属字段进 `request`），精简面又是七家客户端的缺省：照做的结果是闸门把已经给过的日期再问一遍，确认位挪进 `request` 则报缺日期。旧台账（`__signature__` 那条）只把 `tool_name` 救了出来，别的参数继续丢。修：`{**flat, **request}`，同名不同值时 `request` 优先并进 `warnings`；合并在 `try` 之外，所以坏 `request` 不在这里抛，原样交给下游报 `tool.invalid_payload`。警告靠 `request_conflict_scope` 从工具函数体带到 `HorosaMCPServer.call_tool`，信封与门面 dict 两种形状都覆盖。**改了一条旧断言**：`test_merge_mcp_arguments_prefers_request_when_present` 断言的就是「兄弟参数被丢」（2026-04 OpenClaw 兼容提交，没有记录理由），它不是没抓到，是把缺陷写成了期望。负向对照 4 条全红。
+- **坑 3 · MCP 报告恒为简体**：`ReportXInput.language` 缺省 `"zh-CN"`，`_normalize_mcp_request` 的 `model_dump` 把缺省写成了显式入参，`_report_language` 又按 `model_fields_set` 判「调用方写了」。同一个 run、`HOROSA_OUTPUT_SCRIPT=zh-Hant`：CLI 出 `zh-TW`（盤 547 / 宮 2024），MCP 出 `zh-CN`（盤 0 / 宮 0）。设置界面的繁体勾选主要走 MCP，受影响的正是它的用户。v0.43.0 只在 CLI 那头修（CLI 不传缺省），旧测试直接调帮手函数、手工构造「隐式」模型，从没经过 MCP 的 `model_dump`，所以绿。修：`language` 缺省 `None`，判据从「字段被设过」改成「有值」，不再依赖 `model_fields_set`。守卫 `tests/test_report_language_surfaces.py` 全走 `call_tool`，CLI / MCP 对拍。负向对照 2 条全红。
+- **坑 4 · 存档失败连累已算好的盘**：`run_tool` 的 `if save_result:` 与 `dispatch` 的两处存档都在 `try` 之外，SQLite 或磁盘一出错，结果连信封一起没了。MCP 上技法工具与 `horosa_tool_run` 成了裸 `UnexpectedToolError`（绕过 agent_recovery），CLI 上是 traceback；`horosa_dispatch` 因为自带 `except Exception` 活了下来——同样的代码抄了四份，兜底分支却不一样。AGENTS §9.2 一直写着「`run_tool` 绝不让异常逃出去」，守卫只覆盖了 `try` 里面。修：存档块（`tools.py`、`dispatch.py` 开 run 与收尾共三处）各包一层，失败时结果照回、`memory_ref=None`、`warnings` 带 `memory.save_failed`；`report_from_tool` 出不了报告时把这条告警放进 `details.warnings`。四个工具体与表驱动门面合成 `_gated_run`，闸门 + 兜底只剩一份，这才是 1、4 两条的根因；字典形状的门面在 `run` 里仍走 `_guarded_facade`，错误形状不变。守卫 `tests/test_memory_save_failure.py`（注入 `OperationalError` / `ENOSPC`，含 AST 检查 `_agent_preflight_error` 只有一个调用点）。负向对照 5 条全红。
+- **坑 5 · CLI 的拒绝路径是 22 份手抄**：① `exc.errors()` 把字段校验器抛的 `ValueError` 留在 `ctx` 里，`json.dumps` 当场 TypeError：`tool run chart` 带 `sunriseMode:"bogus"` 不是契约写的 exit 2 + JSON，而是 exit 1 + 197 行 traceback，stdout 为空；MCP 那头只挑 loc/msg/type，所以从没响过。② `_load_payload`：缺文件、非 UTF-8 裸 traceback；BOM 只有 stdin 收，`--input` 拒——而 `--input` 正是 SKILL.md 指给 Windows PowerShell 5.1 的路，那个 shell 的 `Out-File -Encoding utf8` 就写 BOM。③ 归一化只在 MCP 面：`lat: 31.22` 走 `horosa_dispatch` 能跑，走 CLI `dispatch` / `hecan` 报 `dispatch.invalid_payload`。④ CLI 不过 `recovery_for`，`hint` / `next_action` 只有 MCP 面有，§9.2 却写着两条路都走。⑤ 不转文字的名单有三张（`UNLOCALIZED_COMMANDS` / `UNLOCALIZED_TOOLS` / `PROTOCOL_TOOLS`）：`report_template` CLI 不转、MCP 转（§4.5 规定不转），`memory_answer` 反过来。修：stderr 上的 JSON 只由 `_write_refusal` 写（`default=str`），带码的拒绝走 `_emit_refusal`（过 `recovery_for`）；`errors.validation_errors` 去掉 `ctx` / `url`；`_load_payload` 一律按字节读、解 utf-8-sig，读取 / 解码 / JSON / 非对象四种失败都是 `tool.invalid_payload` 的 JSON 拒绝；`DispatchAPI` 的 `_validated`：严格校验不过才归一化重来（第一版在入口全量归一化，471 条前后对拍抓到它改掉了成功命令回显的 `normalized_inputs`：盘不变、字节变，每个技法在 `run_tool` 里本来就会归一化，所以全量归一化换不来任何东西）；名单合成 `PROTOCOL_OPERATIONS`，MCP 名单由它派生，`memory_answer` 改为转文字。守卫 `tests/test_cli_refusals.py`（AST 检查 stderr JSON 只有一个写入点；CLI / MCP 对拍）。负向对照 11 条全红。简体缺省下成功命令的 stdout 逐字节不变：471 条请求前后对拍 0 差异。`knowledge_search` 里那一处 `exc.errors()` 留着：它的模型没有校验器，而且 `_write_refusal` 的 `default=str` 兜得住。
+- **坑 6 · 失败没走到调用方**：① `_electionscan_zone` 把认不出的时区回落 `+08:00`：`tianxing` 带 `zone="New York"` 按东八区搜出整张窗口表，`ok=True`，`input_normalized.zone` 还写着 New York，违反 §5.3 第 9 条。改成 `tool.invalid_zone` 结构化报错，顺带拦住 `abc:def`、`nan`、`inf`（`inf` 原先是 OverflowError）；合法偏移的线上形状逐字不变。`zone` 是 `BirthInput` 必填，`None` 那条分支走不到，没动。② 灵棋经 `except HorosaSkillError: return ""`：`ok=True, warnings=[]`，`day_ganzhi` 为空，「六戊日不宜占卜」的提示静默消失。不印这行是有意的（提示缺失好过按错口径印一行假的），缺的是告诉调用方；后端回了包但没日干支时同样要说。③ 大六壬 `/chart` 失败只记在 `data.prerequisites.chart_error`，`warnings` 那句「缺段原因见 warnings 其余条目」下面什么都没有。④ `report_from_tool` 只查 `memory_ref`，而失败的 run 也会存档，于是接着走到 `report.export_contract_missing`，真正的 `transport.*` / `runtime.*` 码与恢复说明全丢；现在回 `ok:false` + 原错误码。**守卫盲区**：`verify_silent_degrades` 的宽 except 规则只认 `Exception` / `BaseException`，`except HorosaSkillError: return ""` 与它同形却不算数，灵棋经就是这样漏的；规则扩到项目错误基类，基线不变（26），把那段改回去 ratchet 即红。守卫 `tests/test_silent_failures.py`，负向对照 5 条全红。471 条前后对拍 0 差异。
+- **坑 7 · 一个写错的环境变量打死整个 CLI**：`mcp_runner` 模块级 `int(os.environ["HOROSA_MCP_MAX_CONCURRENT_TOOLS"])`，而 `surfaces/cli.py` 顶层 import MCP server：`=abc` 让 `--version`、`--help`、`doctor` 全部 ValueError 退出，连能帮你查环境变量的命令都起不来。改走 `config._env_int`（解析失败回缺省），`0` / 负数仍是 1、空值仍是 4，语义不变。守卫 `tests/test_mcp_env_import.py` 起真子进程：CliRunner 进来时模块早 import 完了，抓不到。负向对照 1 条红。写错的值现在静默回缺省，与 `Settings` 其他数字旗标一致；`doctor` 不报这类值，这一点没动。
+- **法则**：一条跨入口的不变量，守卫要枚举入口，不能点名入口——点名只保护已知的，漏掉的正是没人想到的那个。守卫的判据要看形状，不看异常的名字：吞掉项目错误基类和吞掉 Exception 是同一件事。守卫只测一个面时，另一个面的同一条路径等于没测：同一份请求要在两个面上对拍。抄出来的兜底分支迟早不一样：要么合成一份，要么枚举着测每一份。
+
+### v0.47.2-dev / 2026-11-05 — Windows 面没测过的形状：管道编码、路径闸先 resolve、共享冲突、报告目标开着、择时百年表
+
+- **起因**：v0.47.1 已复验无新发布，这轮不重跑发布清单，专测 Windows 上从没覆盖的形状（静态扫 + 每个可疑点写探针真跑）。**扫过且没问题的**：文件 I/O 与子进程编码全部显式、
+  `tzdata` 已声明、SQLite（WAL + busy_timeout，6 进程 22 815 次写 0 错）、4 进程抢冷启动（3 轮都恰好一对服务、无残锁）、1931 / 1969 / 2040 年全技法无 OSError（`civil_calendar`
+  的 1970 前偏移兜底在年龄计算里两头抵消，无害）。
+- **坑 1 · 管道下的 CLI**：`_print_json` 一直按字节写 UTF-8，但帮助与 stderr 走文本流，管道 / 重定向时是 ANSI 代码页。cp1252 下 60 个命令 55 个 `--help` 抛 UnicodeEncodeError；
+  stderr 的 JSON 错误信封混着 `\uXXXX` 与裸 cp1252 字节，**不是合法 UTF-8**——只有 shell 的 agent 按 SKILL.md 契约读 `code` 时 UnicodeDecodeError，拿不到要问用户的话。
+  修：`_HorosaApp.__call__` 在所有入口把两条流统一成 UTF-8（已是 UTF-8 的不动，控制台不受影响）。CliRunner 换掉了真流，抓不到，守卫起真子进程并用 `PYTHONIOENCODING=cp1252` 三平台复现。
+  这条守卫首推（8df42d0）就在 Linux runner 红、本机与 windows-smoke 绿：Typer 见到 `GITHUB_ACTIONS` 强制终端模式，rich 把 `--input` 拆成 `\x1b[1;36m-\x1b[0m\x1b[1;36m-input`；Windows 上 rich 的旧控制台判定压掉 ANSI，连 `FORCE_COLOR` 也复现不了。第一次的解释「怪 FORCE_COLOR」没被复现证实——把 `rich.console.detect_legacy_windows` 打成 False 才在本机看到同样的字节。测试里断言帮助文字要设 `_TYPER_FORCE_DISABLE_TERMINAL=1`（f9592bf）。
+- **坑 2 · 路径闸先 resolve 再判**：`_report_output_path` 的威胁模型写明「MCP 工具可被提示注入调用」，却先 `candidate.resolve()`。对 UNC 路径这一步就向对方发起 SMB 连接（Windows 缺省允许向远端送
+  NTLM 认证），被拒绝之前凭据已经送出去；实测 `\\192.0.2.1\share\x.pdf` 卡 21 秒才「拒绝」。同一道闸还放行 `NUL`（报告进空设备却报成功）、`x.pdf:stream`（NTFS 备用数据流，文件看不见）、`CON` / `AUX`
+  （建出资源管理器难删的文件），`\\?\GLOBALROOT\…` 与 `a<b>.pdf` 抛裸 OSError。修：`winpaths`（纯字符串、不碰文件系统），Windows 上在 resolve **之前**拦；用户在 `HOROSA_REPORT_OUTPUT_ROOTS`
+  配过的共享照常可写（字符串比对且折叠 `..`）；resolve 的 OSError / ValueError 收成干净拒绝。知识库 id 共用同一份保留名（补 CONIN$ / CONOUT$ / COM¹ 这几个缺口）。
+- **坑 3 · 共享冲突**：Python 的 `open()` 不带 FILE_SHARE_DELETE，有人读着目标时 `os.replace` / `unlink` 抛 PermissionError。10 进程 15 秒写读 runtime-state.json：87% 的写失败、11.5% 的读返回
+  None（调用方当成 runtime 没在跑）、3 个进程 15 秒只完成 2 次加锁更新。后者是 `pid_lock` 的 finally 只接 FileNotFoundError：PermissionError 冒出去、锁留在盘上，持有者活着不可回收，别人等满超时。
+  修：`fsretry`（只重试共享冲突，预算 2 秒）走所有 replace / 状态读 / 放锁，放锁绝不抛。修后同负载 0 错误、0 假空、加锁更新 366 次。注意 `open()` 走 CRT，失败只带 errno 13、**winerror 是 None**（第一版只认 winerror，还剩 2% 假空）。
+- **坑 4 · 报告目标开在阅读器里**：重新生成时上一版开在 Acrobat / Word 里，replace 失败被当「渲染失败」退化成 TXT，整份排好的报告扔掉。修：另存旁边第一个空闲的 `名字 (1).pdf`，结果带
+  `requested_output_path`，旧文件不动。**顺带发现（跨平台）**：`report_render` 把 `degraded_from` / `degrade_reason` 全丢了——退化后仍回 `format: pdf`、「已生成 PDF」和一个 .txt 路径，正是注释说绝不能发生的静默降级。现在格式、摘要、字段都如实。
+- **坑 5 · 择时性能**：探针发现 1969 年的太乙择时超时，以为是 Windows 日期问题，换单独跑 + 拉长超时才发现没有 1970 断崖（2000 年 45 秒、1971 年 57 秒、1931 年 60 秒、1800 年 25 秒），只是撞 60 秒墙钟。
+  CPU profile：90% 在 lunar.js、63% 在 `eLon`；每扫一小时 `calcTaiyi → buildBaziCore → buildSmallDirection` 逐年排约百年流年表，而库只缓存**一个** LunarYear、构造一次重算 31 个节气。
+  窗口上限 92 天却连 9 天都撑不到。**第一版 LRU 容量 32，实测一点没快**：顺序横扫百年、容量小于横扫长度时每条都在用到之前被挤掉，命中率恒为 0；看 profile 的调用链才定位。容量改 1024：一周 30 秒 → 4.8 秒，92 天窗口 53–60 秒内跑完。
+  库内都走 `LunarYear.fromYear` 这个公开属性，所以不改库、不改 vendored 上游。**等价性**：全部技法 × 3 个年代共 320 条真实引擎请求，修前（干净 origin/main）修后重放，stdout 逐字节相同，总引擎耗时 386 → 204 秒。
+  三式合一 92 天仍贴着墙钟，`js_engine.timeout` 的恢复说明改成「拆短窗口或调大 HOROSA_JS_ENGINE_TIMEOUT_SECONDS」——此前落到前缀规则，把超时说成「确认已安装 runtime」。
+- **守卫**：`tests/test_cli_stdio_encoding.py`、`tests/test_winpaths.py`（闸必须在任何 resolve 之前）、`tests/test_fsretry.py`（真多进程撞状态文件；src 里禁裸 `os.replace`；目标被占 / 退化如实回报）、
+  `tests/test_lunar_year_cache.py`（按真实横扫长度断言命中，不比耗时）、`tests/test_js_client.py`。负向对照 13 条全红；其中「存档记真实格式」第一次没红，查出测试没断言它，已补。
+- **法则**：威胁模型写「可被注入调用」的闸，字符串判断必须在第一次文件系统访问之前——resolve 不是纯函数。Windows 上别的进程开着文件是常态，不是异常；多个会话共写的文件一律走 `fsretry`。
+  降级信息只有传到调用方才算没静默。给缓存定容量要看访问模式：顺序横扫下容量小于横扫长度等于没有缓存，「加了缓存」要靠 profile 验证，不是靠读代码。
+
+### v0.47.2-dev / 2026-11-06 — 知识检索：缺的不是向量，是词法基本功；没有评测就看不见
+
+- **现象（审计实测）**：
+  - 内置检索查不到系统自己的术语：`ASTRO_LABELS` 40 个标签 read 全认，search 有 18 个搜不到（`福点` 就印在输出里）；`太阳` 第一名是「太阳弧 · 校时」；小写键 52 个中 49 个搜不到。
+  - 问句和连写词零命中：全库 318 个条目用「X 是什么」去搜，hit@5 只有 0.016。
+  - 用户笔记：三字以上的中文词一律 0 分。`伤官见官 月令` 里只提一次月令的笔记排在专论前面。这正是 v0.45.0 说修好了的症状。
+  - 奇门条目 31% 的「正文」是 `text` / `blank` 块类型标记；72 条手册带 JSX 残留，5 条带 `const groups = [...]`。
+  - 坏索引：随机损坏 8 页，180 次检索 83 次抛异常，内置结果一起没了。`total_matched` 135 只翻得到 40。
+- **根因**：两条管线各写一套打分（四个打分器、两份 RRF、两份引用），同一概念行为不同；`terms` 把双字序列拼起来当子串数；检索语料自己递归取字符串，和 read 返回的文本是两回事；从来没有检索评测（唯一一条 bench 只测精确键读），所以这些问题一直看不见。
+- **修**：见 AGENTS §4.3 这一节。关键决定：
+  - 先建评测再改。dev 集是审计看着失败写的，用来调之后必然偏高，所以另写 heldout（78 条，写的时候没看过任何结果）和全库自检索（不靠人挑）。
+  - 内置语料直接调 read：一致性由构造保证，不靠两份代码同步。
+  - 手册键不改（`Suzhan`），中文名作为 `label` 另收：键是对外契约。
+  - 不把向量扩到内置：查询时还是要 128 MB 依赖，帮不到默认用户；词法修好之后 hit@5 已到 0.92。
+- **结果**：
+
+| 集合 | hit@1 改前 | hit@1 改后 | hit@5 改前 | hit@5 改后 |
+| --- | --- | --- | --- | --- |
+| dev（74，调参用，偏乐观） | 0.378 | 0.919 | 0.473 | 0.986 |
+| heldout（78） | 0.474 | 0.821 | 0.526 | 0.923 |
+| 自检索·问句模板（改前 318 条 / 改后 365 条） | 约 0.01 | 0.79 | 0.016 | 0.88 |
+
+  自检索条数不同：收了 `label` 之后 47 条手册才有中文名。唯一名字的 hit@1 是 0.945；总体 0.79 被「总览」这类 27 本手册共用的名字拉低，那些查询没有唯一答案。
+- **第二轮（同日）**：第一批 heldout 跑完时看到了未命中清单，这批就不再算 heldout，改名 `seen_2026_11_06` 当 dev 用，另写一批新的（49 条，偏难：复合词 + 问句）。改之前基线 0.673 / 0.857，改之后 **0.714 / 0.918**，复合词 hit@5 0.778 → 0.889。
+  诊断：「斗数的四化」被当成一个词（虚词进了词中间）；`调候` 语料写「调侯」；`紫微流派` 只有 1 条碰巧命中，零命中才改写太严；`塔罗怎么读牌` 没用上问句外壳这个强信号；「六爻起卦」的「六爻」是在指定手册，排序没用上。
+  `财多身弱`、`官杀混杂` 故意没修：语料里真没有这些词，返回空是对的。
+- **评测纪律上出过的事**：调试时查了 `四分相`，它在第一批 heldout 里，这条算被看过；排除后 0.818 / 0.922，差别很小，如实记下。
+- **已知限制**：`明天吃什么` 这种闲聊会漏过改写（`什么` 不在问句词表里，切出 `明天 什么`，58 条命中）。检索已冻结跑完 heldout，没为它再改。不是知识查询，影响小。
+- **测试本身的坑（负向对照抓到的）**：
+  - `test_no_match_returns_empty_not_error` 红了，错的是实现：零命中改写第一版把「斯芬克斯之谜语无此词」拆出 13 条噪音。加了覆盖率这条线。
+  - 翻页测试用 `while offset is not None`：变异 `depth = 20` 后 `next_offset` 永不结束，pytest 挂了 26 分钟。守卫要红，不能挂 → 循环加上限。
+  - 两条守卫是假的（负向对照 NOT CAUGHT）：精确命中置顶的测试走不到置顶逻辑（RRF 同分时内置本来就在前）；读路径隔离的测试断言 `engine`，而回退到子串时 engine 还写着 fts5-bm25。后者顺带抓出一个诚实性 bug：`engine` 报的是配置状态，不是这次实际用的。
+  - 一轮负向对照全部 "caught" 却不算数：基线本身是红的（测试用了语料里没有的词），`-x` 在第一条就停了，所有变异都被同一条失败「抓住」。**负向对照要先证明基线全绿**，并看被哪条抓住。
+- **没验**：Windows；真模型下的向量召回只在 `setup --vectors` 的端到端里验过一条；用户笔记这边没有评测集（只有行为测试）。
+
+### v0.47.2-dev / 2026-11-06 — `[vectors]` 装在哪个环境才算数：setup 的进程不是 server 的进程
+
+- **现象**：v0.45.1 起文档写「装 `horosa-skill[vectors]`，再跑 `knowledge index --vectors`」。用户照做后 MCP 里的检索仍是 `fts5-bm25`，不报错、没有任何提示。
+  而且 PyPI 没开通，`status.how_to_enable` 里的 `uv tool install 'horosa-skill[vectors]'` 根本跑不通。
+- **根因**：server 跑在客户端配置里那条启动命令的环境里（uvx 的工具环境 / `uv run` 的 venv），和用户敲命令的环境是两个东西。启动器不带 extra，依赖就进不去；缺依赖按设计静默退回 BM25，于是这个失败永远不可见。
+- **修**：`setup --vectors/--no-vectors`，新增 `vectors` 步（放在 `config` 之前）。
+  1. 启动器带 extra：`uv run --extra vectors` / `uvx --from 'horosa-skill[vectors]@<URL>'`。
+  2. 用客户端那条命令把 `serve` 换成 `knowledge index --vectors` 真跑一遍。**先验证再写配置**：配置写上 `[vectors]` 而依赖装不上，server 就起不来，比没有向量糟得多。
+  3. `stdio_probe` 读 `horosa://runtime/status` 的 `knowledge_vectors.ready`：准备步骤跑在全环境里，客户端给 server 的环境可能更窄。
+  4. 三态：没给参数时模型在就沿用。升级靠重跑 setup，丢开关的话搜索质量悄悄变差，这正是这次要消灭的那种失败。
+- **顺带抓到的**：
+  - `audit._audit_client_entry` 用 `"://" not in source` 判本地 wheel，`file://` 形式会让 `wheel_cache_missing` 静默跳过 → 读 `--from` 一律先过 `_launcher_source`。
+  - 未加引号的 `horosa-skill[vectors]@…` 粘进 zsh 是 `no matches found` → `_quote_cli_arg` 引方括号。
+  - `deps_available` 只接 `ImportError`：Windows 上原生库载不进来可能是 `OSError`，会把 server 带崩。
+  - 模型下载没有镜像开关，连不上 Hugging Face 的机器走不通 → 认 `HF_ENDPOINT`，官方垫底，sha256 把关。
+- **测试本身的坑**：`test_a_lying_mirror_cannot_land_a_file` 在实现前就是绿的（旧代码不看 `HF_ENDPOINT`，直接走官方地址），属于「因为错误的原因通过」→ 加断言确认镜像确实被试过。
+  第一版真机负向也测错了：脚本把 `UV_OFFLINE` 设成空串，`uvx` 在 `setup` 启动前就报错退出，「配置字节没变」等于没测。改成 `setup` 正常跑、只让它派生的子进程失败。
+- **真机验证（2026-11-06，macOS arm64，uv 0.10.7，隔离 HOME / 缓存，真模型，真 stdio MCP 客户端）**：查询「日主衰弱钱守不住」对笔记「财多身弱，富屋贫人」没有一个双字相同。
+  `setup --vectors` 后经配置里的命令 `engine=fts5-bm25+vectors`、命中；`--no-vectors` 后 `engine=fts5-bm25`、0 命中。uv 启动器 ready=True。
+  负向：离线空缓存 → `failure=deps`；Hugging Face 不通 → `failure=download`；两次配置都逐字节不变，`--no-vectors` 重试成功。
+  **没验**：Windows 的 file URI 只有单测（`PureWindowsPath`），没在真 Windows 上跑过；`.mcpb` 不带这些依赖（manifest 的启动命令是固定的）。
+- **法则**：可选能力「缺了就静默退回」时，开启路径必须端到端验证到**真正使用它的那个进程**；否则退回逻辑会把开启失败藏起来。
+
+### v0.47.2-dev / 2026-11-04 — 上游 v3.13.2 再同步：结果不变的版本也要走全流程，公开克隆的三个坑
+
+- **上游这版**：`10fb75de` 只修桌面端软件内更新后第一次启动的就绪门（`backendBootGate.js`，skill 没 vendor 也没引用）+ 版本号（`RuntimeWire.java` 的
+  `RUNTIME_VERSION`，skill 没人读）。注意 `453d39be` 不是 `10fb75de` 的祖先：上游把它压进了发布提交；pin `06f25f21` 仍在 main 上，历史没改写。
+- **踩到（浅克隆）**：用 `git clone --depth 3` 跑知识重生，`bazi_pithy.json` 的 `generated_at` 从 2026-02-22 变成 2026-10-29——这个字段取**该文件**的最后一次提交，
+  浅克隆里 `git log -- 文件` 停在历史边界。脚本不报错、其余 56 处戳都对，只有逐行看 diff 才发现。其余 26 个知识包取 HEAD 提交时间，不受影响。
+  修：`gen_bazi_pithy_pack.py` 遇浅克隆直接拒绝。守卫 `tests/test_gen_bazi_pithy_pack.py`（先红后绿：未加检查时浅克隆那条测试红）。
+- **公开克隆另外两个缺口**：`dist-file` 被上游 gitignore（`sync_vendored_runtime_sources.sh` 报缺），`--scan` 要上游 `node_modules/@babel/parser`。
+  规则：本地上游 HEAD == 公开远端、vendored 子树干净时，同步和 `--scan` 直接用本地上游（只读）；公开克隆只用于门禁，且不能浅。写进了 OPERATIONS Runbook。
+- **「0 hit」要对照**：端口审计本区间 0 hit，先拿上一区间跑同一条命令确认扫描器真在工作（132 hit）。对照里另外冒出 4 条 unreviewed（`XuanShiCelestial` / `XuanShiEvents`
+  名字 + 文件各一）：都是 v0.47.1 的 `a918290` 才首次引用（`git log -S` 确认），晚于那个区间的审计，不是漏审。台账结论按区间，本区间 `reviewed` 清空。
+- **怎么确认「结果不变」**：知识包 diff 去掉戳行后 0 行；`revendor --check` 0 待办；jar 内 `RuntimeWire` 确为 `3.13.2-runtime1`（确认是新构建）。
+
+### v0.47.2-dev / 2026-11-04 — 合法的 HOROSA_* 变量也报「未知环境变量」：注册表只收 skill 自己读的，漏了测试开关与引擎旋钮
+
+- **现象**：v0.47.1 Windows 原生复验时按用户同意装了 veraPDF 1.30.3（官方安装包、GPG 校验），把 `HOROSA_VERAPDF` 设成用户级环境变量，
+  好让门禁 / lane 都带上 PDF/UA-1 全量校验（`test_verapdf_says_pdf_ua_1` 在 Windows 首次跑并通过；10 份真报告 PDF 全部 `PASS ua1`）。
+  随即 skill 每次启动多报一行「未知环境变量 HOROSA_VERAPDF（拼写有误？…）」。同一台机器上 `HOROSA_JAVA_HOME` 早就在这么报，被当成噪音放过。
+- **根因**：`config.ENV_FLAG_REGISTRY` 只登记了 skill 进程会读的变量；测试开关（`HOROSA_VERAPDF`）、启动器交给上游 Java / chart 进程的引擎旋钮
+  （`HOROSA_EPHE_PATH_FASTPATH` / `HOROSA_DESKTOP_MONGO_*` / `HOROSA_MONGO_FALLBACK_DIR` / `HOROSA_ENABLE_STARTUP_*`）、星阙桌面端 Windows 构建脚本
+  （`Prepare_Runtime_Windows.ps1`）读的 `HOROSA_JAVA_HOME` 都在维护机或用户 shell 里合法存在。没有任何守卫要求「树里出现的名字都登记」。
+- **修**：上述 8 个登记为 `internal`；新增 `tests/test_config.py::test_every_horosa_name_in_the_tree_is_registered`（扫 src / tests / scripts 的
+  `HOROSA_*`，不在注册表、REMOVED、`_NOT_ENV_FLAGS` 里即红；`_NOT_ENV_FLAGS` 收模块属性 / 客户端占位符 / 故意拼错的负向对照，每条带理由，
+  名字从树里消失也红）与 `test_maintainer_and_desktop_variables_do_not_warn`。负向对照：从注册表删掉 `HOROSA_VERAPDF` → 两条红。
+- **法则**：「未知环境变量」告警的价值在于抓拼写错误，误报一多它就成了噪音、真错也被放过。加任何 `HOROSA_*` 名字（哪怕只在测试或启动器里）同一提交登记。
+
+### v0.47.1-dev / 2026-11-03 — v0.47.0 收尾：按行切的 span 漏多行值、两个上游日期解析器口径不同、上游 norm* 静默丢值
+
+**背景**：v0.47.0（星阙 v3.13.1）发版同时把同步报告里列为「未做」的几项补完（两路 agent，独立 worktree，不碰正在打包的 main）。
+
+1. **繁体古籍档漏多行原文**。v0.47.0 的 `classic_spans` 只认「原文：」那一行；玄史 2 209 条事件的 `original_text` 是多行的，
+   续行在 zh-Hant 里仍被转成 範 / 裡。→ span 延到下一个字段标签 / 段头 / 列表编号行；守卫对**整库 33 117 条记录**断言 span 恰等于原文
+   （手挑样例抓不到）。
+2. **两个上游日期解析器不同口径**。`parseLocalDateTimeMs` 把纯日期当本地 0 点，`Date.parse` / `parseDateTimeMs` 当 UTC 0 点；strptime
+   移植在 24:00、T 分隔、秒、时区尾巴上都会漂。「盘主当前年龄」改为逐式移植 `birthInstantMsInZone`，node 里跑上游
+   `buildCurrentMomentLines` 冻结时钟对拍 30 种出生串 × 7 个时区（`tests/test_sync3131_followups.py`）。`_local_offset_ms_at` 遇 24:00
+   曾抛错回落成「此刻偏移」，一并修。
+3. **上游 norm* 静默丢非法值**（七政 `normAspectOrbs` / `normHiddenList`）：照抄会让用户以为设置生效了。skill 侧报
+   `tool.guolao_invalid_display_setting`（与既有 `_GUOLAO_DISPLAY_KEYS` 同策略），这是有意偏离。
+4. **宿占死键整表**：上游 `SUZHAN_DEAD_CLASSICAL_KEYS` 41 键照收不下发、技法卡不回显；live 实测下发与否快照 sha 相同。
+5. **过期行号**：791 处 `File.js:a-b` 引用里 216 处名字已不在所引行；按「名字恰在所引行的上游版本」做 diff 映射，严格改 127 处，
+   89 处无法机判留清单（不做 CI 守卫：引用与符号的对应是启发式）。
+
+### v0.47.0-dev / 2026-11-03 — 上游 v3.13.1 再同步：审计看名字看不到文件、奇门种子从来没日柱、公元前目标日被拒
+
+**背景**：星阙 v3.13.1（06f25f21，314 文件）公开后再全面同步一轮，此前各轮修复一并复核。五个域并行（八字紫微历 / 七政 / 星运 /
+西占本命古典 / 卜类三式神数繁体），每域逐函数比对 965af0f4..06f25f21。
+
+**症状 → 根因 → 守卫**
+
+1. **冬至日柱订正，名字级审计零信号**。上游改在 `utils/preciseCalcBridge.js` 的内部函数 `fillJieqiDayGanzhiFromLocal`；
+   `tools/qimen.js` 的注释只提文件名和没改的 `fetchPreciseJieqiSeed`。`audit_upstream_ports.py --scan` 只认「改了的顶层名字被 skill
+   提到」，47 条命中里没有它。→ 扫描加**文件级命中**：`Horosa-Web/` 下（前端 / Python 后端 / Java / flatlib）两 pin 间改过、文件名
+   （或 ≥8 字驼峰主名）被 skill 引用的文件，键 `file:<路径>`，同样要结论（本区间 +63 条；负向对照：去掉合并那行 → 110 → 47）。
+   `tests/test_upstream_port_audit.py` 钉匹配规则（短而泛的主名如 timing 不算）。
+2. **追下去发现更大的存量缺陷**：chart 服务 Python `/jieqi/year` 从不回日柱，qimen.js 也从不补 → 种子 `dayGanzhi` 全空，飞盘 / 混合 /
+   日家 / 金函 / 刻家（置闰 / 无闰 / 茅山）回落甲子 / 旧锚，局数大面积错（2024-12-15 日家 阴遁九局 应六局；2024-03-01 飞盘无闰
+   阳遁九局雨水 应一局惊蛰）。测试一直绿：喂的是自带日柱的假种子。→ 逐行移植 `fillJieqiDayGanzhiFromLocal`（含 v3.13.1 按交节当天
+   取日柱），live 录的种子 fixture（`tests/fixtures/sync3131_jieqi_live.json`）+ 整盘对拍 Java 种子；三式合一同修。
+3. **公元前目标日被拒**。`PredictiveRunners._astroextra_date`（prog / 推运图族 targetDate、星历区间）四位年正则 + `datetime()`；区间
+   先后用字符串比。→ 民用历校验 / 输出 / JDN 比较（`tests/test_sync3131_civil_dates.py`，两处负向对照实跑）。
+4. **节的含义变了，兜底还在**。七政 [相位] 改为七政相位（會衝刑合半合、出厂容许度、入离按同口径日速，赤仪取赤经日速、raspeed=0
+   回落 lonspeed）；旧 Python 兜底读后端通用占星相位，JS 一失败就印出上游已判错的定义 → 删兜底、失败为「无」。黄道盘的默认显示
+   坐标走不到赤经速度分支，测试必须用赤仪盘。
+5. **口径行「因为错误的原因通过」**。`sunriseMode` 进 [起盘信息] 古典口径行：`_CLS_CALIBRE_HEAD_DEFAULTS` 和
+   `classical_backend_overrides` 尾巴都会产出同一句，删其一输出不变 → 只有逐键对上游源的守卫能抓。
+6. **半接线**。八字择时页的 southMonth / minggongMethod（v3.13.0 起）只到扫描或只到展示盘之一；本版加 tianyiSchool 时一并补成
+   双向（顶层 + options 双读、扫描回传 page_options）。教训：上游给择日宿主加页键表时，扫描合并与展示回写两头都查。
+7. **读发布说明要对准改动所在层**。「八字晚子时与时间算法改了四柱真跟着变」是上游 UI 重取时漏了覆盖层，skill 没有这层、三键本就直传
+   → 无需移植，只加「开关真改四柱」的守卫。
+8. **工作方式坑**：(a) zsh 不拆 `$VAR`，`E="env …"; $E uv run …` 没跑测试（一次负向对照白做，改 export 重跑）；(b) 负向对照的回退写成
+   `replace(new, old)` 且 new 为空时会把 old 插到文件头（弄坏过 char rules，当场修复）；(c) live 探针不带 env 直接 `Settings(...)`
+   会用已安装 runtime 的旧 JS，要钉 `HOROSA_CORE_JS_ROOT`；(d) 并行 agent 跑测试撞上别人正写 vendored JS，`js_engine.execution_failed`
+   一大片，几秒后重跑全绿——合并期见到先重跑再查。
+
+**新设置（随上游）**：`sunriseMode`（BirthInput，center 缺省 / apparent，只在 apparent 下发；宿占为死键不发不显）、`draconicHouses`
+（whole / shift）、`tianyiSchool`（xieji / ziping）、日子馆 `persons[].zone`；繁体古籍档（玄史「原文」区段 范 / 里 保留原字）。
+**未移植（明确）**：上游 AI 分析「决策层（TypeSafe System One，实验、缺省关）」——那是上游自带聊天界面接第三方服务，skill 本身就是
+AI 客户端的工具层；宿占其余上游死键（westNodeType 等）仍随 BirthInput 下发、对宿盘无影响，留作后续。
+
+### v0.46.2-dev / 2026-10-31 — Windows 跨进程追加：CRT 的 O_APPEND 是模拟的，换只申请 FILE_APPEND_DATA 的原生句柄（`appendlog`）
+
+- **起因**：v0.46.1 Windows 原生复验（`--check` [OK]、门禁 25/25、release lane 12/12 / live 2449 passed）后逐条看 live 的 49 个 skip，
+  其余都是「需要上游 checkout」类，唯独 `test_concurrent_processes_never_corrupt_the_trace_file` 写着「Windows 的 O_APPEND 由 CRT 模拟，
+  跨进程追加本就不原子」——v0.43.0 起被当成边界「如实承认」，没有修。
+- **影响**：同一天的 trace `.jsonl` 和决策台账 `jev_events.jsonl` 由每个挂着 horosa 的 MCP 会话（Claude Code / Cursor / Codex …）各自追加。
+  Windows 上 `os.open(O_APPEND)` / `open(path, "a")` 的句柄拿的是普通写权限，CRT 每次写前自己 seek 到末尾，两步之间别的进程插进来就互相盖：
+  本机 8 进程 × 200 行每轮只剩 1215–1245 / 1600 行能解析（记录凭空消失、或两条拼成一行）。`memory show` / `trace` 读到的就是缺了的历史。
+- **根因 / 修**：内核本身有原子追加——句柄**只**申请 `FILE_APPEND_DATA`（不带 `FILE_WRITE_DATA`）时，NtWriteFile 忽略偏移、写在当前文件末尾
+  （learn.microsoft.com NtWriteFile 的 ByteOffset 段；Rust `OpenOptions::append` 在 Windows 上就这么开）。新增 `horosa_skill/appendlog.py`：
+  Windows 用 `CreateFileW(FILE_APPEND_DATA | SYNCHRONIZE, 共享读写删)` + 单次 `WriteFile` 交整行（短写按错误处理、绝不续写半行），POSIX 仍是
+  O_APPEND。trace 与决策台账都走它；台账顺带不再在 Windows 上写 CRLF。同机同负载 1600 / 1600，16 进程 × 80–240 KB 行 960 / 960。
+  不需要跨进程锁，进程内的锁保留（保同进程行序）。
+- **守卫**：`tests/test_appendlog.py`（8 进程 × 150 行全部完整、建文件且保留旧内容、目录不存在报 OSError、台账写 LF 并能 tail；
+  `test_crt_append_really_loses_lines_on_windows` 是负向对照：同负载下旧写法本机确实丢行，证明守卫不是因为负载轻才绿）；
+  `test_runtime_lifecycle.py::test_concurrent_processes_never_corrupt_the_trace_file` 取消 Windows 跳过。负向对照：去掉 Windows 分支 → 两条并发用例红。
+- **法则**：「如实承认的边界」也要定期复查——当时的结论是「为尽力而为的记录器上跨进程锁不划算」，但正确的修法根本不需要锁。
+  Windows 上任何多进程共写的追加文件一律走 `appendlog.append_line`，别用 `open(path, "a")`。
+
+### v0.46.1 / 2026-10-31 — 编辑发布说明触发的 completeness 必然误报（检出的是 tag 不是 main）
+
+- **现象**：补写 v0.46.0 发布说明后，`release`（edited）事件触发的 release-completeness（41144995786）红：
+  「server.json mcpb fileSha256 (adc7d973…) != sha256 of the published horosa-skill-0.46.0.mcpb (92b4148f…)」。
+- **根因**：`release` 事件下 `actions/checkout` 默认检出 **tag 的提交**；mcpb sha 的回填提交按流程总在打 tag 之后才落 main，
+  所以 tag 上的 server.json 永远是上一版的 sha。schedule / dispatch 检出 main 才对得上——编辑任何一个 release 都会误报。
+- **修**：checkout 固定 `ref: ${{ github.event.repository.default_branch }}`（该检查本意就是「main 上的 server.json」）。
+- **守卫**：`tests/test_release_pipeline_shape.py::test_completeness_checks_mains_server_json_even_on_release_events`
+  （负向对照：去掉 ref → 红）。
+
+### v0.46.1-dev / 2026-10-30 — 发布后 surface_audit：八字结果走 streamable HTTP 整条失败（SSE 单事件 > 1 MiB）
+
+- **现象**：v0.46.0 公开后对 vendored 实例跑 `surface_audit.py`，HTTP 阶段 `horosa_cn_bazi_birth` 报
+  「SSE stream failed: Server-sent event exceeded the 1048576 byte limit」。stdio / 进程内面全绿。
+- **根因**：官方 MCP SDK（mcp 2.x）客户端对 streamable HTTP 的单条 SSE 事件设 1 MiB 上限；八字原始盘
+  `data.bazi.smallDirection` + `direction`（整生流年 / 大运明细）约 0.8 MB，转成 text 内容块后 2.25 MB、线上 2.48 MB。v0.45.1 起
+  （SDK 2.3）即如此——八字信封大小新旧两版逐字节相同，不是这轮同步引入的；之前的 HTTP 验收没有调到大结果的工具。
+- **修**：`HorosaMCPServer.call_tool` 转换后量线上字节，超 `MCP_RESULT_WIRE_BUDGET`（900 000 B）时从 `data` 里最大的原始子树
+  （二级优先）起逐个换成说明占位，直到放得下；快照 / 导出段 / 技法依据卡等给 AI 读的部分不动，warnings 写明略去了哪些，
+  占位里给出 `horosa-skill memory show <run_id>`（本机存档为全量）。预算内的结果逐字节不变。八字线上 2.48 MB → 约 106 KB。
+- **守卫**：`tests/test_mcp_result_budget.py`（进程内真 MCP 客户端：八字线上 ≤ 预算 < 1 MiB、AI 读的部分逐字相同、小结果不变；
+  负向对照：去掉预算分支 → 2 480 848 B，红）；surface_audit HTTP 阶段 4/4。
+- **规则**：传输层也有上限——加大结果的工具或字段时，用进程内 MCP 客户端量线上字节，不只看 service 信封。
+- **发 v0.46.1 前又撞出一处守卫盲区**：做四技法时 `vendor/runtime-source` 被同步到上游本地未推送的 HEAD；只恢复了
+  `verify_upstream_sync` 报出的 4 个 astropy 文件后它就绿了，可 vendored 的 `aiExport/` 目录（presets 等 6 个文件，多出四个技法键）
+  仍是未推送版本——v0.46.0 给同步脚本加了这棵树的整棵 rsync，守卫的 `SENTINEL_TREES` 没跟上，是导出段基线检查间接撞出来的。
+  修：`SENTINEL_TREES` 加 `astrostudyui/src/utils/aiExport`（整棵比对；1328 → 1340 个文件，负向对照：改一个 presets.js → 红）。
+  规则：sync 脚本每新增一条 rsync，守卫同一提交里加同一棵树。
+### v0.47.0-dev / 2026-10-30 — 推运图族四法（上游未推送的 219d8a67 + 8964bfd5）：tools/list 超顶、`request_fields` 移植要运行期比对
+
+- **现象**：
+  - 上游本地多出三个未推送提交（简报说两个：25eb4c4f 测试分片 + 219d8a67 四法；同步期间又多了 8964bfd5 版式提交，改了
+    `directed_figures.py` 与 `AstroDirectedFigures.js`）。sync 脚本按**工作树**拷，于是拷到的是 HEAD = 8964bfd5；它还把 HEAD sha
+    写进 `contracts/upstream_python_requirements.txt` 首行——一个公开远端上不存在的 sha，而 provenance pin 仍是 965af0f4。
+    （`verify_upstream_sync.py --write-state` 本来就拒写「未推送且碰了输入」的提交——`pin_to_record`，这一层没漏。）
+  - 四个新工具（每个 BirthInput 工具 ≈ 2 KB 广告层）让全量 tools/list 从 259 401 B 冲到 267 149 B，超 256 KB 硬顶 5 KB。
+  - 上游无头路径是「请求型」（`buildDirectedFigureSnapshotText` 自己 fetch），skill 的 JS 层不发 HTTP，于是 Python 必须**手算**
+    `directedFigureRequestFields ∘ directedFigureOptsFromSettings` 的请求体——又一份手抄件。
+  - 路由：`jay` 是 `jayne`（赤纬推运）的前缀；「周日小限」含「小限」会同时点亮 profection；「推运图」字面像「某推运的图」。
+  - 繁体：OpenCC 把「周日小限」「十二年一周」转成「週日小限」「一週」（天球周日运动 ≠ 星期日；一周 = 一圈）。
+  - 截断 vendor `AstroDirectedFigures.js`：孤儿 import 清理只认具名 / namespace 形态，`import React, { Component }`、`moment`、
+    `UpdatingBadge`、`styles.less`、`AstroDoubleChart` 这类**默认导入**全留下 → 必须逐个 `stub_import ""`。
+- **根因**：全量面的硬顶早已只剩 ~2.7 KB（v0.46.0 已 259 401 B）；新技法的「核心字段」里有对它根本不起作用的键（四法后端强制回归黄道，
+  `zodiacal` / `siderealAyanamsa` 只改盘头）。手算请求体的漂移没有任何信号：值错了后端照样算出一张「合理」的盘。
+- **修**：
+  - 广告层：`advertised_technique_schema` 允许模型 `ADVERTISE_HIDDEN` 列域核心键（四法隐藏 zodiacal / siderealAyanamsa，照收、guidance 有说明）；
+    新工具只广告核心 + `targetDate` + 闸门三键；共用尾巴收紧（描述尾行「旋钮/输出段：…」、`request`「另 N 个高级旋钮可顶层按名传」、
+    `ad` 描述、岁差制只举三制、描述 / 自有字段截断 200→150 / 72→64 字）→ 260 223 B（125 工具），硬顶、棘轮容差都没动，`--update-baseline` 记新基线。
+  - 请求体：`tools/progextra.js` 对四法用 vendored 上游 `directedFigureOptsFromSettings` + 合并规则 + `directedFigureRequestFields` 重算
+    `request_fields` 回传，runner 与自己发出的逐键比对，不一致即 `tool.directed_request_mismatch`（不是 ok=true 照返）。
+  - 路由：`_JAY_WORDS` 排除进 profection 规则；「推运图」只在没有更具体命中时归 bezzafigure（与「流年」同一兜底）；语料 +8（119/119）。
+  - 定字表 `周` 白名单 +「周日小限」「十二年一周」（deviations 写明），GOLDEN +1。
+- **守卫**（负向对照均实跑）：
+  - `tests/test_sync313_directed.py`：金标 = **上游源本身**在 node 里跑（上游 `directedFigures.js` 直接 import、`AstroDirectedFigures.js`
+    用上游 @babel 抽三函数、fetch 换成回放实抓回包并记请求体），夹具 `fixtures/sync313_directed_live.json`；vendored 引擎 / Python 请求体 /
+    缺省 / 值域（对上游 `directionPageSettings.js` 的 oneOf、min–max）逐项对。对照：vendored `fmtN(r.arc, 4)`→3 红 4；progextra 去掉
+    合并规则红 4（custom）；缺省 `nerT0` 0.7 红；值域去掉 bezzaOrb 5 红；目标日改本机今日红；runner 不剥页面键红 3；夹具改一字红。
+    运行期比对本身的对照：把移植改坏（orb + 0.5）→ `tool.directed_request_mismatch`。
+  - `tests/test_runtime_python_lock.py::test_requirements_provenance_header_names_the_recorded_upstream_pin`：需求文件首行 sha == 记录的 pin
+    （对照：首行改成 8964bfd5 → 红）。
+  - selfcheck.mjs 一条值级金标（页面键 → 口径键、空串齿轮回落缺省、过点事件 ±10 岁窗）。
+- **再跟 59465ffe（同日，上游又多一个本地版式提交）**：vendored `AstroDirectedFigures.js` 的纯逻辑段没变，只是 import 换了一批 ——
+  `moment` / `UpdatingBadge` 两条 `stub_import` 变成「specifier not found」，新默认导入 `MichonDualRing` 报 UNRESOLVED；删两条、补一条
+  `stub_import ""` 即 `--check` 0 待办（新具名导入 progPageLayout / perfFlags / derivedChartSource 由孤儿清理自动删，stub 审计无残留绑定）。
+  真正的漂移在**手抄件**：`audit_upstream_ports.py --scan --from 8964bfd5 --to 59465ffe` 11 条命中里 10 条只是 React render 改版，
+  唯一的逻辑改动是星历 `ephPos`（入座行只带 toSign + lon → 旧 `fmtDegree` 出「- 30.00°」）。它**零新文案**，
+  `test_every_upstream_builder_literal_is_in_the_port` 恒绿、离线金标也恒绿（金标是旧上游跑的）——只有端口审计看得见。
+  修：`engine/astroextra_snapshots._eph_pos` 移植 + 金标位置列按上游 node 重算（113 格，逐格先断言旧格 == 上游旧 fmtDegree）；
+  守卫 `test_ephemeris_event_positions_equal_upstream_ephpos`（上游 @babel 抽 ephPos 在 node 里跑，夹具全部事件行 + 14 条边界行逐格比；
+  对照：去掉 29.99 夹取 → 红；入座行改回 fmt_degree → 金标两红）。判词草稿（11 条）在会话 scratch，随 pin 前移一并并进台账。
+- **没做 / 遗留**：pin 不能前移（上游提交未公开）：upstream-sync 的技法键 / 运行时漂移与端口审计台账「to-pin」两项按设计红，等上游推送后
+  `verify_upstream_sync.py --require-upstream --write-state` + 端口审计台账前移（判词草稿在会话 scratch）。孤儿 import 清理认默认导入
+  会让 395 份 verbatim 件里别的文件也变（大面积重渲染），这轮只用声明式 stub，没改流水线。
+
+### v0.46.0 / 2026-10-30 — main CI：windows-smoke 两红（argv 过长、time.tzset），本机全绿
+
+- **现象**：同步提交 8ac208c 推上 main，CI 41111578614 的 windows-smoke 红 2 条（2340 过），fail-fast 把 test job 取消：
+  `test_sync313_ports` 把整盘夹具 JSON 塞进 `node -e` 的 argv → `WinError 206`（命令行超长）；`test_sync313_historical` 调了
+  POSIX 专有的 `time.tzset` → AttributeError。
+- **根因**：Windows 命令行总长上限 32 767 字符、`time.tzset` 不存在——两样在 mac / Linux 上都不会响。
+- **修**：夹具改写临时文件、只传路径；tzset 对拍加 `skipif(not hasattr(time, "tzset"))`（mac / Linux lane 覆盖）。
+- **同一天第二红**：修完上面两条后 CI 41115172448 的 test job 在「零安装（wheel）」步被**超时取消**（15 分钟）——所有已跑步骤全绿。
+  v0.45.1 时该 job 已用 14:34 / 15（97%）无人察觉，这轮约 200 条新测试把单元测试推到 12:51。`timeout-minutes` 15 → 25。
+  这正是 v0.45.1 那条「占比 > 90% 就提前加」的规则没人执行：每次发版顺手看一眼 test job 时长 / 预算。
+- **守卫**：`tests/node_esm.esm_argv` 在**所有平台**上拦 > 24 000 字符的 argv（`test_node_argv_size_is_capped_on_every_platform`）；
+  `test_time_tzset_is_guarded_for_windows` 要求调 `time.tzset` 的测试带 `hasattr(time, 'tzset')` 条件（只认条件本身——第一版只查
+  「装饰器文本含 tzset」，`reason` 文案就能让它放行，负向对照没红，已收紧）。
+
+### v0.46.0-dev / 2026-10-30 — 上游 v3.11.3 → v3.13.0 全量同步：vendor 清单全绿，手抄件却十余处过期
+
+- **现象**：vendored 树逐文件对过（revendor `--check` 0 待办、npm test 绿），但 skill 侧**手抄**的上游逻辑大面积静默过期：
+  - Python 常量表 `_INDIA_MOUNT_VARGA_OPTIONS`（16 档里 12 档上游改了标签，D9 婚姻→D9 合作）；写死的缺省（taiyizeri 展示盘
+    `after23NewDay` 0，上游已改读全局缺省 1；七政宿度制缺省 2→0）；照抄的 UI 文案（五兆复现说明、金口诀日柱提示）；
+  - 民用历：上游把 `shiftMoment` / `solveReturnBefore` / 主限命中日差 / 各快照日期改到 1582 前儒略历、公元前无 0 年的
+    civil 轴，skill 的 `strptime` + `timedelta` 移植对历史盘全偏；
+  - **后端把算法挪到前端**：上游删了 `astrostudy/yearsystem129.py`，`/chart` 不再回 `predictives.yearsystem129`，skill 的 Python
+    移植照读旧字段 → ok=true、导出干净地返回「本盘无 129 年系统数据」，离线测试全绿（fakes.py 里还留着旧字段）；
+  - 一直存在、这次才查出的缺口：印度律盘从不发 `tajakaYear`（后端「仅给了才算」）→ 缺省盘 Tajika 各段恒缺席；金口诀贵神昼夜
+    缺省按时支粗判（上游取 /chart 真实地平）；方法说明守卫只看 27 键里的 4 键。
+- **根因**：`vendor_manifest.json` 看守的是**文件**；手抄件是第二份真相，没有任何东西把它连回上游。逐函数比对只做在「我们知道
+  移植了」的地方，而过期恰恰发生在没人记得是移植的地方。
+- **修**：逐域重审（主限法 38 时间键 / 14 投影 / 设置项登记表；预测族 yearsystem129 / agepoint / distributions 改为 vendored 上游 JS
+  出文本；西占 Antivertex / 极区 MC 说明 / 合盘宫制说明 / 德派 [赤纬接触][中点坐标]；印度 [未能计算] + 过运日 / 年度盘年份恒发；
+  金口诀 timeAlg 随时间基准；八字 adjustJieqi 恒 0；导出契约 v60）；civil-calendar 移植对 vendored JS 逐值比对。
+- **守卫**：
+  - `scripts/audit_upstream_ports.py` + `contracts/upstream_port_audit.json`：新旧上游 pin 之间代码变了、且被 skill 文件提到的
+    每个上游顶层名字（Babel 去注释归一后比对，`scripts/upstream_decl_diff.mjs`）都要有结论（no_port / port_unchanged / ported /
+    reviewed），台账审到的 pin 必须 == 记录在案的上游 pin（preflight 硬闸 + `tests/test_upstream_port_audit.py`）。负向对照：
+    删一条结论 → `--scan` 报 UNREVIEWED；台账 to ≠ pin → 红。
+  - 手工件多源看守：`vendor_manifest.json` 的 `also_derived_from {上游路径: sha256}`（印占快照另搬 indiaMain/jyotishData.js +
+    dasha.js、宿占另搬 AstroHelper.js、七政搬 components/guolao/main/*）——只看主源时次源上游再修零信号
+    （`tests/test_vendor_manifest_watch.py`，负向对照：去掉对次源的遍历 → 红）。
+  - Python 手抄常量表对上游逐值看守（`tests/test_sync313_ports_guard.py`）；civil 日期移植对 vendored JS 差分测试
+    （`tests/test_sync313_ports.py`）；方法说明守卫扩到全部键。
+- **规则**：① 能 import vendored 函数就别抄（JS 胶水同理）；② 非移植不可时，给它一条「同输入跑 vendored JS 比值」的差分测试，或在
+  `HOROSA_SOURCE_ROOT` 下定位上游原文的源码锚；③ 同步 diff 里删了后端模块 / predictives 字段 → grep skill 里该字段的每个读者；
+  ④ 重钉上游前跑 `audit_upstream_ports.py --scan`，逐条给结论再改 from/to。
+- **历史盘**：上游 v3.12.0 把命盘日期收口到 civilCalendar / civilMoment / dateStrSafe；skill 手抄的 builder 还在用 `strptime` /
+  `datetime + timedelta` / `[:4]` / `replace("-", "/")`。公元前直接 ValueError 被吞成「无数据」（十年大运整表空、波斯向运日期列空、
+  食盘卡缺席、王位留空），1500 年静默差 1 天；`replace("-", "/")` 把负号换成 '/'，`/chart` 恰好容忍（测不出），
+  `/astroextra/prenatal_syzygy` 拒参。另：decennials 缺省时区上游一直是 +08:00，skill 写成 +00:00 多年未察。新增
+  `src/horosa_skill/civil_calendar.py`（上游三件套逐式移植、零仓内依赖，engine / service 都能 import）；上游 builder 在 node 里跑出
+  夹具、`requires_upstream` 测试重跑防漂移（`tests/test_sync313_historical.py`，负向对照 19 条全红）。
+- **公元前日期串三种写法并存**：`-0500-03-21`（formatSignedDate / Python 规范化）、`-500-03-21`（DateTime.format 与后端农历回包）、
+  `/0500/03/21`（朴素 `replace('-','/')`）。后端 `parse_civil_date` 把 '/' 换回 '-'，碰巧恢复了负号，所以这类 bug 在 live `/chart` 结果
+  里看不出，只在回显字串与 ken / 节气年份里露出（+500 / -50）——测试要拿请求形状对上游自家 builder（DateTime / chartAtMoment），
+  不能只看盘结果（`tests/test_sync313_bc_more.py`）。Intl longOffset 丢 LMT 秒（+01:34:52 → +01:34），偏移格式化要截断不是四舍五入。
+- **附带教训**：
+  - 并行 agent 共用 session scratchpad：同名 `negctl.py` 被覆盖后由另一个 agent 误执行，「整文件备份 → 改 → 写回」可能抹掉别人
+    的并发改动——脚本放各自子目录，负向对照只回退自己那一处编辑；
+  - 无类型字段会撒谎：后端 `pdtype in (0,1,4)` 严格比较，字符串 "4" 静默走旧路径而快照写「场平面」→ schema 给具体类型；
+  - `schema_knob_debt` 基线会因新 vendored 模块**提到**字段名而缩（`kentangCaseSave.js` 里的 orbScale），改基线前先确认真消费者；
+  - 一个用例看不出分支：合盘 snapHsys 在整宫族回退下与请求同值，负向对照不红——要按后端两条回退分支各测一次。
+
+### v0.45.1 / 2026-10-28 — 发版矩阵：windows-11-arm 的 pytest 撞 2700 s 天花板（零失败）
+
+- **现象**：v0.45.1 draft 流水线（40713503527）windows-11-arm lane 红，其余 lane 与 assemble 全绿；草稿资产 `--check` [OK]。
+  lane-report 里安装 / 引擎 / 25 个客户端 / HTTP / 重启全 ok，唯一的问题是 `pytest timed out after 2700 s`，日志停在 ~98%、零个 F。
+- **根因**：这条 lane 在 Windows ARM 上**仿真 x64** 跑整套 live pytest，是最慢也最抖的一条。v0.45.0 时它已经用了 2580 / 2700 s
+  （96%）——发版时没人看余量。v0.45.1 加了几十条测试，同批 windows-latest 反而从 1707 s 降到 1389 s：不是套件变慢，是仿真 lane
+  本来就贴着线。
+- **修**：`verify_runtime_live.py` 加 `EMULATED_PYTEST_EXTRA_SECONDS = 900`，只对 `--expect-emulated` 的 lane 生效（2700 → 3600 s）；
+  其余 lane 的天花板不动，仍是「健康运行的上限」。矩阵 lane 的脚本取自**派发 publish 的那个提交（main）**，不是 tag——所以不用挪 tag、
+  不用重做 draft，直接在 main 上修再派发 publish。
+- **守卫**：`tests/test_verify_runtime_live.py::test_emulated_lane_gets_the_extra_pytest_budget_and_it_fits_the_job`——仿真 lane 拿到加时；
+  并读 `runtime-matrix.yml` 的 `timeout-minutes`，要求加时后的预算仍给其余步骤留 ≥15 分钟（这次其余步骤约 14 分钟）。负向对照：
+  调用处退回 `BUDGET["pytest"]` → 红；加时改成 2000 s（超出 job 超时）→ 红。
+- **规则**：发版后看一眼各 lane 的 pytest 秒数对预算的占比；>90% 就提前加，别等它在发版那天越线。
+
+### v0.45.1-dev / 2026-10-28 — MCP SDK 1.x → 2.3，澄清闸在 2026-07-28 客户端上走 MRTR
+
+- **起因**：v0.45.0「没做」清单里的最后一项：MRTR 需要 SDK 2.x。调研（2.3.0，2026-10-02，Production/Stable）：迁移基本是机械的，
+  新依赖全是纯 Python（mcp-types / httpx2 / opentelemetry-api），编译件与 1.x 相同（win_arm64 照常）；同一服务按
+  `MCP-Protocol-Version` 同时服务 2026-07-28（无会话、`server/discover`）与更早修订（initialize + 会话）。
+- **改了什么**：`HorosaFastMCP` → `HorosaMCPServer(MCPServer)`；构造器全关键字（位置参数里插进了 title / description，位置传的
+  instructions 会变成 serverInfo.title），`version=` 直接给构造器（1.x 要手动改 lowlevel）；host / port / 路径 / transport_security
+  移到 `run()`；`mcp.get_context()` 没了 → `call_tool(name, arguments, context)` 把上下文放进 ContextVar，进度 tick、elicitation、
+  resource_link 的协议版本都从它取；`convert_result` 返回 `CallToolResult | InputRequiredResult`（后者原样放行，不转繁体、不加链接）。
+- **澄清闸三条路**（`_maybe_elicit_gate`）：① 2026-07-28 客户端：返回 `InputRequiredResult`（`horosa_gate` 一张表单 + requestState
+  记问题摘要）——SDK 自己给 requestState 做 AEAD 封装、绑定工具名 + 参数摘要 + TTL，篡改 / 过期回 -32602；重试时我们再核对
+  问题摘要（SDK 不知道问的是什么），对不上记 `stale`。② 更早修订且声明了 elicitation：照旧服务端发起 `ctx.elicit`（带超时）。
+  ③ 都不行：结构化闸门错误（`agent_guidance.required`）。用户在表单里选的仍只写回策略声明过的值。
+- **迁移中踩到的**：
+  - 2.x 模型属性是 snake_case：`.inputSchema` 等直接读会 AttributeError；更隐蔽的是 **`tool.model_dump()` 给出 snake_case 键**——
+    字节预算 / 客户端兼容两道守卫量的就不再是线上形状 → 一律 `model_dump(mode="json", by_alias=True)`。
+  - `ClientSession.read_resource(AnyUrl(...))` 在 2.x 校验失败，setup 的 stdio 探针把异常吞成 `runtime_status=None`（测试抓到了）→ 传字符串。
+  - `streamable_http_client` 只给 `(read, write)`；`create_connected_server_and_client_session` 没了 → `mcp.client.Client(mcp)`
+    （进程内；`mode="legacy"` 强制握手时代，`mode="2026-07-28"` 强制新协议）。
+  - 直接调 `server.call_tool` 的测试拿到的是 `CallToolResult`（不再是内容块列表或 `(content, structured)` 元组）。
+  - 客户端把 MCPError 包在嵌套的 anyio ExceptionGroup 里；门禁按旧目标版本查未定义名，`BaseExceptionGroup` 被报 F821 → 鸭子类型展开。
+  - 宽 except 少了一个（`_progress_tick_for` 不再 try get_context），静默降级棘轮下调到 26。
+- **守卫**：`tests/test_mcp_elicitation.py` 新增 MRTR 单测（新协议返回 input_required 而非推送；重试只在同一张表时采用答案；拒绝记录）
+  与**端到端**（真 SDK 客户端进程内，2026-07-28 与 legacy 各一遍：客户端被问到、答「按星阙默认」后越过闸门；篡改 requestState
+  被 SDK 拒）；全量 MCP 测试（stdio 一致性、HTTP 握手、预算、兼容、文字转换、文件链接）照旧全绿。
+- **没验到**：哪家客户端真的已开 MRTR（调研：Claude Code 二进制里有 MRTR 客户端代码但未确认默认开；Claude Desktop / Codex 未证实）——
+  所以服务端发起与结构化错误两条老路都保留。
+- **教训**：SDK 大版本迁移时，**凡是「拿 SDK 对象量形状」的守卫都要重新确认它量的还是线上形状**；吞异常的探针要有测试看它的输出
+  （这次是 setup 测试断言 `runtime_status` 是 dict 才抓到）。
+
+### v0.45.1-dev / 2026-10-27 — 补齐 v0.45.0 没做的：内置知识检索升级、可选向量检索、带标签的 PDF（PDF/UA-1）
+
+- **起因**：用户「按照你的计划，把之前没做的全都做了」（v0.45.0 收尾时列了：向量检索、MRTR / SDK 2.x、PDF/UA、内置知识库检索升级）。
+  本条记前三项；SDK 2.x + MRTR 另起一条。
+- **内置知识检索**：532 条、约 40 万字，进程内一次归一（`knowledge/store.py::_normalized_entries`）+ BM25（与自备知识库同一套
+  `normalize` / Lucene IDF）。多词查询（「伤官 配印」旧检索一条不中）按词计分；正文分 ×5 封顶 60，key 全等（100）仍排第一。
+  繁体查询一律折简体再查并回报 `query_folded`（旧逻辑只在零命中时重试）。
+- **可选向量检索**（`knowledge/vectors.py`）：调研实测 bge-small-zh-v1.5 int8 ONNX（24 MB，MIT）在 6 条换说法的查询上 5 条排第一，
+  BM25 有一条完全没中；onnxruntime + tokenizers + numpy 三平台都有 cp312 轮子（fastembed 的 py-rust-stemmers 没有 win_arm64，不用）。
+  做成 `horosa-skill[vectors]`，模型只在 `knowledge index --vectors` 时下载：钉 HF 提交号 + 两份文件 sha256，对不上不用；
+  `HOROSA_EMBED_MODEL_DIR` 可指向离线放好的目录；`HOROSA_KNOWLEDGE_VECTORS=0` 关。向量存在索引库 `chunk_vec`，嵌入文本前加
+  「标题 › 标题路径」（Contextual Retrieval 的省钱版）；检索 = BM25 名次与余弦名次 RRF（k=60），**同分按 BM25 名次再按向量名次再按
+  (条目, 块) 定序**——调研里同分靠插入顺序决胜排错过一次；只靠向量进来的候选要余弦 ≥ 0.5。
+- **带标签 PDF**：调研确认开源 reportlab 不打标签（结构树在商业版 rlextra），「画时打标记 + pikepdf 事后建树」能过 veraPDF；
+  但 **pikepdf 10.0–10.13 的 macOS 轮子要 macOS 14、10.14 起要 15**，本仓承诺 macOS 11 起——硬依赖会让老 Mac 装不上。
+  改为在 reportlab 自己的对象模型里写树（`reports/pdf_tagging.py`，无新依赖）：段落 P / H1–H6（不跳级），数据表 TH（Scope）/ TD
+  （格内段落不再自打标签，标记内容不嵌套），版式表与页眉页脚 / 分隔线是 Artifact，盘图是带替代文字的 Figure，链接注释带
+  /StructParent 经 OBJR 进树、/Contents 写「跳到哪」；catalog 写 StructTreeRoot / MarkInfo / Lang / Metadata（XMP 含 pdfuaid:part=1）、
+  DisplayDocTitle；中文字体退回不嵌入的 CID 字体时照样打标签但不声称 PDF/UA。本机 veraPDF 1.30.3：分析报告与排盘报告都 **PASS ua1**。
+- **实现中踩到的**：reportlab 把 Python 的 True 格式化成 `True`（不是合法 PDF）→ 布尔写字节 `b"true"`；页对象的可写键在类属性
+  `__NoDefault__`，按实例覆盖才能加 StructParents / Tabs；页内容流是 ASCII85 套 Flate、`endstream` 前没有换行（测试解析时要照这个解）；
+  字体流里碰巧有「BT」字节（只看纯 ASCII 的流）。
+- **守卫**：`tests/test_knowledge_search.py`（多词查询、精确键压过正文）、`tests/test_user_knowledge_vectors.py`（概念替身：一个双字都不同的
+  换说法查询靠向量找回且纯 BM25 确实找不到；向量随增删同步；同分定序；模型文件被改就不用；真模型那条在有模型时跑）、
+  `tests/test_pdf_tagged.py`（结构树 / 语言 / UA 标识 / 各类标签；**页面上每个绘制运算符都在标记内容里**；`HOROSA_VERAPDF` 时跑 veraPDF）。
+  负向对照：整串当一个词 / 正文分不封顶 / 不融合 / 同分按向量名次 / 不删向量 / 不验 sha / 换回普通 canvas / 页脚不标 Artifact /
+  表格底色不标 Artifact / 去掉 MarkInfo——全红。向量测试要 numpy：dev 依赖组加了 numpy，否则 `importorskip` 让整个文件在 CI 静默跳过
+  （「因为错误的原因通过」的另一种形状：根本没跑）。
+- **顺带抓到的线上问题（click 8.5）**：加 `[vectors]` 重新 `uv lock` 时 click 8.3.2 → 8.5.0（huggingface-hub 也依赖 click，锁是全局一份）。
+  typer 0.24 + click 8.5 下 **`--help` 里位置参数的说明整段消失**——`uvx` 装新环境本来就会拿最新 click，所以已发布版本的用户多半已经
+  碰上，只是 CI 用锁文件里的旧 click 看不见。typer 0.27.3 起正常（它自带 click 副本）→ 依赖下限抬到 `typer>=0.27.3`。连带：两条测试
+  用 `isinstance(command, click.Group)` 遍历命令树，typer 自带 click 后一个也不认，`test_skill_shell_contract` 因此**因为错误的原因通过**
+  （只查到根命令）→ 改鸭子类型（`hasattr(command, "commands")`），负向对照：退回 isinstance 就红。
+- **发版时 CI 才红的一条（2026-10-28，v0.45.1 推送后）**：`test_report_pdf_has_a_structure_tree_language_and_ua_identifier` 硬断言
+  `pdfuaid:part=1`，本机有苹方 / 宋体 TTF 一直绿；CI 的 Ubuntu 没有中文 TTF → 退回 CID 字体 → 代码**正确地**不声称 UA → 测试红。
+  测试把「本机有字体」当成了前提。改成断言「声称 UA ⇔ 嵌了 TrueType（`/FontFile2`）」，另加一条把字体候选清空、强走 CID 那一支的测试
+  （结构树照写、无 pdfuaid）——两支在任何机器上都跑。负向对照：`ua_claim` 恒 True → CID 测试红；恒 False → 本机主测试红。
+  规则：**依赖本机字体 / 系统资源的断言，要么把两支都钉住，要么用条件断言**；本机 25 步全绿不代表 Linux CI 绿。
+- **教训**：加依赖先查**每个**目标平台、**最低系统版本**的轮子（不只查有没有 win_arm64）；能在已有依赖里做的结构性功能（PDF 结构树）
+  优先不加依赖。测试用了可选依赖就把它放进 dev 组，或者让测试不依赖它——不能让守卫在 CI 里悄悄 skip。CI 用锁文件、用户用最新版：
+  锁里的依赖版本落后时，CI 绿不代表用户那边好——重新锁一次常能把线上已有的问题翻出来。
+
+### v0.45.0-dev / 2026-10-27 — 照生产级开源实现重做自备知识库检索、报告骨架与工具面
+
+- **起因**：用户「再次检查 github 看看现在做的最好的类似自定义的知识库（可以直接实际用在生产上的）到底怎么做的，直接借鉴他们的」，
+  随后「所有技法的报告也是同样做，找出最好的结构以及工具调用方法」。此前的自备知识库：整条笔记从开头截到 12k 字，检索是数子串次数，
+  没有分块 / 排序 / 索引。
+- **调研**（五路并行，2026-10-27，读代码不跑代码）：
+  - 本地 Markdown 知识库：tobi/qmd（MIT，分块打分断点、增量同步、query→get 两工具）最值得抄；basicmachines-co/basic-memory（AGPL，
+    FTS5 + 中文单字 / 双字列）；Cherry Studio（AGPL，抄 qmd 分块，trigram + LIKE 回退）；Khoj / Obsidian 插件次之（Smart Connections 许可有竞业条款，不抄）。
+  - 生产 RAG 平台：RAGFlow（中文先切词再全文、引用 `[ID:n]`、检索测试页）、Dify（父子分块）、FastGPT（每块带标题路径、RRF k=60）、
+    MaxKB（jieba + 停用词）；Open WebUI 的 BM25 按空格切，中文几乎无效。Anthropic Contextual Retrieval：块前加上下文，失败率降 35–49%。
+  - 中文全文的实测（本机 uv Python，SQLite 3.50.4）：trigram 查不到两字词；unicode61 把整段汉字当一个词；jieba 把「伤官见官」切错；
+    预切相邻双字 + FTS5 两字四字都中、索引最小。FTS5 `bm25()` 对过半行都有的词 IDF = 1e-6（`fts5_aux.c`）。
+  - 报告：kerykeion / Astrologer-API 把「数据 / 图 / 给 LLM 的上下文」分开、数据层不做解读；STORM 行内 `[1]` 引用 + 能单独读的 lead；
+    Anthropic citations 的 content_block 定位；Word 无障碍要替代文字与重复表头。商业软件（问真 / 文墨天机 / Solar Fire）的版式查不到公开样张。
+  - 工具调用：检索与精读分两个工具（OpenAI search/fetch、qmd、Context7）；`anthropic/alwaysLoad` 常驻核心工具、描述关键词前置；
+    报告用 `resource_link` 返回文件而不是 base64；elicitation 本仓已有（枚举字段 + 只回写策略声明的值），MRTR 要 SDK 2.x，本次不做。
+- **实现中踩到的**：
+  - FTS5 的 bm25() 在小知识库里给常见词 0 分（两块的笔记查「休门」得 0.0，像没命中）→ FTS5 只找候选，分数自算 BM25（Lucene IDF 恒正）。
+  - `sqlite3.executescript` 先隐式 COMMIT：在 `BEGIN IMMEDIATE` 里建表，随后的 COMMIT 报「no transaction is active」→ 逐条 execute。
+  - 挑相关段时把零分块也塞进预算（凑满 12k）→ 只带有分的块（qmd / RAGFlow 都只给命中的），一块都不相关才退回从头取。
+  - 想加 `knowledge_search` 进 `TOOL_DEFINITIONS`：那张表每一项都计入「110 技法」→ 做成第 11 个门面（全量 121、精简 12）。
+  - 报告的 `resource_link` 是 2025-06-18 修订才有的内容块：只给协商到该版本的客户端（与 outputSchema 让工具列表消失同一类风险）。
+  - 门禁抓到的：新参数没写描述（严格客户端拒收整张工具表的那类债，只减不增）→ 补描述；检索门面继承了基类的三个闸门字段 → 不进广告层；
+    协议探测写成宽 except → 收窄到 ValueError；新错误文案不是双语 → `bilingual()`；AGENTS §9.3 超 120 行 → 报告类拆成 §9.3.1。
+    全量 tools/list 现 257 KB，硬上限 256 KiB 的 98%——再加工具前先给长描述瘦身。
+- **「因为错误的原因通过」的守卫（第一版负向对照不红，已改）**：
+  1. 隐私：断言「删掉的句子不在索引文件里」——句子在索引里本来就是空格隔开的双字，原样永远找不到 → 改查「还在的笔记」的双字串（普通 FTS 表会存它）。
+  2. 查询语法：把短语引号去掉也不红——FTS5 运算符只认大写、我们的归一已全转小写，真正挡语法的是切词白名单 → 负向对照改为破坏切词。
+  3. WAL：断言「没有 -wal 文件」——最后一个连接关闭时 SQLite 自己删 -wal，WAL 模式也通过 → 删掉这条断言，不留抓不住东西的守卫。
+  4. 删除：断言「删掉的条目检索不到」——检索先按当前目录过滤，索引不删也检索不到 → 改查索引里该条目的块已删。
+- **守卫**：`tests/test_user_knowledge_index.py`（13 条）、`tests/test_mcp_tool_design.py`（3 条）、`tests/test_report_structure.py`（4 条），
+  每条都做了负向对照（破坏实现 → 红，恢复 → 绿）。旧测试按新行为改：长条目不再「已截断：原文 N 字」而是段落 + 行号；PDF 盘面段标题带段号。
+- **没做 / 留待以后**：向量检索（小模型多为现代汉语、古籍效果差，BM25 对术语足够，真有改写漏查再加 RRF）；MRTR（需 mcp SDK 2.x）；
+  带标签的 PDF（reportlab 不支持 PDF/UA）；内置知识库的检索仍是旧的子串计分（只把它和自备结果做了 RRF 融合）。
+- **教训**：抄「生产上的做法」要抄到数字与边界（分块大小、重叠只在节内、IDF 公式、只给命中段），不只抄名字；第三方组件的默认行为
+  （FTS5 IDF 夹紧、executescript 自动提交、SQLite 关库删 WAL）要用最小实验确认后再写守卫，否则守卫会「因为错误的原因通过」。
+
+### v0.44.2 / 2026-10-27 — 发版期定时 completeness 红：main 已回填新 sha，公开 latest 还是上一版
+
+- **症状**：17:37 UTC 的定时 `release-completeness.yml`（run 40552300999）红：「server.json mcpb fileSha256 (16a2e29d…) != sha256 of the published
+  horosa-skill-0.44.1.mcpb (6eb42903…)」。当时 v0.44.2 还在 draft（publish 流水线在跑矩阵），mcpb sha 回填提交 ba21dd8 已在 main。
+- **根因**：该检查拿 main 上 server.json 的 mcpb sha 与**公开 latest** 的 .mcpb 比。回填提交必须在 draft 构建后、翻公开前推上 main，
+  所以这段窗口里 main 指向新版、latest 仍是旧版，必然不等。与「release 事件读 tag 处 server.json（回填前）」是同类窗口误报。
+- **处置**：翻公开后 publish job 派发的 completeness（40555102494）绿，即为判据；无需修复发布。
+- **未改**：workflow 可以在 server.json 的 `version` 新于 latest 时跳过 sha 比对（只发 `::notice::`），但这会放宽一道发布守卫，等维护者定夺。
+- **教训**：发版期间看到 completeness 红，先看它比对的是哪一版：main 已是新 sha、latest 仍是旧版 → 窗口误报，以翻公开后那次为准。
+
+### v0.44.2 / 2026-10-27 — 发版时几个 `gh run watch` 同盯一条流水线，撞 GitHub 二级限流
+
+- **症状**：v0.44.2 草稿流水线（release-runtime run 40534877176）跑到矩阵时，`gh run view` / `gh release view` / `sync_windows_release.py --check`
+  全部 `HTTP 403: API rate limit exceeded`；`publish_release.sh --dispatch` 末尾的 `gh run watch` 也因此 exit 1。`gh api rate_limit` 显示 core 额度
+  还剩 3377/5000——是二级（并发 / 频率）限流，不是小时额度用尽。流水线本身照常跑，没受影响。
+- **根因**：`gh run watch` 默认每 3 秒刷新一次，每次要读 run 与各 job。脚本自己在 watch，维护者（这次是我）又另开了两个 watch 盯同一条 run，
+  三路各 3 秒、持续 40 分钟以上。
+- **修复**：`publish_release.sh` 的 watch 改 `--interval 60`。
+- **守卫**：`tests/test_release_pipeline_shape.py::test_publish_script_watches_the_pipeline_slowly`（脚本里每条 `gh run watch` 都带 `--interval` 且 ≥ 30）。
+  负向对照：去掉 `--interval 60` → 此测试红；放回 → 绿。
+- **教训**：同一条 run 只留一个 watcher；脚本已在 watch 时，另开的会话 / 终端用 `gh run view` 低频查（≥ 2 分钟）。撞了二级限流就停掉所有轮询，
+  等几分钟再低频查；别加更多重试。
+
+### v0.44.2-dev / 2026-10-26 — 印度律盘选了 D9，[起盘信息] 仍写「当前分盘：命盘 / 分盘：D1」：富化层没把 `chartnum` 交给 vendored 表头 builder
+
+- **症状**：`india_chart` 带 `chartnum: 9`，`data.params.varga` 是 D9、`chart.objects` 与「行星」段都是 D9 位置，唯独「起盘信息」开头两行
+  写「当前分盘：命盘」「分盘：D1」——同一份导出自相矛盾，读盘的人 / AI 会以为看的是本命盘。上一条台账（盘图补齐）已看到这一行，
+  却记成「上游文本口径」放过了。
+- **根因**：两行由 vendored `buildIndiaSchoolHeaderLines(fields, chartnum, hook)`（`horosa-core-js/src/vendor/india/jyotishSnapshot.js`）产出，
+  `tools/indiaJyotish.js` 照传 `params.chartnum`；但 `service/enrich.py::_attach_jyotish_sections` 拼给 JS 的 `params` 只有大运体系 / 流派 /
+  出生时刻 / 口径覆盖，**没有 `chartnum`** → `resolveIndiaFractal(undefined)` 落到兜底 1。上游没有这个问题：Horosa-Public
+  `IndiaChart.js` 页面路径 `buildIndiaSnapshotText(result, fields, params.chartnum, hook)`、无头 `buildIndiaSnapshotForFields` 都传所绘分盘。
+  所以是 skill 的接线缺参，不是上游口径。
+- **修复**：`_attach_jyotish_sections` 把请求的 `chartnum` 一并交给 JS（与上游同取请求值，与 `_attach_india_extra_vargas` 判主盘同口径）。
+  无头路径 hook 为空，标签按上游 `resolveIndiaLabel` 写「9分盘」。
+- **守卫**：`tests/test_sync311_western.py::test_india_school_header_names_the_requested_varga`（chartnum 9 → 「当前分盘：9分盘 / 分盘：D9」且不含
+  「命盘」；缺省仍「命盘 / D1」）。负向对照：修前此测试红（表头「命盘 / D1」，请求体里 chartnum 确为 9）。另：worktree 里没装
+  `horosa-core-js/node_modules` 时 JS 富化整体降级，这条测试也会红——但那是「因为错误的原因红」，先 `npm ci` 再看红因。
+  live：vendored 实例（8877 / 9977）上 chartnum 9 / 1 各跑一次，表头与「行星」段同为 D9 / D1。
+- **教训**：调 vendored builder 时，逐个对照上游调用点的**实参**，不只对函数体——少传一个参数不报错，只会落到 builder 的兜底值（这里是 1 = 命盘）。
+  文本与结构化数据自相矛盾时，先查本仓接线再下「上游口径」的结论；要定性为上游行为，须在 Horosa-Public 找到产生同样输出的调用点。
+
+### v0.44.1-dev / 2026-10-26 — 剩下几种盘图补齐（太乙十六宫 / 七政四余 / 七政择日动盘 / 南印方盘 / 90° 度盘 / 合盘双圈 / 择时盘）；「结果里没有结构化数据」的旧判断是错的
+
+- **起因**：用户「把剩下那几种盘图都做了」。v0.44.0 的完整排盘报告只画西洋轮 / 紫微 / 奇门 / 六壬 / 六爻；太乙、七政、印度、量化盘度盘、
+  合盘双圈、择日各变体都没有图。
+- **查出的问题**：
+  - v0.44.0 收尾时把太乙列进「结果里没有结构化的宫位数组，不凭正文另造盘图」的未做清单——**判断错了**：太乙结果一直带 `pan.palace16`
+    （十六宫每宫神煞，与正文「十六宫标记」同源），三式合一的 `data.taiyi` 也有。当时没 dump 真实结果就下了结论。
+  - 七政四余：引擎起盘信息写「罗计：北计南罗」，而庙旺表、宫位表里的罗 / 计落宫是按 `applyGuolaoNodeMode` 换位后的盘给的；
+    盘图若自己按名字推「北交 = 计」，就会和正文表打架。星座 → 地支 / 星次是固定对照（戌—降娄—白羊座），但星名只能跟着引擎的 id 走。
+  - 印度：盘面要按所选分盘（`params.varga`）画——D9 结果的 `chart.objects` 已是 D9 位置、正文「行星」表也是；但同一份结果的
+    「起盘信息」仍写「分盘：D1」（上游文本口径，未在本批改动）。图题跟 `params.varga.label`，不跟起盘信息那一行。
+  - 择日变体：选中时刻那一盘的完整技法结果在 `data.base`（太乙择日另在 `data.pan`），正文也带着它的各段；七政择日（`qizhengelection`）
+    的 `pan` 是另一种形状（`planets[].lonTropical` + `lifeDeg`）。印度择日 `base` 为空、八字 / 黄历择日 / 天星没有盘面数据——不画。
+  - 自己踩的：宫的 `sign` 在 `chart.houses` 里，不在 `chart.objects` 里（第一版从 objects 找宫，印度 / 七政一张都画不出来——
+    跑真实 dump 才发现，单测的假数据照着同一个误解写就会一起错）。
+- **修复**：`reports/figures.py` 新增 `_taiyi`（上游 TaiyiBoardSvg 五环，午起顺时针）、`_guolao`（地支方盘，星曜·宿，宫次）、
+  `_qizheng_election`、`_india`（南印固定星座格，上游缺省盘式）、`_dial90`（因子集同正文「90°中点盘」，0° 在上逆时针）；合盘改一张双圈
+  （内圈甲方宫位 + 行星，外圈乙方行星；轴线不穿过外圈）；择日结果画 `data.base` 那一刻的盘、标题加「择时盘 时刻」。
+  PDF / DOCX 共用 `figure_drawing` / `figure_notes` / `grid_position` / `DRAWN_KINDS`（新图种不必两处各改一遍）；`layout` 登记为机器键。
+- **图文对照（新通则的落地）**：正文有同一份位置表时逐项比对，对不上整张不画——太乙对「十六宫标记 / 太乙十六宫」、七政对庙旺表的
+  「曜 → 地支」、七政择日对「择日动盘」每行的宫与「命度」、90° 盘对「90°中点盘」的折叠值。
+- **守卫**：`tests/test_report_figures_traditions.py`（10 条）；负向对照 6 条全红：去掉太乙 / 庙旺 / 择日动盘 / 90° 四处对照、
+  双圈轴线改回整根、印度九曜缺一照画——各自的测试都红。真实结果在 vendored 实例（8877 / 9977）上出了 10 份 PDF + 5 份繁体 DOCX 逐张看过。
+- **教训**：「结果里没有 X」之前先 dump 一份真实结果看——未做清单里的理由也要有证据；画图的数据源要和正文同源，能对照就对照。
+
+### v0.43.1-dev / 2026-10-24 — 两份独立评审：完整排盘报告 110 份逐一看（缺字、护栏话外露、机器值、无盘图、版面浪费）；自备知识库数据管理（卸载会删笔记、删错文件、GBK 静默消失、存档留全文）
+
+- **起因**：用户要求把各技法的报告逐个查到「最完美」，并让无关 agent 挑刺；随后又要求知识库的数据管理「万无一失」。做法：
+  用 vendored 实例（8877 / 9977）对 110 个技法的样例载荷各出一份 `style=chart` 报告（PDF + JSON），冻结一份 v0；两个**不知道我判断**
+  的 agent 分别只拿产物（报告）与源码 + 自建实验（知识库）去挑。
+- **报告评审查出（只列本仓渲染 / 组装层负责的）**：
+  - 缺字：主字体缺的符号——埃及历转写 ḥ ṭ、梵文转写 ṇ ṃ、卦符 ䷀、八卦 ☰、行星符 ♃、✓ ✗ ⚠ ⟷——印成方块。根因是补字只从 U+2E80 起算，
+    拉丁扩展永远不补，且补字候选只有 Windows 的扩展 B 字体。
+  - 55 份报告里「本次本地计算结果未返回「X」细项……不能臆造外部依赖……」各占一个标题。这是 `service/_common._missing_detail_text`
+    写给 AI 的护栏话，被原样给了人。
+  - 附录漏机器值：「古典口径 False」「分宫制 1」「性别 True」「姓名 ['111111', …]」「计算引擎 bazi=lunar-local」
+    「Xingque AI export · settings v15 · source aiExport.js」。
+  - 110 份 0 张图（西洋无星盘轮、紫微无十二宫、奇门无九宫、六壬无天地盘）。
+  - 版面浪费：第 2 页只放说明与基本信息就强制分页；附录强制另起一页；几十页「标签：短值」各占一整行；小运 99 行窄表占半页宽、拖 3 页；
+    九列的四柱表把藏干挤成三行。
+  - 行首标点 229 行。reportlab 的禁则表只有半角 , : 。
+  - 标题用了桌面端页签名（「其他页面」）、分组前缀（「推运盘-」）；4 个非排盘工具出了只有封面的「完整排盘报告」。
+- **修复（报告）**：
+  - 补字链：`_PDF_GLYPH_FALLBACK_CANDIDATES` 扩展 B → 符号 / 拉丁扩展（mac：Arial Unicode + Apple Symbols；Win：Segoe UI Symbol + Arial；
+    Linux：DejaVu）。每个字找第一款画得了的字体，阈值降到 0x80。
+  - 占位段在 builder 里 `human_visible: False` + `placeholder: True`，人读版统一进附录「本次未产出」。
+  - 附录设置值经 `_setting_text` 翻成文字（宫制走 `astro_rulers.HOUSE_SYSTEM_LABELS`），去掉引擎名与导出设置版本，「来源」并进技法依据表一行。
+  - 新 `reports/figures.py`：只**取**引擎给的数据（宫头、经度、lonspeed 正负、`aspects.normalAsp`、紫微 houses、奇门 cells、六壬 layout / ke / sanChuan），
+    画星盘轮 / 紫微十二宫 / 奇门九宫 / 六壬天地盘，不手算（铁律 1）。七政、印度、宿占不套西洋轮。
+  - 封面独占一页（基本信息卡 + 报告说明 + 生成日期），目录另起一页；章节标题改左色条 + 细线；连续「键：值」行排成对照表；
+    宽而矮的表转竖排（四柱）；全空列不印；窄长表与长清单分栏排；
+    长小数（误差 0.7548645849180389）人读版四舍五入到 4 位；页脚加起盘时刻；段内小标题进书签第三级。
+  - `_extend_kinsoku` 补全角禁则 + `wordWrap="CJK"`；`_report_technique_name` 改报告标题；`report.no_chart_content` 拒绝无盘面工具。
+  - DOCX 同步（表格整理、长小数、十二宫 / 九宫表格；星盘轮是矢量图，Word 版指向 PDF：reportlab 的 PNG 后端要另装 rlPyCairo）。
+- **知识库评审查出**：
+  - `runtime uninstall --purge-data` 整个删数据目录，连 `knowledge/`（用户唯一的笔记）一起删，提示语却只说删 memory / runs / traces。
+  - GBK / UTF-16 文件、BOM 头、空文件、超大文件、链出去的文件夹都静默不见，点名时告警却说「没找到」。
+  - 条目名清洗有损 + `with_suffix`：「滴天髓 v1.2」与「v1.3」撞成同一个文件，`--overwrite` 把另一条覆盖掉；覆盖不留旧版，还清空元数据。
+  - 选取 / 精读 / 删除各自一套解析：`remove x` 删到 `sub/x.md`，同名标题删第一条，删除立即 `unlink`。
+  - 存档里存着笔记全文（删了笔记旧存档还在）；报告附录把私人笔记原文印出去。
+  - 旧测试只查 `"knowledge":` 键——它从来不在存档里，真正装全文的 `knowledge_context` 一直存着：**因为错误的原因通过**。
+  - 固定临时文件名并发写会撞，`build_context` 出错会把算好的盘打成 internal_error。
+- **修复（知识库）**：
+  - 文件仍是唯一真相，状态（锁、回收站）放 `<data_dir>/knowledge-state/`，不放进用户的文件夹。
+  - 编码按 utf-8-sig → UTF-16（BOM）→ GB18030 依次尝试；读不了的进 `problems`（mine / 注册表 / 告警可见），告警区分「没找到」「读不了」「有歧义」。
+  - 一个 `resolve()` 供选取 / 精读 / 删除共用：精确 id → 带扩展名的文件名 → 唯一标题，有歧义就报错并列出候选。查找键做 NFC + casefold；
+    id 撞车（a.md + a.txt）的条目都不启用，并报出来。
+  - 条目名不合法就拒绝并说明原因，不改名；扩展名用追加，不用 `with_suffix`；覆盖写回原文件，没给的元数据沿用旧值。
+  - 覆盖与删除都先进回收站，新增 `knowledge trash` / `knowledge restore`。写入走文件锁 + mkstemp + fsync + 原子替换。
+  - 元数据：BOM、开头空行、全角冒号、引号、行内 / 块式列表都认；`#` 只在空白后才算注释；写入时 JSON 加引号、禁止换行。
+  - `auto` 认技法中文名；一条都没选中、或 techniques 里有不认识的名字，都会报出来。预算从短条目开始分配，截断标记计入预算，单次最多 12 条，
+    多出的进 `omitted`。
+  - 存档只存引用（`redact_for_storage`：id / 标题 / 字数 / sha256）；报告附录只列引用、不印正文。
+  - 知识库出错只加告警，不影响盘面；`--purge-data` 默认保留知识库与回收站，要连它们一起删须再加 `--purge-knowledge`；相对路径按数据目录解释。
+- **守卫**：
+  - 报告：`tests/test_report_polish.py`（13 条）。
+  - 知识库：`tests/test_user_knowledge_store.py`（12 条），加上 `tests/test_user_knowledge_and_chart_report.py` 中重写的 6 条：
+    存档断言改成查不到笔记原文、`_xiaoliuren_1.json` 里只有引用。
+  - 负向对照：分别回退 25 处修复（知识库 12、报告 13），逐条变红。有 3 处第一次回退后没变红——NFC 在两处做（只回退一处抓不到）、`_md_inline` 的调用点没测、
+    列宽下限的回退写错了形状——补测或改写回退后才变红。
+  - 110 份重出：页数 1347 → 1206（4 个无盘面工具改为拒绝）；护栏话 0 处；附录无 True / False；`pdffonts` 可见补字字体已嵌入。
+- **引擎原文里的问题不在本仓改**（铁律：下游不改上游内容）：英文星名与度数写法混用、重复段（奇门八宫克应 / 详解）、六爻两处六神不一致、
+  西洋盘里夹八字换日规则、择日地点与坐标不符等，整理成清单交维护者回上游处理。
+- **第二轮评审（v4 产物）再查出**：
+  - 巴比伦盘画了引擎明说「本体系无十二宫位、无相位、无上升点」的宫位与上升；
+  - 相位图例印在 35 张根本没有相位线的轮下；卜卦 / 择日的相位在 `data.raw.aspects`，没取到；
+  - 两图并排时标签 4–6 pt、右图「上升」压在左图上；DOCX 没有星盘图；
+  - 满宽表格右出框 12 pt——SimpleDocTemplate 的 Frame 四边各有 6 pt 内边距，版心宽 ≠ 可用宽；
+  - CJK 断行把西文拆成「North Nod / e」；窄表拉满整行；「本次未产出」单节常被挤成最后一页；
+  - 星座译名与正文不一（白羊 vs 牡羊）；`ziwei_rules`（规则库查询）出空壳报告。
+  - **最要紧的一条是我自己差点犯的铁律 1**：六爻变卦先按 `data.changed_code` 画，样例里它是调用方另给的「既济」，引擎按动爻推出的之卦是「兑为泽」
+    ——图与正文矛盾。结果里没有引擎推出的之卦码，自己翻爻去推就是手算。
+- **修复（第二轮）**：
+  - 无宫体系（`_WHEEL_NO_HOUSES`）只画星座环 + 行星，不画相位；`raw.aspects` 兜底；图例只在有相位线时印；
+  - 每张轮独占一行、外圈留轴标签位、字号下限 7 pt，轴线不穿过行星标签带；
+  - DOCX 经 `figures.drawing_to_png`（Pillow 画五种图元——Pillow 是 reportlab 的依赖、一定在）嵌位图，纸张改 A4；
+  - `content_width` 扣 12 pt；以西文为主的段落不走 CJK 断行；短值窄表按内容定宽；
+  - 「本次未产出」并进技法依据表一行；条目少的目录排在封面下方；封面大标题只写技法名；
+  - 变卦**只在 changed_code 与本卦 + 动爻对得上时才画**，否则只画本卦并写「之卦见下文」；
+  - `_RULE_LOOKUP_TOOLS` 拒绝规则库查询出 chart 报告。负向对照 8 条全红（累计 33）。
+  - 页数 1206 → 1130，近空末页只剩 1 份（3 页的 suzhan）。
+- **第三轮评审（v7）再查出两处「图与正文自相矛盾」**：
+  - 六爻卦图的六神取自 `data.lines[].god`，与引擎「断卦结构」表（按日干起，辛日初爻白虎）不一致；
+  - 三式合一的 `data.qimen` 子盘旬首 / 空亡与合盘自己的概览不同，合盘还把「奇门遁甲」段标成未产出，图却照画。
+  - 结论：**同一结果里有两处来源时，图只取能与正文对上的那处；对不上就不画**。
+  - 附录技法卡的「性别 是」、枚举码（贵人法 2、donggong），以及请求口径的宫制 / 黄道
+    （巴比伦卡上写回归黄道 + Alcabitus，实际是恒星黄道、无宫）。
+  - 「◆ 兄弟数：3–9 人」这类结论句被当成标题进了书签；度数沿径线放在内侧，左下半盘看着像邻星的。
+- **修复（第三轮）**：
+  - 卦图不画六神，变卦一致性规则不变；三式合一不再画奇门子盘；
+  - 附录不列宫制 / 黄道 / 岁差 / 性别，也不列没有人读码表的枚举（实际值在正文「起盘信息」）；
+  - `◆` 后是「键：值」或句号收尾的，按正文处理；
+  - 度数紧贴星名正下方，标签间隔按两行字高折成角度（新守卫：小图上任意两颗星的标签框不相交）；
+  - 多张轮两张一排；键值行的键放宽到 24 字（不含逗号 / 句号 / 分号）；彩色 emoji 换成 ▸；Geneva 补 ȧ ᵢ ₋。
+  - Ext-B（𥘩）在本机没有任何字体覆盖（Windows 有 SimSun-ExtB），如实记下。负向对照 8 条全红（累计 41）。
+- **收尾一批（用户：修完评审余项后发 v0.44.0）**：
+  - 表格列宽下限加「本列最长的数字 / 西文串」，大限「112~12 / 1」不再被拆；≤14 行的表整张不拆，大运第 10 步不再落单。
+  - 封面基本信息补年份 / 入宫节气 / 所问（askEvent），合盘补甲乙双方。
+  - DOCX：封面不印页脚；目录域的缓存结果预填各章标题（WPS / Pages 不更新域也有目录）；连续「键：值」行排成两列表。
+  - 键长放宽到 24 字后，「本报告由…直接生成：…」这类长句也被当成键：改为 15–24 字的键必须带括注或数字。
+  - 塔罗 / 太乙结果里没有结构化的牌阵 / 宫位数组，不凭正文另造盘图——列进未做清单。负向对照 6 条全红（累计 47）。
+
+### v0.43.1-dev / 2026-10-23 — Windows 原生复验：Smart App Control 拦 uv trampoline（`os error 4551`）、PDF 扩展 B 生僻字画成方块、测试与 skill 安装不认 Windows 的链接形状
+
+- **起因**：v0.42.0 / v0.43.0 发布后在 Windows 维护机做原生复验（`sync_windows_release.py --check` [OK]）。新建 worktree 跑
+  `run_ci_gates.py`，第一步 `uv run pytest -q` 30 秒就红：`error: Failed to spawn: pytest / cause: An Application Control policy has
+  blocked this file. (os error 4551)`，其余 24 步全绿。
+- **根因 1 · 应用控制**：本机 Smart App Control 处于「开」（`HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy`
+  `VerifiedAndReputablePolicyState = 1`）。它放行有签名或有云端信誉的程序；uv / uvx 给每个环境现写的 `Scripts\*.exe`（trampoline）
+  内容随安装路径变，**永远没有信誉**。实测同一台机器上时拦时放：hs-lane 里 `pytest.exe` 被拦、`horosa-skill.exe` / `ruff.exe` 放行，
+  10-20 那次是 `horosa-skill.exe` 被拦。用户机器上同样会撞——客户端配置里的 `uv run --directory … horosa-skill serve`、
+  `uvx --from … horosa-skill serve` 都经 trampoline，被拦时 MCP server 根本不启动，`setup` 探针只看到一屏看不懂的 stderr。
+  环境里的 `python.exe` 是解释器自带的那份（PSF 签名 / 各机同一哈希），不受影响：`uv run python -m pytest`、
+  `uv run python -m horosa_skill …`、`uvx --from … python -m horosa_skill …` 本机都实测可用。
+- **修复 1**：加 `horosa_skill/__main__.py`（`python -m horosa_skill` ≡ `horosa-skill`）；`client config` / `setup` 加 `--entry auto|script|module`，
+  `auto` 在 Smart App Control 为「开」时写 `… python -m horosa_skill serve`，其余情况生成物与以前**逐字节相同**；`setup` 探针认出 `(os error 4551)`
+  报 `diagnosis.cause = windows_app_control_blocked`（带被拦程序与改写后的命令，`next_action` = 加 `--entry module` 重跑，不必关 SAC）；
+  doctor 的 `windows` 块加 `smart_app_control` / `app_control_note`；`run_ci_gates.py` 在 Windows 上把 `uv run pytest` 换成等价的
+  `uv run python -m pytest`（`ci_test_steps` 仍原样返回 ci.yml 的命令）。微软文档（support.microsoft.com「What is Smart App Control」）说明
+  新版 Windows 关掉后可在 Windows 安全中心重新打开，但关安全功能不是本工具该给的建议——给能绕开 trampoline 的入口。
+- **根因 2 · PDF 字体**：拿包内全部文本（src + horosa-core-js/src）对 Windows 字体量字形：缺的全是扩展 B 起的字，绝大多数来自 OpenCC
+  词典（不会进报告）；真进报告的是 `lingqiJing.js` / `tianjiDoctrine.js` 里的 13 个古籍字——微软雅黑缺 12、正黑缺 13，PDF 里画成方块。
+  Windows 自带的 SimSun-ExtB 一个不缺（细明体 ExtB 缺 1）。reportlab 的 TTF 不会按字回退。
+- **修复 2**：`_render_pdf` 里所有 `Paragraph` 经 `_pdf_glyph_fallback`：常规体与粗体都画不了、补字字体画得了的字连成段包进
+  `<font name=…>`（补字字体登记成自映射的字体族，`<b>` 里的补字段不抛错）；候选按文字族排序（简体 SimSun-ExtB 优先，繁体 MingLiU-ExtB 优先）；
+  主字体是 reportlab 自带 CID 字体或本机没有候选（macOS / Linux 默认）时原样返回，生成物不变。
+- **根因 3 · 符号链接在 Windows 上是特权**：v0.43.0 的知识库测试用 `os.symlink` 造「指向目录外的链接」，本机（普通用户、没开开发者模式）
+  `WinError 1314` 直接红；托管 Windows runner 是管理员，所以 CI 一直绿。普通用户在 Windows 上能造的是**目录联接**（junction）——
+  而 `Path.is_symlink()` 对 junction 是 False。顺着查到 `skill_install.skill_status` 只认 `is_symlink()`：别的工具若用 junction 把
+  horosa-agent 链进 skills 目录，内容又恰好与 bundle 相同，会被判成 `current_unmarked`，marker 写进对方的真目录。
+  知识库 loader 本身没问题（`resolve()` 在 Windows 上连 junction 一起解析）。
+- **修复 3**：测试 `_link_outside` 先试符号链接、Windows 上另建 junction（两种形状都断言读不到）；`skill_status` 认
+  `is_symlink() or is_junction()`；`test_skill_install` 加 Windows 上真建 junction 的用例（原 symlink 用例在本机一直 skip）。
+- **根因 4 · 载荷里的原生扩展也会被拦（release lane 才看得见）**：v0.43.0 release 模式 lane（全新根 `rt-v043`，公开 zip 真下载）
+  12 步 11 绿，live pytest 2154 passed / 3 failed——`test_taiyi_runs_via_ken_backend`、`test_sanshiunited_combines_ken_qimen_taiyi`
+  与上面的 symlink 用例。chart 服务 stderr：`ImportError: DLL load failed while importing _parse_times: An Application Control policy has
+  blocked this file`。用 `LoadLibraryExW(DONT_RESOLVE_DLL_REFERENCES)` 扫整棵载荷：258 个原生文件拦 2 个——`astropy/time/_parse_times.pyd`
+  （官方 astropy 7.2.0 abi3 wheel 原件，17 KB、无签名）与 `pendulum/_pendulum.cp312-win_amd64.pyd`。**同一哈希**在 10 月初装的默认根里放行、
+  在 10-21 lane 全绿过的 `rt-v0412` 里**现在**被拦——判定按文件实例缓存且会被重新评估，用户新装 / 升级 runtime 后随时可能撞上。
+  pendulum 自带纯 Python 回退（ImportError 被它自己接住）；astropy 没有：`astropy.time.formats` 顶层 `from . import _parse_times`，一拦
+  `astropy.time` 整个起不来 → kintaiyi（`from astropy.coordinates import SkyCoord, FK5`）挂 → 太乙 / 三式合一全挂。换 wheel 解决不了（已是官方原件），
+  也不能改上游引擎。
+- **修复 4**：`scripts/runtime_templates/windows/python/`（`_horosa_app_control.py` + `horosa_app_control.pth`）由 manager 每次 start 拷进随包 Python 的
+  site-packages（`_install_app_control_shims`，与启动器模板同一条「每次 start 重拷」的路，已装的 runtime 升级 skill 即生效）。它是一个只认
+  `astropy.time._parse_times` 的 meta-path 包装：真扩展能加载就原样用；被拦（`(os error 4551)` / 「Application Control」）时换成替身——dtype 与真扩展
+  逐字段相同、`create_parser` 返回恒抛的解析器，astropy 的 `TimeString.set_jds` 接住异常落回 `get_jds_python`（它的参照实现），并在 stderr 留一行。
+  本机对照：被拦的根装上替身后 `Time('2026-02-17T21:50:07')` 的 JD 与能加载真扩展的根逐位相同（2461089.4098032406），`SkyCoord` 正常导入。
+- **守卫**：`tests/test_windows_app_control.py`（module 入口真能跑、只换 `serve` 前一位、auto 跟随 SAC 四态、`--entry script` 压过 auto 且
+  非 SAC 机生成物不变、英文 / 中文 stderr 都认得、文件锁形状不受影响、注册表值映射、doctor 字段、门禁镜像只在 Windows 改写）；
+  `tests/test_pdf_glyph_fallback.py`（只包主字体缺的字、标记与 ASCII 不动、无候选时逐字节不变、Windows 上真嵌入 SimSun-ExtB 且无生僻字时不嵌）。
+  `tests/conftest.py::_host_smart_app_control_is_unknown`（第一版没钉，两条断言 `horosa-skill serve` 的旧用例在本机红、CI 上绿——
+  生成物随维护机状态变就是隔离漏洞）；`tests/test_user_knowledge_and_chart_report.py::_link_outside`、`tests/test_skill_install.py::test_a_junctioned_skill_on_windows_is_left_alone`。
+  `tests/test_app_control_runtime_shim.py`（被拦 → 替身 + stderr 留痕、别的 ImportError 原样抛、能加载就原样用、只包登记的模块、dtype 与真扩展同形、
+  manager 拷进 site-packages）；端到端 = 开发分支对全新根重跑 release lane，太乙 / 三式合一 live 用例转绿。
+  负向对照 7 条（拆掉诊断分支 / auto 恒 script / 门禁不改写 / 配置不改写 / 补字恒原样 / loader 不查目录外 / 只认 is_symlink）各自变红。
+- **法则**：Windows 上凡是「现生成的 exe」都可能被应用控制拦，能用解释器 `-m` 的入口就留一条 `-m` 的路；判据只认 `(os error 4551)` 这段
+  不本地化的尾巴。PDF 字体覆盖要拿真进报告的文本量，不拿包内全部文本（词典会把数字放大一百倍）。
+  「链接」在 Windows 上有两种：符号链接（要特权）与目录联接（不要）；判链接一律 `is_symlink() or is_junction()`，测试里造链接要有 junction 的路。
+  应用控制的判定不只看哈希：同一文件在一个根里放行、另一个根里被拦，过一阵还会变——「上次 lane 绿」不代表这台机器上的下一次安装能起来，
+  离线全绿更看不见（CI 不装载荷）。载荷里每加一个没有纯 Python 回退的原生扩展，都要想好被拦时的退路。
+
+### v0.43.0-dev / 2026-10-23 — 完整排盘 PDF 报告与自备知识库：flowable 不能排两遍（`compose(pages)` 每遍现组）、Songti SC Black 当正文、知识库隔离测试查错字段
+
+- **起因**：用户要「根据各个技法直接出完整精美 PDF 报告」，以及「自定义知识库，每次计算时按选择加入上下文」。
+  报告加 `style:"chart"`（不经 AI，全部导出段 + 基本信息 + 附录，封面 / 目录 / 书签 / 「第 N 页 / 共 M 页」）；知识库是数据目录下
+  `knowledge/` 的 `.md` / `.txt`，技法入参 `knowledge` 点名（条目名 / `#标签` / `auto`），正文挂 `data.knowledge_context`。
+- **坑 1 · 两遍排版复用 story**：为了目录页码与「共 M 页」，第一版用 `TableOfContents` + `multiBuild` 跑多遍。星盘这类长报告在第二遍抛
+  `LayoutError: Flowable <Paragraph> … too large on page 5`——单遍 `build` 正常。reportlab 的 flowable 被 wrap / split 过会改内部状态，
+  `multiBuild` 每遍都排同一批对象（同一个段落对象被处理了 7 次）。报告渲染失败按设计降级成 TXT，所以表面上只是「PDF 变成了 txt」。
+  修复：story 组装包进 `compose(pages)`，每遍现组；目录自绘（标题按出现顺序编键 `h0, h1…`，第一遍页码留空、行高不变，第二遍填上一遍
+  `afterFlowable` 记下的书签页），页码与总页数两遍相同即停。
+- **坑 2 · 字体**：`Songti.ttc` 第 0 号子字体是 **Songti SC Black**——之前一直拿它当正文，整本是粗体。改为按 PostScript 名挑常规 + 粗体成对
+  注册（`registerFontFamily`，`<b>` 才有真粗体）；繁体走 TC 一组。
+- **坑 3 · 书签页码**：为了「共 M 页」试过延迟出页的 canvas，结果每个书签都落在第 1 页（书签在出页前登记）。改为排两遍、第二遍把上一遍的
+  总页数写进页脚。
+- **坑 4 · CLI 报告语言**：`report render / template / from-tool` 的 `--language` 缺省 `zh-CN` 总被传下去，盖掉 `HOROSA_OUTPUT_SCRIPT=zh-Hant`
+  推出的 `zh-TW`（v0.42.0 就有）。改为只在给了时才传。
+- **坑 5 · 测试因为错误的原因通过**：「knowledge 不进回显入参」断言查的是 `result.data["input_normalized"]`——那是小六壬引擎自己的回显；
+  信封上的是 `result.input_normalized`。负向对照（`pop` 改 `get`）照样绿才发现。改为查信封、存档文件、引擎请求（`CaptureClient`）三处，
+  再做负向对照两条红。
+- **坑 6 · 繁体报告里渲染器自己的标签没转**（v0.42.0 就有）：「目录」「解读目标」「完整盘面」「附录」、页脚「第 N 页」是写死在渲染器里的简体，
+  `localize_document` 只转文档字段，碰不到它们；技法依据报告的人读版 / markdown 由模板现生成，模板标签同样漏转。不能「整段再转一次」：
+  用真实输出测过，对已是繁体的文字再转**不幂等**（萬里 → 萬裡、征戰 → 徵戰、台輔 → 臺輔，1 154 句里 8 句变）。修复：渲染器字面量逐个过
+  `t()`（`_labeler`，只转一次）；技法依据报告改为把简体原文交给 `render_report`，生成人读版 / markdown 后整体转一次。
+- **坑 7 · 基类加隐藏字段漏进门面**：`knowledge` 加在 FlexibleModel 上、标 `x-horosa-hidden`，技法工具的广告白名单会摘掉它，但 8 个门面
+  只过可移植化、不过白名单，各漏出一个无描述属性——`verify_mcp_client_compat` 棘轮红（487 → 495）。改为 `apply_advertised_schemas` 最后一遍对
+  全部工具摘隐藏字段；`horosa_tool_run` 的 `knowledge` 是新概念，单独给一句描述。另一处：隐藏字段会计入 `request` 描述的「另 N 个高级旋钮」，
+  44 个原本 0 旋钮的技法各多出 66 B（全量面 +2.9 KB，仍在 2% 容差内、守卫没红，是按工具比对大小才发现）——通用参数不计数。
+  最终 tools/list 全量 254 210 → 254 871 B、精简面 15 260 → 15 796 B（两个 `style` 与三个 `knowledge` 参数本身，描述已压到最短），更新基线。
+- **法则**：reportlab 每次 `build` 都给一份新组的 story；目录 / 总页数这类回填靠「两遍排版 + 自己记页码」，不靠复用对象。
+  附加上下文类入参在校验前取走，隔离要在「信封 / 存档 / 引擎请求」三处都断言。
+- **守卫**：`tests/test_user_knowledge_and_chart_report.py`（19 条：条目解析与目录安全、点名 / 预算 / 截断、增删精读检索、run_tool 隔离、
+  引擎请求、registry / read 的 user 域、CLI、chart 报告每段标题进 story 且目录页码 = 书签页码、analysis 仍需解读、CLI 语言转发、繁体标签只转一次、门面不带 knowledge 且不计入旋钮数）。
+
+### v0.42.0-dev / 2026-10-22 — 繁体输出：OpenCC 在术数字上系统性转错，按原文逐位定字（`horosa_char_rules.json`）、上游段名本就含繁体（`canonical_name`）、新字段必须归类（`unclassified_text_paths`）
+
+- **起因**：用户要在设置里加「全局繁体」子设置，简体保持原样。做法是显示层转换（存档与引擎仍是简体），出口三处：MCP / CLI / 报告落盘。
+- **坑 1 · OpenCC 不懂术数**：用 vendored 实例跑 110 个技法的真实输出（2 072 209 字），先证明纯 OpenCC 字典 + 最长匹配与官方 opencc 1.4.2
+  逐字相同（0 差异），再逐字统计「一简对多繁」的字：干 309 次被转成「幹」（年干→年幹、藏干→藏幹）、丑 337 次「醜」（子丑合→子醜合）、
+  冲 255 次「衝」（日冲→日衝）、克 284 次留成「克」（金克木应为剋）、斗 64 次「鬥」（斗君→鬥君）、凶 427 次「兇」、占 287 次「佔」、
+  咸卦→鹹卦、经云→經雲、合中→閤中。再扫 STPhrases 里「术数字 + 干支 / 五行 / 数字 / 术数名词」的全部组合，补了「干上」「一克」「虎克」
+  「冲开」「母丑」「斗牛」这类跨词错切。
+- **修复（第一版，作废）**：在词组表里给这些字设单字缺省、普通义靠更长的 OpenCC 词组。残差清零后仍挡不住跨词错切：
+  最长匹配先吃掉前一个字——「真实干支」切出「实干」→ 真實幹支、「的历法」切出「的历」→ 的歷法、「曰云云」→ 曰云雲。
+- **修复（现行）**：同一天上游星阙（Horosa-Public 本地提交 3e185407「界面简繁」）用的是**逐位定字**：先按词典转整段，再按原文逐位重判
+  术数字——落在普通义白名单词里取该词写法，否则取术数缺省。机制更稳（与切词无关），本仓改为同一机制（`horosa_char_rules.json`，
+  结构与上游 `hantRules.js` 相同、规则 ⊇ 上游）。用 110 技法语料比对：上游规则在 农历年→農歷年（「历年」白名单命中）、密码表→密碼錶
+  （「码表」命中）、占有点→占有點、神后→神後、合中→閤中、生发→生髮、咸卦→鹹卦、金克木（无「克」规则）这几处会转错——
+  本仓写进 `deviations` 并给理由，建议上游同步。次日上游 f9884a19 收了其中大部分（克 / 咸 / 后 / 合、农历年、密码表、占有点），
+  本仓随之合并；剩下的偏离只有更长的「天干 + 克己」「驿马克」（白名单「克己」「马克」会跨在术数词上误吃——语料里的「甲克己土」「驿马克身」）
+  和凶恶 / 凶暴 / 占有 / 谋干。合并后 110 技法语料上与上游规则只差 155 字；把这份差异清单发给维护桌面版的会话，上游 fe0b5d3e 全部采纳（含回 / 杯 / 台 / 发 / 卷 / 升 的逐位规则），再合并后**逐字 0 差异**，只剩本仓另收的「占有」。教训：桌面版与 skill 是同一产品的两个出口，转换规则只该有一套；对齐靠「同一语料逐字比对 + 上游比对测试」，不靠两边各自补词。
+- **坑 2 · 上游段名本就不全是简体**：注册表里有「命宮」「夫妻宮」「佈局」「大运·歲運」。AI 把繁体输出里的段名抄回 `export_parse`
+  时，一律繁转简会把「命宮」折成「命宫」而对不上。改为 `canonical_name`：原值在词表即用；否则按「词表每项的繁 / 港繁写法」反查；最后才试繁转简
+  且结果必须在词表里。783 个段名 × 3 种写法全部往返成功（测试锁）。
+- **坑 3 · 字体**：简体 PDF 实际用的是 `Songti.ttc` 第 0 号子字体（Songti SC Black；PingFang.ttc reportlab 载不了），它缺语料里 966 个繁体字——
+  不换字体，繁体 PDF 满页方块。繁体按族名找 TC 子字体（Songti TC / Heiti TC / Microsoft JhengHei / Noto Sans CJK TC），回退 reportlab
+  自带的繁体 CID 字体 MSung-Light；简体路径一行未动。（顺带发现：简体 PDF 本来就缺语料里 493 个古籍引文繁体字，另行处理。）
+- **坑 4 · 白名单漏转**：`knowledge_read` 的正文直接放在 `data` 里（没有导出快照），按「data 只进快照 / 技法卡」的规则整段没转——内存客户端测试抓到。
+  另外精简面 `horosa_tool_run(tool_name="export_parse")` 绕过了按 MCP 工具名的放行表，改为按信封 `tool` 字段再拦一次（`PROTOCOL_TOOLS`）。
+- **坑 5 · 守卫因为错误的原因通过**：负向对照里删掉「回显入参保护」和「协议工具放行」，测试照样绿——样本里那几处根本没有会变的字（「已解析」「八字」简繁同形）。
+  改成注入会变的字（「已解析导出」「紫微斗数」、入参里放 title / summary），再删保护就红。
+- **法则**：转换只在出口、只转给人读的字段；词表驱动的标识按词表反查，不靠通用繁转简；任何新中文字段必须归类，未归类即红；
+  负向对照的样本要先证明「真会变」。
+- **守卫**：`tests/test_textscript.py`（官方 OpenCC 参考样本、金样、词表逐行生效、白名单、未归类检测 + 负向对照、段名往返、MCP 出口、CLI AST、字体字形）。
+
+### v0.41.2-dev / 2026-10-21 — 断言文件大小的测试随字体红：PDF 正文改看交给 reportlab 的内容（`_pdf_story_text`）
+
+- **症状**：上一条第 8 项的回归测试断言「带正文的 PDF > 2 × 只有标题的 PDF」。main 的 CI（Linux）红：5 591 vs 2 × 3 054；
+  v0.41.1 发布后的 release 模式矩阵 macOS lane 红：45 327 vs 2 × 23 406；两台 Windows 绿。
+- **根因**：PDF 字节数大头是嵌入的中文字体子集，开销随机器上找到的字体（苹方 TTC / Noto / STSong CID）差几倍，正文本身只占小头——
+  比值在 1.8～2.x 之间漂，阈值「2」只在写测试的那台机器上成立。测试本意是「正文进了 PDF」，大小只是间接替身。
+- **修复**：测试在 `SimpleDocTemplate.build` 上包一层，收集交给 reportlab 的全部段落与表格文字（`_pdf_story_text`，与字体无关），
+  断言一致性检查 / 技法一览 / 口径不一致 / 两个技法名都在；只有标题的文档作负向对照。对旧缺陷只在 PDF 路径恢复时，新断言在 PDF 那行红。
+- **法则**：测试别用文件大小 / 耗时这类随环境漂的量当内容的替身——直接看内容；只在一台机器上校准过的阈值不是断言。
+
+### v0.41.2-dev / 2026-10-20 — v0.41.1 重构之后的 13 处缺陷移植：测试碰用户真实 runtime（`_never_touch_the_users_real_dirs`）、探针读安装期端口（`endpoint_identities`）…
+
+- **起因**：同一天两条可维护性清理并行——mac 侧发布了 v0.41.1（service / cli / mcp_server / schemas / agent_guidance 拆包），
+  Windows 维护机上的另一条分支（`refactor/maintainability-cleanup`，100 个提交）按另一种布局拆了同一批文件。两种拆法无法合并，
+  以已发布的 main 为准：那条分支的结构拆分作废，只把 v0.41.1 没覆盖到的缺陷修复按 main 的新布局逐条重做（能 cherry-pick 的直接摘，
+  冲突的手工移植）。v0.41.1 已覆盖、本批不再重复的：SHARED_RUNNER 三个错名、三处静默 except、docx/reportlab 手写兜底、monkeypatch 目标守卫。
+- **移植的缺陷（每条一个先在旧代码上红的回归测试）**：
+  1. 清单段非对象 / 版本字段非数字：段类型查的是合并后的 `{**defaults, **raw}`（恒为 dict），`int()` 直接抛——doctor 整个崩。
+  2. 装完换端口：`_service_status` 优先读安装时写进清单的 `services.*_url`，启动器与技法客户端却用 settings → stop 探旧端口判「已停」
+     并清掉 runtime-state，新端口上的服务继续跑。探针只看 settings；`endpoint_identities` 等一路的 manifest 参数随之删掉。
+  3. 停脚本超时：`TimeoutExpired.stdout` 恒为 bytes，`str()` 出 `b'…'`。4. Windows 上 `uninstall` 用裸 `rmtree`，内嵌 JDK 只读文件删不掉。
+  5. 引擎 stdout 是合法 JSON 但不是对象：`.get("ok")` 在形状检查之前 → AttributeError 而非 `js_engine.invalid_shape`。
+  6. `horosa_tool_run` 把坏的字符串 request 换成 `{}` 执行。7. Codex 超时写成 `"2m"`：`client check` 崩在 `float()`。
+  8. 技法依据报告没有 ai_report，DOCX/PDF 只剩封面与目录。9. 八字读不出四柱：五行计数恒有五个键，按 dict 真值判空恒真 →「木最旺也最弱」。
+  10. 整句 output_contract 被逐字逗号拼进 docstring。11. 灵棋把 `ToolTransportError` 吞成 ok + 空快照。
+  12. **测试碰用户真实 runtime 与数据目录**：`Settings()` 默认落在 `%APPDATA%/HorosaSkill`、`%LOCALAPPDATA%/Horosa/runtime`。
+      v0.41.1 的 conftest 拒连 8899/9999 只挡住网络；`test_operational_errors_carry_agent_recovery`（server_root 指向 :1、没给 runtime_root）
+      在维护机上会去「启动」真 runtime、改写它的 boot jar（Windows 上 Java 锁着 → WinError 5、残留 324 MB `.jar.tmp`；mac 上不锁，改写直接成功），
+      测试也一直往真 traces 写记录。修：Settings 默认目录改为调用时解析，conftest autouse `_never_touch_the_users_real_dirs` 换成临时目录；
+      `_rewrite_zip_archive` 失败即删临时副本。
+  13. scripts/：14 处 `text=True` 不带 encoding（cp1252 下 git 的 CJK 输出让 gen_knowledge_packs 静默当成「没有 HelpDoc」）、
+      50 处 `write_text` 不带 newline（Windows 上生成件 / 基线 / 发布清单写成 CRLF）。
+- **守卫**：`tests/test_test_isolation.py`（去掉夹具即红）；`tests/test_subprocess_encoding.py` 扫描扩到 scripts/ 并新增 write_text 必须带
+  newline 的规则（撤回脚本改动即红）。
+- **教训**：两个会话同时做同一件「全仓重构」必然撞车——大范围结构改动开工前先 `git fetch` 看 main，做的过程中也要定期看；
+  能独立成立的缺陷修复要尽早单独提交推送，别和结构拆分绑在一条长分支上。
+
+### v0.41.1-dev / 2026-10-20 — 可维护性重构第 5 批：文档里的陈旧事实与两把引用守卫（`undocumented_sites` / `dangling_references`）
+
+- **改正的陈旧事实**：铁律 5「pin-forward 下 guard 必绿」（v0.38.0 A3 起 release-completeness 会拒钉到别的 tag 的清单 URL；规则本身仍成立——
+  它只巡检已公开的 latest，草稿期看不到）；bump 站点「16 个」（`SITES` 实为 19，v0.41.0 加的仓根 `plugin.json` / `mcp.json` 与 wheel 内 SKILL 副本
+  都没写进规则）；OPERATIONS 的 preflight 顺序（v0.40.1 起上游 pin 在最后查）与「本机镜像只跳过两步」（还跳过装依赖与两步 npm）；
+  LESSONS 头「协议 v2」与标题日期格式；CLAUDE.md 铁律编号 6 → 8 → 7；DOC_MAP 说英文 README「与中文逐节对齐」（章节组织并不相同）；
+  `verify_export_contract_mirror.py` 文档串说「在 CI 里跑」（只在 preflight / sync_windows_release）；AGENTS 里一段历史叙述改回现行事实。
+- **新守卫**：`tests/test_bump_version_sites_documented.py`——`SITES` 每个站点都必须在 AGENTS 的 bump 规则里点名、规则里不写数量
+  （对旧文本跑：6 个站点没点名 + 有数量，红）；`tests/test_doc_references.py`——现行文档（不含 LESSONS）里反引号点名的测试 / 脚本 /
+  源码 / 契约路径、工作流名和 `check_*` / `verify_*` 名必须真存在（`release.yml` 作为已删除的历史工作流列白名单）；
+  `tests/test_agents_compaction.py`（`oversized_chunks`）——AGENTS 自己的「章节超 ~120 行要分 `###`」只写在文字里，§4 / §5 / §7 / §8
+  长到 208 / 168 / 131 / 148 行；按主题补了 `###` 子标题（只加标题、不动正文），守卫按每个标题块量。
+- **没做的**：README 两份技法目录改由数据文件生成——每个工具 ID 必须出现在两份 README 里、每组「（N）」等于该组行数，docs-sync 早已锁住；生成化要把约 340 行双语正文搬进 JSON，换来的保护很少。AGENTS 里其余带版本号的历史叙述（审计数出 34 处）没有整体搬回 LESSONS：它们大多嵌在规则正文里充当出处，机械搬移会把规则和理由拆开，留待逐条编辑（这次只改了明显过时的那一处）。
+- **法则**：文档里的数字从源头推导或干脆不写；文档里点名的东西要有机器去核实它还在。
+
+### v0.41.1-dev / 2026-10-20 — 可维护性重构第 4 批：测试替身、CI 权限与并发、发布巡检脚本化（`verify_published_release` / `ci_permission_and_concurrency_problems`）
+
+- **测试替身挪到 `tests/fakes.py`**：`FakeClient` / `FakeJsClient` / `CaptureClient`（约 1 500 行）原住在 5 000 行的 `test_service.py` 里，
+  十七个测试文件从那里导入。pytest 不收集 `fakes.py`；以后新替身也放这里，别再从测试模块互相导入。
+- **`ci.yml` 补上 `permissions: contents: read` 与 `concurrency`**：同一 PR 连推只留最新一次；**main 上每个提交各占一组**——共用一组时，
+  即使不开 cancel-in-progress，GitHub 也会让后来的排队、并取消仍在排队的那次，main 上就会有提交拿不到 CI 结果。
+  `tests/test_ci_workflow_shape.py` 锁这两条（负向对照：共用组 + 不区分 PR 即红）。
+- **`release-completeness.yml` 的约 75 行 heredoc Python → `scripts/verify_published_release.py`**：判据与报错原文不变，查不完整的
+  每种形状（缺平台、pin-forward、digest 对不上、min_os、Content-Length、HTTP 非 200、不可达、SHA256SUMS 漏列、版本不符）都有单测；
+  本机对已公开的 v0.41.0 跑出与工作流同一行 OK，篡改版本号即红。守卫接线测试的「运行者」名单加上这个工作流。
+- **没做的**：脚本公共模块（44 份 4 行 UTF-8 设置、29 份脚本加载器、9 个棘轮骨架）——这些脚本要能脱离包单独跑（CI 按路径调、
+  发布 shell 调、测试按路径加载），共用一个 import 换来的是路径耦合，省的是每份两三行；composite action——重复的环境搭建大半在只有
+  发版时才跑的工作流里，改了没法在发版前验证。
+- **法则**：并发组键决定的不只是「取消谁」，还决定「谁会被排队丢掉」；工作流里的检查逻辑要能被测试碰到。
+
+### v0.41.1-dev / 2026-10-20 — 可维护性重构第 3 批：拆大模块；共享策略 dict 被原地写（`TOOL_GUIDANCE` 写时复制 / `_clock`）
+
+- **做法（每拆一个模块都一样）**：AST 按顶层语句切块（前导注释跟着语句走、原相对顺序不变），逐模块重算 import，检查兄弟模块间无环；
+  只搬不改名（AGENTS / LESSONS 里引用的名字照样 grep 得到）；导入路径不变（包的 `__init__` 显式 re-export 公开名）；
+  对外表面（CLI 帮助树、MCP 两面、闸门、guidance、25 家客户端配置）重录后逐字比对。
+- **`agent_guidance.py`（2554 行）→ 包 `agent_guidance/`**：`base` → `policies` → `tool_table` → `contracts` → `catalog` → `preflight`
+  单向依赖。唯一的路径坑：`data/sensitive_settings.json` 的相对路径深了一层（`parents[1]`）。
+- **拆的时候看到的坑**：import 期两个循环把 `options_keys` **原地**写进 `TOOL_GUIDANCE[tool]`，而好几组工具共用同一个策略 dict
+  （chart / chart12 / chart13 / draconic / hellen_chart 一组，神数五个一组…）。今天被注入的工具恰好都不共用，所以没出事；
+  哪天给 chart13 加 options_keys，同组五个工具会一起带上。→ 注入改为写时复制；`test_options_keys_never_leak_onto_tools_that_share_a_policy_dict`
+  锁「带 options_keys 的条目不与别的工具共用对象」（负向对照：恢复原地写并给 chart13 注入即红）。
+- **`service.py`（17 650 行）→ 包 `service/`（34 个文件，最大 1 320 行）**：`HorosaSkillService` 由 16 个 mixin 组合，导入路径不变。
+  三步：① `git mv` 成 `service/__init__.py` 零改动，把按路径读源码的三处扫描（端点登记测试、算源生成 / 校验）改扫整个包——只扫
+  `__init__` 时「调用了却没登记」会安静漏掉；② 22 处 `datetime.now(` 收口到 `_clock.now(...)`，冻结时间的夹具改 patch `_clock`
+  （负向对照：夹具仍 patch 包根 → 7 条金标红）；③ 按审计清单逐节点分配、`symtable` 求每块真正读的模块级名字（局部变量
+  `now` 曾被误当成要 import 的名字）后一次搬完。两处 monkeypatch 改打用到名字的子模块（包根的 re-export 够不着）。
+  新守卫 `tests/test_service_structure.py`：时钟只经 `_clock`、门面对外名单冻结（67 个）、mixin 成员不重名、runner 之间 /
+  api 与 runner 之间不 import（只经 `self.`），各有负向对照。
+  **自己踩的**：在 scratch 里干跑时用 `PYTHONPATH` 指向拆好的副本跑 pytest——212 条全绿，但 pyproject 的 `pythonpath = ["src"]`
+  把仓里的旧代码排在前面，测的根本不是副本（两处「包根已没有这个名字」的 patch 也照样过，才露馅）。干跑只能信纯 `python -c`。
+- **`cli.py` 第一段：客户端配置库 → 包 `client_config/`**（`locations` / `merge` / `openclaw` / `payload` / `audit`，单向依赖；cli.py 4 522 → 3 387 行）。
+  命令定义仍在 cli.py（Typer 树顺序天然不变），只搬 helper。被测试 patch、又在两个模块里被调用的名字（`_client_config_locations`）
+  一律经模块属性调（`client_locations._client_config_locations(...)`），一个 patch 点覆盖全部调用方；`resolve_uv(x)_command` 不能统一
+  patch `client_tools`——`resolve_uvx_command` 内部调 `resolve_uv_command`，统一 patch 会改变测试语义——所以按消费方模块逐个改 patch 点。
+  测试改指新模块用 AST 精确改写（`cli.X` 读、`setattr` 目标、`from cli import X`），28 条第三方事实的 `affects` 补上新包路径。
+- **`cli.py` 第二段：doctor 体检 → `surfaces/doctor.py`，OpenClaw 冒烟 → `surfaces/openclaw_smoke.py`**（cli.py 3 387 → 2 292 行）。
+  被测试 patch 的名字（`_probe_manifest_url`、`DOCTOR_BUDGET_SECONDS`、`_run_openclaw_smoke_check`、`_run_subprocess_json` 等）全部改经
+  模块属性调用、测试改指新模块；`cli.subprocess.run` 这类 patch 打在共享模块对象上，搬走的代码照样被拦住（前提：代码写
+  `subprocess.run(...)`，不写 `from subprocess import run`）。模块别名避开命令函数名（`doctor` 是命令，别名用 `doctor_checks`）。
+- **`cli.py` 第三段：`setup` 流程 → `surfaces/setup_flow.py`；`_runtime_manager` / `_package_root` / 下载进度 → `surfaces/runtime_helpers.py`**
+  （cli.py 2 292 → 1 659 行，剩下的基本就是 Typer 命令树）。setup 要用的这三样原本住在 cli.py，直接搬 setup 会成环；单独成一个小模块、
+  一律经模块属性调用后，测试替换 manager / 包目录只有一个 patch 点。测试里 `cli.shutil.which` 这种借 cli 之名 patch 标准库的写法改成直接
+  patch `shutil`（cli.py 已不再 import 它；同一个模块对象，语义不变）。
+- **`mcp_server.py`（1 551 → 699 行）**：注解 / 工具集 / 标题 → `mcp_surface`，入参归一与签名 → `mcp_requests`，错误信封 → `mcp_errors`，
+  并发上限与兜底 → `mcp_runner`（`_MAX_CONCURRENT_TOOLS` / `_TOOL_LIMITER` 经 `global` 读，必须与 `_tool_limiter` 同住，测试改指它），
+  elicitation → `mcp_elicitation`，HTTP 安全 → `mcp_auth`。文件本身不能挪（MCPB 入口），`_SERVER_INSTRUCTIONS` 留原处（docs-sync 从这里读）。
+  两个模块都要 logger 时各自建、名字钉成原来的 `horosa_skill.surfaces.mcp_server`。
+  随后七个形状相同的门面（记忆三件、报告模板 / 渲染、合参、技法依据报告）改为 `_register_service_facade` 表驱动注册；service 方法按名
+  **在调用时**取——测试会在建好 server 之后替换实例上的方法，注册时捕获绑定方法会让替换静默失效（`test_facades_resolve_the_service_method_at_call_time`，
+  负向对照：改成注册时绑定即红）。tools/list 逐字不变。
+  **自己踩的**：给新模块写 docstring 时把旗标写成了 `HOROSA_MCP_MAX_CONCURRENT`（真名多一个 `_TOOLS`）——`test_env_registry_covers_all_flags_code_reads`
+  扫源码里每个 `HOROSA_*` 字面量，当场红。文档串里的旗标名也是契约。
+- **`schemas/tools.py`（2 089 行）→ 包 `schemas/tools/`**：`base` 之上按技法族分 7 个模块（最大 413 行），`__init__` 显式 re-export。
+  先改两处按路径读它的守卫：`verify_schema_knob_wiring.py` 读包内全部声明、草堆排除**整个**包（只排除一个文件时，兄弟 schema 模块里
+  提到的字段名会被当成「有人消费」）；`test_verify_js_boundary_contracts` 扫全部模块并断言真扫到了 `BirthInput`。pydantic 的 JSON schema
+  不受模块归属影响——MCP 两面 tools/list（含全部输入 schema）逐字一致。
+- **`runtime/manager.py` 一期（3 015 → 2 536 行）**：安装后打的两个载荷补丁搬成 mixin——Windows boot jar（两个 base64 内嵌 class、
+  缓存 / webparams / log4j 改写、按条目重写 jar）→ `windows_jar_patch.py`，macOS 启动器（「只杀自己起的 pid」）→ `mac_launcher_patch.py`；
+  `_apply_runtime_overrides` 与 `_runtime_template_root`（路径深度）、`PAYLOAD_LONGEST_ENTRY_CHARS`（发布脚本按正则读源码）留在 manager。
+  安装 / 生命周期 / 诊断的 mixin 拆分（审计的二、三期）**没做**：那是事故最多的代码，等哪次真要改生命周期时一起做。
+- **没做的**：审计建议把 9 条择日指引的重复字段收成工厂函数（约省 160 行）。没做——每条是要整条读的声明式数据，而且上一条正说明
+  共享对象在这张表里会被原地写；省下的行数不值这个风险。
+- **法则**：import 期对模块级共享对象的原地写，一律写时复制；拆分只搬不改，表面逐字比对兜底。
+
+：重试梯子改了结果、静默吞错数不出来、算源指向不存在的 runner（`silent_handler` / `SHARED_RUNNER`）
+
+- **起因**：第 2 批 = 防御性代码审计里「不必要 / 有害」的那部分。每条先证明再动：能实测的实测，留下的写清为什么留。
+- **症状 → 根因 → 修复**：
+  1. **经度重试梯子会把西经改成东经，而且「成功」**：`_java_chart_payload_candidates` 在 Java 回 `param error` 时依次重试若干写法，
+     其中两族把 `gpsLon` 取了 `abs()`——纽约 −74° 变成 +74°（里海），盘照样起得出来，调用方不会知道。实测（纽约 / 布宜诺斯艾利斯 / 檀香山三地 ×
+     110 技法，330 次运行、534 次远端调用）一次重试都没有发生，更没有落到这两族。→ 删掉；测试改为「候选里的经度符号一律与输入一致」（负向对照：
+     恢复旧梯子即红）。其余写法（斜杠日期 / `zone` 写法 / 只给 gps）只改**格式**不改**值**，留下并写进 docstring。
+  2. **宽 `except` 什么都不说时，`verify_silent_degrades.py` 的 `logger.warning(` 棘轮看不见**：v0.36.0 清完 35 处 `logger.warning` 后，
+     `except Exception: pass` / `return ""` 这种连日志都不写的处理，审计（AST，不是 grep）数出 12 处；4 处在 `service.py`——
+     相关人物的 `/nongli/time`、天星 [选中时刻星盘]、迁移盘本命四轴对比三条富化路径，正是 v0.36.0 要清掉的那一类。
+     → 这 3 处改 `_degrade(...)` 进 `envelope.warnings`（第 4 处是属性读取，改 `getattr`）；doctor 端点身份与 uninstall 停服失败改为报告字段
+     （`endpoints_error` / `stop_error`）；记忆存储的 JSON 读取收窄到 `OSError` / `ValueError`。名人库检索反过来是**报两次**（`_degrade` +
+     旧 `_warnings` 通道，措辞不同去重不掉），并成一条。同一脚本加第二条 AST 规则 `silent_handler`：处理体只有 pass / continue / 返回或赋值常量、
+     且不调用任何东西的宽 `except` 按文件计数入棘轮（基线 25，全是「拿不到就是答案」的探针，逐条带注释）。
+  3. **算源生成器 `SHARED_RUNNER` 把 keypoints / lunationphase / triplicityrulers 指向三个从没存在过的 runner 名**（2026-08 起）：AST 扫不到证据 →
+     兜底判成 `local_data`「不起盘：读本地离线库」，技法依据卡照此对用户说。它们实际是 `/chart` 铸盘 + vendored progextra builder 推算；
+     balbillus（一行转发）同样缺证据。→ 映射改到 `_run_progextra_js_tool`、四者归 `composite`；生成器对 `SHARED_RUNNER` 的非空值断言存在。
+  4. **PDF 找不到任何中文字体时静默退 Helvetica**，产出一份全是豆腐块的 PDF 且报告 `ok`。→ 改为抛错，`render_report` 走既有的降级路径
+     （`degraded_from: pdf` + 原因）；取消信号（`BaseException`）不再被当成渲染失败吞掉。
+  5. 其余：解密失败在严格路径上抛 `transport.decrypt_failed`（此前返回原始密文当 JSON 解）；`openclaw-check --full` 从 wheel 安装运行时
+     说明脚本只随源码仓分发（此前只回 Python 的 "can't open file"）；坏的记忆产物 JSON 带 `payload_error`；`fetch_manifest` 把失败原因打到 stderr
+     （判定仍是关闭式的 `[GAP]`）。
+- **法则**：重试只许改**写法**、不许改**值**——会改变结果的回退等于静默换题；「静默」也要能被机器数出来，不然清理完一种写法，另一种照旧；
+  名字到实现的映射表要断言目标存在，否则写错名字的后果是「安静地判成最保守的那一类」。
+
+### v0.41.1-dev / 2026-10-20 — 可维护性重构第 0 批：测试会打到桌面版、门禁镜像漏跑多行步骤（`ci_test_steps` / `useless_patch_reason`）
+
+- **起因**：用户要求「全量扫之前用 ChatGPT 时留下的防御性代码，不必要的精简删去」+「把整个仓库做成更好长期维护的样子，已有功能都不能丢」。
+  五路只读审计（死代码 / 防御性代码 / service.py 拆分 / 其余大模块拆分 / 脚本测试 CI 文档）+ 重构前录下对外表面基准（CLI 帮助、MCP 两面、25 家客户端配置、
+  110 技法契约与闸门、110 技法 live 完整信封；两次录制逐字节一致）。每批重构后重录并逐字比对。
+- **症状 → 根因 → 修复**：
+  1. **本会话录基准时把计算请求发到了用户桌面版的 8899**：只 unset 了 `*_SERVER_ROOT`，闸门放行的技法回落到默认端口。审计随后发现测试本身也会：
+     `tests/conftest.py` 不钉后端，34 处 `Settings(...)` 用默认端口，`test_uninstall_dry_run_then_execute` 一条探 20 s。CI 两个端口上没人，所以从未暴露。
+     → conftest 两根 setdefault 成 :9 + 进程内拒连 8899/9999（`tests/test_desktop_port_guard.py`；那条测试 20 s → 0.06 s，侧证它此前确实在探桌面版）。
+  2. **`run_ci_gates.py` 跳过所有 `run: |` 多行步骤**：`verify_runtime_scripts.py` 与其 `--self-test` 从未在本机跑过，文档却写「全部门禁」；守护它的测试也只看单行步骤。
+     → `ci_test_steps` 收「每行都是 `uv run`」的多行块（镜像 24 → 25 步）；测试改成 test 作业里点名的每个 `verify_*.py` 都必须进镜像。
+  3. **拆大模块的头号隐患：re-export 让 monkeypatch 静默失效**（审计计数 cli 55 处、manager 39 处、service 三处冻结时间等）。
+     → `tests/test_monkeypatch_targets.py`：被 patch 的名字若在目标模块里只被 import、从不使用 → 红（`useless_patch_reason`，负向对照内置）。
+- **法则**：护栏要在 CI 看不见的地方也成立——「CI 上那个端口没人」不等于「测试不会去连」；拆分之前先把「拆错了会安静变绿」的路堵上。
+- **第 1 批（删死代码，约 690 行）**：`service.py` 里 v0.40.0 起被 `engine/astro_snapshot.py` 取代的旧「古典 / 古典格局」实现（含一处静默 `except`）
+  与 6 个孤立辅助；其余模块 18 处无引用的函数 / 常量 / 导入；4 个历史构建脚本（本地双平台、Linux 实验、重打）连同只为它们存在的测试与守卫条目；
+  preflight 永远为空的「非阻断闸」分支、`run_ci_gates` 的死 `SKIP`。每项都经全仓 grep + 覆盖率 + `ruff F821` 兜底，对外表面与 110 技法 live 信封逐字一致。
+  **live 比对踩到的**：上游 `/predict/dice` 用 `set()` 收星体再遍历，顺序随 chart 进程的哈希种子变——同一实例内稳定、换实例就变。
+  比对 live 结果时 `diceChart` 要按多重集合比较（导出正文不受影响）；别把它误判成回归。
+
+### v0.41.0 / 2026-10-12 — 接入面四缺口：规则只到得了打开本仓的 agent；注册表 validate 说 valid、publish 会拒（`skill_install` / `server_json_problems` / `check_agent_plugin`）
+
+- **起因**：用户问「上架 DeepSeek 官方 skill 插件、让主流 harness 丝滑接入还差什么」。评估（2026-10-12，22 家客户端 + 17 个分发渠道逐家读官方文档）
+  给出四个零成本缺口，用户四项全批。
+- **症状 → 根因 → 修复**：
+  1. **只装了 wheel 的用户，agent 从没读过规则**。`setup` 只写 MCP 配置；「先问后调 / 读快照 / 禁手算」住在 `skills/horosa-agent/SKILL.md`，
+     只有打开本仓的 agent 读得到——而 wheel 里根本没有这份文件。各家客户端现在都从固定的用户级目录读 Agent Skills（`~/.agents/skills`
+     是共享的那个）。→ wheel 内带生成副本 `src/horosa_skill/agent_skill/horosa-agent/`（`gen_agent_mirrors.py` 生成；climbing 链接改写成
+     GitHub URL；docs-sync `bundle_drift` 锁）；`setup` 第 4 步装 skill（每个客户端只装一处，避免同时读共享目录与自家目录的客户端看到两份）；
+     `client skill` 单装；`client check` 报 skill 状态。已有目录：软链接（`npx skills` 管）不动、无标记的同名目录不动、用户改过的先备份。
+  2. **注册表的 `/v0/validate`（`mcp-publisher validate`）对旧 server.json 说 valid，真 publish 会拒两次**：命名空间写成小写
+     `io.github.horace-maxwell`——OIDC 按 GitHub 原样授予 `io.github.Horace-Maxwell/*`，前缀比较区分大小写（issue #689）；pypi 包不存在。
+     两条都只在 publish 时执行，没发过所以没人见过。另：mcpb 的 sha 在 tag **之后**才回填（不可复现打包），tag 处的 server.json 带旧 sha，
+     而注册表版本不可变——发错一次就永远错。→ MCPB-only + 原样大小写；`verify_server_json.server_json_problems` 加 publish 时规则
+     （大小写 / 禁 pypi / publisher-provided ≤ 4096 B / tag 钉死的资产 URL）；`render_registry_server_json.py` 只信发布页 `SHA256SUMS.txt`
+     并复刻注册表的 HEAD 探测；`publish-mcp-registry.yml`（可复用 + 可手动）挂在 release-runtime 的 `publish` 之后（草稿资产匿名 404），
+     先查「已登记则跳过」，publisher 钉版本 + sha。
+  3. **Agent Plugins v1**（VS Code / Copilot CLI / Codex / Kiro / OpenHands 读仓根 `plugin.json` + `mcp.json`）：schema 封闭——清单里写
+     `skills` / `mcpServers` 是规范外字段，server 少 `type` 或 command 写成 shell 行整条拒收；Cursor 不展开 `${PLUGIN_ROOT}`。→ 两份根文件
+     （1.0.0；command = `uvx`，args 钉当前版本 wheel，零占位符，精简面）；`verify_client_configs.check_agent_plugin` 九类违规负向对照；
+     `bump_version` 同改。
+  4. **`setup` 9 家 → 25 家**（OpenCode / Goose / Kiro / Copilot CLI / Junie / Qwen / Kimi / Qoder / CodeBuddy / Trae / Amp / Warp / Droid /
+     Augment / Deep Code / dsh）。各家只差在几个会静默失效的事实上：OpenCode 命令是**一个数组**、没有 `args` 键（多写的被静默丢弃）、env 叫 `environment`；
+     Goose 是 YAML、缺 `enabled` / `args` 的条目被静默跳过、超时单位是秒；Amp 的根键是字面量 `amp.mcpServers`、条目不许多余字段；
+     CodeBuddy 只读三个文件里第一个存在的（新建首选文件会把用户旧文件里的 server 藏起来）；Deep Code 见注释就把整份配置连 API key 丢掉
+     （→ 有注释则拒写）；Kimi 一条坏整份拒；Copilot CLI 文档说只转发 PATH（→ env 表写 HOME 与 runtime 根，探针按只给 PATH 起）；
+     TRAE 没有用户级文件、全部 MCP 合计 40 个工具（→ 打印 `trae://` 导入链接）；dsh 的补丁文件可能有用户别的补丁与 `!!js` 标签
+     （→ 只生成独立补丁）。缺省超时撑不过 45 s 冷启动 / 几分钟择日扫描的，写进配置并让 `client check` 报缺；只能用环境变量的
+     （Kiro / CodeBuddy / Deep Code）写进 next_steps。中等置信度的 5 家（kiro / junie / qoder / codebuddy / dsh）只写文档确认过的字段。
+     → `clients_extra.EXTRA_CLIENTS`（每家一行事实）+ `tests/test_clients_extra.py`；16 家全部进真机 lane。
+- **实现时当场踩到的**：
+  - **lane 继承真 HOME**：`verify_runtime_live.client_setup` 的 env 只隔离 runtime / data 根（uv 缓存要用 HOME），`setup` 新增的写路径
+    （skill 目录）会在维护机上本地跑 lane 时写进维护者自己的 `~/.agents/skills`。→ lane 每次 setup 带 `--skill-dir <工作目录>`，
+    并要求 SKILL.md 真落盘（负向对照：setup 报 installed 但磁盘没有 → 红）；单测经 `skill_install.default_home` 这一个接缝重定向。
+  - **OpenClaw 的产物也是 `{"mcp": {"servers": …}}`**：把 OpenCode 的 `mcp` 根键加进 `_MERGEABLE_ROOT_KEYS` 的猜测表，会把 `servers`
+    当成一个 server 合并、覆盖用户已有的全部条目。→ 新格式由产物显式声明 `root_key`，不进猜测表。
+  - **AGENTS §5.15 说「`verify_docs_sync.check_client_matrix` 锁 README 矩阵」——这个函数早已不存在**：规则写着有人锁，实际没人锁。
+    → `tests/test_client_lockstep.py`：每个 `setup` 键必须同时出现在 lane、生成器各表、skill 目录表、README×2 矩阵、示例索引、`setup --help`、
+    第三方事实台账（负向对照：lane 少一家即红）。
+  - **YAML 里用 tab 缩进的子行，按空格计缩进为 0**，会被读成新的顶层键——`extensions` 块被截断后照样插入。→ `yaml_block` 见 tab 一律拒写。
+  - **stdio 探针只给 Codex 补 runtime 根**：Copilot CLI 的条目里已经写对了 HOME 与两个根，探针却只拿 `{surface_env}` 起 server → 算出默认根 →
+    `setup.stdio_probe_runtime_mismatch`，把「配置写对了」测成失败。单测全关了探针（`--no-stdio-probe`）所以全绿；25 家真探针本机实跑第一家就红。
+    → 探针的 env = 条目里**实际写着**的 env（客户端真会交给 server 的那份）；回归测试的负向对照红在 runtime_mismatch。
+  - **推上 main 后 windows-smoke 红两条，都是换行**：保注释写入（新 Goose YAML、以及**既有**的 JSONC 分支）把已带 `\r\n` 的文本交给
+    `write_text`，Windows 文本模式再把 `\n` 翻成 `\r\n` → `\r\r\n`，每跑一次多一倍空行（Windows 编辑器存出来的 Zed / VS Code 设置正是 CRLF；
+    JSONC 分支的这个坑从 v0.38.1 起就在，只是没有 CRLF 的测试）。另一条是测试自己用 `write_text` 写文件、按 LF 字节算摘要。
+    → 保注释写入一律按原文件换行拼好、按原字节写（`newline=""` / `write_bytes`）；`test_comment_preserving_writes_keep_crlf_files_crlf`
+    （JSONC 在 macOS 上旧代码就红：插入段是 LF、混合换行；YAML 只有 windows-smoke 能判红）。
+- **守卫**：`tests/test_skill_install.py`、`tests/test_yaml_block.py`、`tests/test_mcp_registry.py`、`tests/test_client_lockstep.py`、
+  `tests/test_setup_command.py`（skill 步骤 3 条）、`tests/test_verify_client_configs.py`（Agent Plugins 9 条）、`tests/test_verify_runtime_live.py`
+  （lane skill 隔离）；`verify_server_json.py` 对旧 server.json 实跑红两条（负向对照）。
+- **法则**：只在发布时执行的规则，没发布就等于没执行——把对方 publish 时的检查在本地复刻一遍，别信它的 validate 端点。setup 写的每一个
+  新路径（配置之外的）都要有给测试与 lane 用的接缝。
+
+### v0.40.2 / 2026-10-11 — 表面审计：service 层全绿，agent 却在 8 个地方走不通（`resolve_tool_name` / `_ensure_column`）
+
+- **起因**：用户要求「CLI、MCP、API 重点再查一遍，确保任何 AI 拿到仓库就能用全部功能」。已有的 live 层（live pytest、`section_harness.py`
+  110/110、全面自检）全部直调 `HorosaSkillService.run_tool`——闸门、MCP 参数处理、`horosa_tool_run`、CLI 退出码与文件 I/O、HTTP 鉴权、门面 /
+  资源 / 提示这些**只存在于表面层**的东西从没被成批跑过。这次对 vendored 实例逐个技法走 MCP 全量面、精简面、`tool run`、HTTP，并扫了全部
+  CLI help、MCP 描述与 instructions、文档里 273 条 `horosa-skill …` 命令。
+- **症状 → 根因 → 修复**（每条都有离线测试，`tests/test_agent_surface_audit.py`；对未改的 main 跑同一测试文件 129/130 红，唯一绿的是「技法缺参仍问用户」这条保持性断言）：
+  1. `tool run horosa_astro_chart` / `horosa_tool_run(tool_name="horosa_astro_chart")` 报 `tool.unknown`——SKILL.md 与 tools/list 教给 agent 的就是
+     MCP 名，执行层只认注册表键；`agent guidance` 却两种都认。更糟：澄清闸对**不认识的名字放行**，只在执行层补认 MCP 名就等于换个写法绕闸。
+     → `engine/registry.resolve_tool_name` 单点解析，闸门 / 执行 / input contract / `report_from_tool` / hecan `tools` 全走它，闸门先解析再判；
+     `tool.unknown` 三处同形带 `details.catalog`。
+  2. `dispatch` / `hecan` 收到平铺的出生信息（技法工具的写法）→ FlexibleModel 当额外字段收下、路由看不见 → 被选技法报缺 date，追问文本让用户
+     「请提供出生日期、时间、时区和地点」——用户给过。→ `DispatchInput._lift_flat_birth`（没给 birth / subject 且有 date 时收进 birth）。
+  3. `memory answer` 缺 `ai_answer`（AI 自己的解读正文）回 `must_ask_user: true` + 「请先确认会影响结果的设置」，而 SKILL.md 规定见 agent_recovery
+     就停下问用户。→ `AGENT_OWNED_OPERATIONS`（记忆 / 报告门面）回 `must_ask_user: false` + `fix_fields`；SKILL.md / AGENTS 改为按 must_ask_user 分流。
+  4. 精简面（Cursor / VS Code / Codex / Gemini / Windsurf / Cline / Zed 的默认）的 server instructions 写「120 tools」，tools/list 只有 11 个。
+     → `_server_instructions(compact=True)` 变体，四态都锁 ≤ 2048 字节。
+  5. CLI：19 条命令（含 `tool run` / `tool list` / `serve` / `doctor` / `dispatch`）在 `--help` 里没有一句说明；`client config --surface` 写「116 个工具」；
+     `knowledge search` 写「24 个域」（实为 31）；`knowledge registry --domain` 只列 astro/liureng/qimen；server.json 写「106 technique tools」；
+     knowledge 两个工具的 MCP 描述还停在「悬浮知识三域」。→ 全部补齐 / 计数取真值 / 去数字；守卫：每条命令与参数必须有 help，
+     `--surface` 的数必须等于真值；docs-sync 的计数守卫扩到 server.json 与「N technique tools」英文写法，README_EN 的
+     「100 technique tools trigger」并入闸门计数断言（此前只认中文）。
+  6. guidance / `tool list` 的 `example_payload` 只有预测族 9 个，其余 101 个 agent 只能照字段表拼。→ 取 `testing_payloads` 的 live 样例
+     （去 gpsLat/gpsLon、换掉自测说明、需确认的一律带确认字段并附 `example_note`）；守卫：110 个示例逐个过闸门与输入模型。
+  7. qimenzeri 的依据卡每次都标「⚠️ 与声明不一致」：声明只写 JS 工具名，runner 实际回 `{scan: local_calcDunJia, pan: kinqimen}`。
+     → `gen_technique_provenance.ENGINE_OVERRIDES`；`section_harness.py` 的 clean 现在要求 `matches_declaration` 不为 false（负向对照：
+     换回旧声明 → `2 tools run; clean=1`）。
+  8. 新审计脚本自己在全新数据目录上 6 路并行 `tool run` 时撞出：两个进程都看到列缺失，后到的 `ALTER TABLE … ADD COLUMN` 报
+     `duplicate column name` 直接崩（exit 1）——两个客户端同时起 stdio server 也会。→ `MemoryStore._ensure_column` 把并发的 duplicate column
+     视为迁移已达成（其余 OperationalError 照抛）；确定性竞态测试对旧代码红。
+- **守卫**：`tests/test_agent_surface_audit.py`（132 条）+ docs-sync 两处扩展（负向对照：server.json 改回 106、README_EN 改成 99 都红）+
+  `scripts/surface_audit.py`（发版前 live：356 项 failed=0；写进 OPERATIONS Live Runbook 与 AGENTS §8）。
+- **法则**：验收在哪一层跑，就只证明了那一层。agent 用的是 CLI / MCP / HTTP 的表面——闸门、名字、参数形状、错误恢复契约都住在那里；
+  service 层 110/110 不能替表面层作证。一个能被 agent 读到的数字（help、描述、instructions、注册表卡片）要么从真值算，要么不写。
+
+### v0.40.1 / 2026-10-06 — preflight 会把本地未推送的上游 HEAD 写进 pin：`pin_to_record` 只记公开远端取得到的提交
+
+- **症状**：发 v0.40.1 时 preflight 全绿，收尾提示「`contracts/upstream_provenance.json` was rewritten; commit it」——diff 里 pin 从 f27c00a9
+  变成 ecd742f6：上游维护机当天 11:13 的**本地未推送**提交（只改 `Horosa_Desktop_Installer/scripts/` 下的打包脚本）。照做就是 v0.40.0
+  教训的原样重演：公开发布的 provenance 指向别人取不到的提交。这次靠人眼看 diff 拦下、复原，没提交。
+- **根因**：preflight 的「upstream pin is on the upstream public remote」排在 GATES **之前**，验的是已提交的旧 pin；随后 GATES 里的
+  `verify_upstream_sync --require-upstream --write-state` 无条件把 `git rev-parse HEAD` 写进 pin。检查对象和最终写入对象不是同一个。
+- **修复**：`verify_upstream_sync.pin_to_record(upstream, head)` 决定记什么——
+  - 输入路径上有未提交 / 未跟踪改动 → 拒写（比对读的内容没有任何提交承载）；
+  - HEAD 在某个远端跟踪分支上 → 记 HEAD；
+  - HEAD 只在本地 → 取离 HEAD 最近的已推送祖先（各远端分支 merge-base 中距 HEAD 最近者）：未推送提交一个输入都没碰 → 记它，碰了 → 拒写。
+  「输入」= `UPSTREAM_INPUT_ROOTS`（Horosa-Web/、runtime/、scripts/）+ `UPSTREAM_INPUT_FILES`（Horosa_Desktop_Installer/package.json）。
+  staleness 检查用同一规则（只多了不碰输入的未推送提交 → 记录仍有效，notice）。preflight 的 pin 闸挪到全部闸之后验最终 pin；收尾只在
+  provenance 真变了才提示提交，并写明 pin 旧 → 新。
+- **守卫**：`tests/test_verify_upstream_sync.py` 新增 8 条——临时 git 仓 + 裸「公开远端」：已推送记 HEAD / 只改安装器脚本退到祖先 / 改了
+  vendored 输入拒写 / 只改版本 manifest 拒写 / 输入路径脏拒写（输入外的脏文件不挡）；读上游的 6 个脚本里出现的上游路径必须都在输入清单内
+  （扫描 + 两条合成负向对照）；preflight 闸序。把 `pin_to_record` 改回「恒记 HEAD」、把 pin 闸挪回前面 → 5 红（已验）。
+  顺带抓到一个真 bug：`_git` 会 strip 整段输出，`git status --porcelain` 首行「 M path」的前导空格被吃掉，按固定第 3 列切路径会切错——改为状态码正则。
+- **实测**（本机上游 HEAD 14823b06：比 f27c00a9 多 2 个只改安装器脚本的未推送提交，另有 SELFCHECK_LOG.md / README_EN.md 未提交）：
+  staleness 给 notice、`--write-state` 退到 f27c00a9，provenance 一字未变；完整 preflight 端到端见提交说明。
+- **法则**：「检查」与「写入」必须作用在同一个对象上——先验旧值、再写新值，等于没验。写持久声明（pin、锁、清单）的地方自己守住前提，
+  不靠上下文里排在前面的另一道闸。
+
+### v0.40.1 / 2026-10-06 — `bump_version.py` 误改历史注释：代码站点只改版本赋值行
+
+- **症状**：发 v0.40.1 时 `bump_version.py 0.40.1` 报 pyproject.toml 改了 2 行——除了 `version = "0.40.0"`，还有注释
+  「# v0.40.0 P1：运行期契约（Jev 阈值锁 / 技法算源）此前不在 wheel 里…」，被改成了 v0.40.1，历史就此失真。`--check` 与门禁都绿
+  （它们只查「站点带新版本号」，不查「不该动的没动」）；是提交前逐行看 diff 才看到。
+- **根因**：通用规则把含旧版本号的每一行都换掉，历史行靠 `HISTORY_MARKERS`（as of v / 起 / Since v / 自 v / v0.27.0–）豁免；
+  这条注释一个标记都不含。代码文件里版本只有一处赋值，其余提到版本号的地方都是历史。
+- **修复 / 守卫**：`pyproject.toml` 与 `__init__.py` 只改 `version = "…"` / `__version__ = "…"` 这一行（与锁文件同样限定范围）；
+  `test_bump_version_touches_only_the_version_line_in_code_sites`：两个代码站点各只动一行、注释原样；同一文本按通用规则会动两行（负向对照）；
+  把脚本换回旧版这条红（已验）；在真实的 v0.40.0 文件上跑一遍，两处都只改了版本行。
+- **法则**：批量改版本号的工具只该碰「当前版本」的站点；能精确到行的站点（代码赋值、锁文件条目）就精确到行，关键词豁免只是兜底。
+  bump 之后逐行看 diff，别只信 `--check`。
+
+### v0.40.0 / 2026-10-05 — 只有维护机看得见的弃用：Python 3.13 弃用 `re.split` 位置 maxsplit，CI 钉 3.12 永远不报——undefined-names 闸加 `B034`
+
+- **症状**：换新 Windows 机（venv 是系统 Python 3.13.15）后在独立 worktree 跑 `run_ci_gates.py`，24/24 全绿，但
+  `scripts/verify_runtime_python_lock.py:37` 的 `re.split(r"[<>=!~\[; ]", line, 1)` 打出 DeprecationWarning。
+- **根因**：CPython 3.13 起 `re.split` 的 maxsplit、`re.sub` / `re.subn` 的 count 与 flags 按位置传参即弃用，计划日后改成 TypeError
+  （位置参数还容易把 flags 误当 count）。CI、矩阵、载荷解释器都钉 3.12，所以任何自动化都看不到；只有 venv 更新的维护机会看到一行
+  警告，而警告不会让任何门禁变红。
+- **修 / 守卫**：改成 `maxsplit=1`（全仓只此一处）。`scripts/verify_undefined_names.py` 的规则集从 F821/F822/F823 扩到加 ruff `B034`
+  （同属「运行时会崩」类：现在是弃用，换解释器后就是异常），基线 0；`--self-test` 增一对合成模块（位置 maxsplit 必红、关键字必绿）。
+  负向对照：修第 37 行之前先扩规则跑本仓 → 红、正好报这一行；修后绿；`python -W error::DeprecationWarning` 跑该脚本也通过。
+- **教训**：CI 钉的解释器版本之上的弃用，只能靠静态规则兜，不能指望谁在新 venv 里留意到一行警告。
+
+### v0.40.0 / 2026-10-01 — Windows 公开版冷线程算星历：上游 astroextra 直接调 swisseph、不经 flatlib，只关短路不够——启动器补 `SE_EPHE_PATH`（与上游桌面端同）；更正 09-30「桌面端同中」
+
+- **背景**：v0.40.0 公开（56d70fa，release-runtime 36896659949）后本机复验：`sync_windows_release.py --check` [OK]；worktree @f3f4c59
+  `run_ci_gates.py` 24/24（1690 passed）；release 模式原生 lane（公开 zip 真下载 718,648,986 字节，全新根 `rt-v040` + 28899 / 29999）
+  12 步全绿，pytest 1791 passed / 0 failed / 28 skipped（1095 s）。mac 侧的星历方向偏离（2086b9f）在 Windows 上审过：方向取离留 ≤ 1 天的
+  逐日速度正负；留恰好落在网格点附近时，上游扫描会把它归到下一个区间，下一行仍离它一整天，判向照样对。
+- **症状（复验顺带查出）**：同一公开 runtime 刚起时，40 个相同的 `/astroextra/ephemeris`（不含行运）并发请求回来 2 种结果，只有 1 个与
+  「同一份上游代码在本进程、用自带星历算出的参照」逐值相同，39 个月亮黄经最多差 5.7e-7°；先用 300 个 `/chart` 把 30 个池线程都走一遍
+  flatlib，再打同一批，40/40 相同。
+- **根因**：上游 `astroextra`（不含行运的 `build_ephemeris`、`compute_prenatal_syzygy`）经 `swe_lon` 直接调 `swisseph.calc_ut`，从不经过
+  flatlib 的 `ensureEphePath`（`base_params` / `Datetime` 都是纯计算）；CherryPy 池线程若还没服务过 flatlib 请求，就从没设过路径。libswe
+  对这种线程在首次计算时走 `swe_set_ephe_path(NULL)`：先看环境变量 `SE_EPHE_PATH`，没有才用编译期默认 `\sweph\ephe\`（盘符相对）——本机
+  读到别的占星软件留在 `C:\sweph\ephe` 的旧文件（静默偏差），干净机则行星退 Moshier。7b8da79 关掉的短路只保证「经过 flatlib 的线程每次都
+  设路径」，管不到这些直接调用。上游桌面端没有这个问题：它的启动器（`electron/service-manager.js`）给 chart 进程设了
+  `SE_EPHE_PATH = swefiles`，chart 服务里也没有按线程设路径的钩子（无 `start_thread` 订阅）。
+- **另一面（实测）**：`SE_EPHE_PATH` 连显式 `set_ephe_path(路径)` 都压得过——设成 `C:\sweph\ephe` 时，主线程显式设自带目录也读
+  `C:\sweph\ephe\seas_18.se1`。所以用户机器上若有全局 `SE_EPHE_PATH`（别的占星软件装的），从前会劫持 chart 进程的每一个线程；启动器显式
+  设它，同时堵上了这个口子。
+- **修复**：Windows 启动器模板起 chart 前设
+  `$env:SE_EPHE_PATH = [System.IO.Path]::GetFullPath((Join-Path $FlatlibRoot "flatlib\resources\swefiles"))`，目录不在就 throw 拒绝启动；
+  与 flatlib 传给 `set_ephe_path` 的是同一个目录，别的不变；`HOROSA_EPHE_PATH_FASTPATH=0` 保留（双保险）。存量安装：升级 skill 后
+  `runtime restart`（每次 start 重拷模板）。端到端：同一公开 runtime 用修后的模板重起，冷启同一批 40/40 与参照逐值相同、只有 1 种结果。
+- **守卫**：`verify_runtime_scripts.py` Windows 不变量 6（那行在、指向自带 swefiles、在起 chart 之前，并有目录存在性检查）+ 上游树在场时
+  查 swefiles 目录仍在；`--self-test` 新增 4 个负向对照（删行 / 指到别处 / 挪到起 chart 之后 / 删存在性检查），16 种坏法全抓；
+  `tests/test_runtime_launcher_templates.py` 三条：顺序与目标、守卫负向、**真载荷二进制行为**
+  （`test_se_ephe_path_reaches_threads_that_never_set_a_path`：Windows 上用已装 runtime 的 python + pyswisseph，有 `SE_EPHE_PATH` 时
+  新线程读自带星历、没有时读不到——负向对照证明是这个变量起的作用；没装 runtime 的环境 skip，lane 上必跑）。
+- **更正（09-30 条目「星阙桌面端」）**：当时说桌面端同中此短路是**错的**——离线探针没带桌面端启动器给 chart 进程设的环境变量。带上
+  `SE_EPHE_PATH`（及 `HOROSA_SWISSEPH_PATH` / `HOROSA_SWEPH_PATH`）重跑：新线程读自带星历、与主线程逐值相同；去掉 `SE_EPHE_PATH` 才复现。
+  桌面端不受影响，用户无需设任何变量（本机用户 / 机器级都没设过 `HOROSA_EPHE_PATH_FASTPATH`）。另：Java 后端（astrostudyboot.jar，
+  505 个条目 / 342 个内嵌 jar）里没有 Swiss Ephemeris，桌面端给 Java 设的那三个变量与本仓无关。
+- **mac 侧（只报告）**：本机 vendored 的上游 mac 启动器（08-09 那份）不设 `SE_EPHE_PATH`，manager 的 mac 补丁也不设——mac 的星历状态是
+  全进程的，没有冷线程问题；但用户全局 `SE_EPHE_PATH` 照样会劫持。mac 启动器要不要也显式设，由 mac 侧定。
+- **法则**：① 修线程本地状态的问题，别只修「某条代码路径记账」——找那个库给所有线程的兜底入口（这里是 `SE_EPHE_PATH`），并对照上游
+  自家启动器（桌面端早就这么设）；② 离线探针要带上被测进程真实的环境变量，否则结论可能整个反过来（09-30 的桌面端误判）；③ 冷启确定性
+  要专门测：服务刚起时并发同一请求、与进程内参照逐值比，再和「池线程全热」对照。
+
+### v0.40.0 / 2026-10-01 — release 模式矩阵 ARM lane 1 红：假 PID 用例没钉 `process_image_path`，托管 runner 上 4242 真有进程
+
+- **症状**：v0.40.0 公开后，publish job 触发的 release 模式矩阵 36903587803：macOS / Windows x64 绿，windows-11-arm 1789 passed / **1 failed**——
+  `test_runtime_ports_identity.py::test_app_marker_does_not_shadow_the_command_line_evidence`：`'identity.app_marker' == 'process.command_matches_runtime_root'`。
+  同一批资产一小时前的 publish run（36896659949）里 ARM 是绿的；安装 / 启动 / doctor / 引擎 / 重启各步都绿。
+- **根因（测试，不是产品）**：用例把 `identity.listener_pids` 换成 `[4242]`、换了 `process_command` 与 `probe_identity`，却没换
+  `process_image_path`。`_holder_evidence` 先问映像路径：4242 不存在时返回 None → 去取命令行 → 判 ours（命令行含根）；托管 runner 上 4242 恰好是
+  某个真进程时，拿到它的映像（不在根下）→ 不再取命令行 → 证据退成弱的 `identity.app_marker`。同文件另有两条假 PID 用例同病。产品逻辑没问题：
+  真实场景里我方进程的映像就在 runtime 根下（一级证据）。已公开的 v0.40.0 不受影响。
+- **复现**：autouse 夹具把 `process_image_path(4242)` 换成 `C:/Windows/System32/svchost.exe`（模拟 PID 被占）→ 本机得到与 lane 逐字相同的断言错误。
+- **修复 / 守卫**：三条假 PID 用例都钉 `process_image_path → None`；`test_fake_pid_identity_tests_pin_the_image_lookup_too` 静态扫本文件——
+  换了 `listener_pids` 字面 PID 的用例必须同时换 `process_image_path`（去掉一处即红，已验）；「4242 被占」模拟下修后全绿。
+- **法则**：用假 PID 的单测要把**所有**按 PID 查真系统的入口都替换掉（映像、命令行、监听、存活）——漏一个，结论就取决于那台机器上同号进程在不在；
+  「本机 + CI + 前几轮 lane 都绿」证明不了这种依赖不存在。
+
+### v0.40.0 / 2026-10-01 — macOS lane 四条 ERROR at setup：夹具子进程报号前卡在 `socket.getfqdn`（HTTPServer 构造里的主机名反查）
+
+- **症状**：在 2086b9f 上重跑 draft 矩阵 36878423196，此前一直绿的 macOS lane 红了：1785 passed / 0 failed / **4 errors**，全是
+  `tests/test_runtime_ports_identity.py` 的 `listening_server` 夹具 `ERROR at setup`——「foreign listener never came up within 30 s — child still
+  running but never reported a port; stdout ''; stderr ''」。Linux CI、windows-smoke、两台 Windows lane 与本机 mac 都绿。
+- **根因**：并行会话的 1e10587（消 Windows WinError 10013 竞态，方向对）把夹具改成「子进程自己 `ThreadingHTTPServer(('127.0.0.1', 0))`，
+  构造完再 print 端口」。HTTPServer 的 `server_bind` 在 bind 之后、listen 之前调 `socket.getfqdn('127.0.0.1')` 反查主机名——托管 macOS runner 上
+  这一步超过 30 s，子进程活着却永远到不了 print。旧夹具没被它卡住，只因为它从不等构造完成：探针绑号后轮询 `port_bindable`（bind 一完成就
+  不可绑），而 darwin 的 `listener_pids` 认 netstat 里外部地址 `*.*` 的行、不看状态（macOS 26 runner 把别人的 LISTEN 印成 CLOSED），bind 后
+  就查得到——所以同一天 7b8da79 的 macOS lane（旧夹具）是绿的。
+- **修复**：子进程先裸 `socket` bind + listen + 立刻 print 端口，再把这个 socket 交给 `ThreadingHTTPServer(..., bind_and_activate=False)`
+  （不走 `server_bind`，就没有反查）；报号即「已在监听」的契约不变，WinError 10013 的修法（绑定发生在唯一使用者进程里）也不变。
+- **守卫**：`test_foreign_listener_reports_its_port_before_any_name_lookup`：给子进程的 `socket.getfqdn` 下毒（一调用就抛错）——新夹具照常报号、
+  对 `/definitely-not-a-file` 答 404；「构造在前、报号在后」的写法直接崩、报不出号（负向对照）；把夹具换回 1e10587 的写法，这条红（已验）。
+- **法则**：就绪信号要在满足契约的最早一刻发出（这里是 bind + listen 之后），信号之前不许有可能阻塞的库调用（主机名反查、DNS、证书加载…）；
+  「本机与 Linux CI 都绿」证明不了托管 macOS 的网络栈不慢——跨平台夹具改动要等三平台 lane 都跑过。
+
+### v0.40.0 / 2026-10-01 — 星历「留」的顺逆方向是浮点噪声：上游 `calc_stations` 按留点时刻的速度正负定向（本仓声明式偏离 `ephemeris_stations.py`）
+
+- **症状**：Windows 线程本地修复（上一条）后重跑 draft 矩阵 36807231297：x64 / ARM 都从 18 / 17 红降到 2 红（1777 过），只剩
+  `test_live_chart_service_reproduces_the_upstream_goldens[sample|south_sidereal]` 断在 `ephemeris`。差异只在「留与顺逆转向」表：
+  Direct / Retrograde 互换，另有两个留的时刻差 1 秒（见下条 2026-09-30 的实测噪声窗口）；表外逐字节相同。
+- **并行会话**：Windows 维护机上的另一路会话同时查到同一根因，先推了 1e10587 / ff41146（下条：测试侧按实测噪声窗口放宽、方向不比，
+  产品不改、「声明式 deviation 待用户拍板」）。本会话问了用户，用户拍板「skill 侧纠正后再发」；本条在 ff41146 之上 rebase 合并——
+  保留它的 `_lift_station_rows`（时刻 ≤ 10 s 的依据是实测窗口，比本会话起初的「只吸收 ±1 秒」更有根据，后者删去）与自我退役守卫，
+  方向因产品已纠正而放回比对（对 `station_truth`）。两路同推一个 main 时：推前 fetch，非快进就 rebase，绝不强推。
+- **先认错**：上一轮把这两条也归给线程本地（「行星退 Moshier、数值细微偏差」）——错了。一次 lane 里两个原因叠加时，修掉大头之前别把尾巴一起归给它；
+  修完再看剩下的，逐条对 diff。
+- **根因（上游）**：`astroextra.calc_stations` 用 1 天步长找速度变号，`refine_crossing` 二分 24 次（区间 ≈ 5 ms）后在中点取速度，
+  `'direction': 'Direct' if hit_speed >= 0 else 'Retrograde'`。留点上速度本来就≈0：本机实测 |hit_speed| 3e-9–5e-9 °/日，而前后半天是 4e-4–8e-2，
+  所以正负是浮点噪声——随 Swiss Ephemeris 的编译器（mac clang / Windows MSVC）和采样网格起点翻转（同一段代码换个网格起点，本机 4 个错 3 个）。
+  上游自己的金标：sample 4 个错 2 个（天王星 2026-02-04、木星 2026-03-11 实为转顺），south_sidereal 37 个错 17 个；Windows 上错的是另一批。
+  mac lane 一直绿，只因它的噪声与上游生成金标那台相同——**金标把噪声锁进去了**。星历是 v0.40.0 新工具（v0.39.0 没有）。
+- **决定**：用户拍板「skill 侧纠正后再发」（选项：按上游原样发 / skill 侧纠正 / 先修上游再同步）。
+- **修复（声明式偏离，`horosa-skill/src/horosa_skill/engine/ephemeris_stations.py`，`_run_ephemeris_tool` 调用）**：只用上游同一份响应，不多发请求——
+  `dailyPositions` 与 `calc_stations` 是同一张网格（本地零点、1 天步长、同一 `swe_lon`），留点之后第一行的速度正负就是真实方向；逐日表只有前 370 天、
+  留表最长 732 天，覆盖之外按同一行星的留严格交替续推（起点 = 上一个留，或覆盖末行的速度正负）。改过的留带 `directionUpstream`；判不出（响应没有逐日速度）
+  保留上游标签并经 `_degrade` 进 warnings。快照模块 `astroextra_snapshots.py` 仍是上游 builder 的逐字移植，偏离不混进去。SKILL.md 星历行注明「可能与星阙桌面版不同」。
+- **验证**：独立真值 = 每个留前后各半天的上游 `swe_lon` 速度变号（不经交替推算）：纠正后 sample 4/4、south_sidereal 37/37（含覆盖外靠交替推出的十几个），
+  上游标签分别 2/4、20/37。fixture 增补 `stations[*].jd`、只含速度的逐日行（每个留前后各一行 + 覆盖末行）、`station_truth`（同一请求从 vendored v3.11.3 实抓），
+  builder 读的键与金标原文不动。
+- **守卫**：`tests/test_ephemeris_stations.py`（纯函数：留后第一行定向 / 0 速度行跳过 / 覆盖外交替 / 无数据上报；内含上游规则在同一批数据上错 3 个的负向对照）；
+  `tests/test_sync311_newtools.py`：离线 runner 对「金标 + 真值方向列」（`_with_true_station_directions`）逐字比；live 用 `_lift_station_rows` 把停滞行拿出来，
+  星体 / 方向 / 位置逐字节、时刻 ≤ 10 s，其余逐字节——与平台无关；拿掉纠正 → 输出回到上游金标、与真值版对不上（负向对照）；去掉逐日速度 → 沿用上游标签 + warning；
+  `test_upstream_station_direction_is_still_ill_conditioned`（下条）改为提示「上游修好后本仓偏离可撤」。
+- **同一处的第二个平台差**：Windows 两个 lane 上另有两个留的时刻差 1 秒（2025-02-04 木星 06:40:23 / :24、2025-10-13 冥王星 23:52:09 / :10）——二分求根停在噪声窗口里的不同点（窗口实测见下条：冥王星 6.9 s、天王星 3.7 s…），四舍五入到秒进位不同。这不是错，所以不改产品；live 比对按下条的实测窗口放宽时刻（≤ 10 s）。核对 Windows 日志：两台差异全在留表里，表外 0 行。
+- **法则**：金标测试过了 ≠ 结果对。上游输出里凡是「在临界点上取值」（速度≈0 定方向、边界上定星座、平局取整）的字段，金标锁住的可能只是生成那台机器的噪声；
+  这类字段要对独立真值断言，不对金标。
+- **上游（只报告，不回写）**：`calc_stations` 应按变号方向定标签——`prev_speed > 0 >= speed` → Retrograde，`prev_speed < 0 <= speed` → Direct（两行即可）；
+  上游金标随之更正。上游修好后本仓偏离可退役（纠正结果与上游一致时 `directionUpstream` 自然消失）。
+
+### v0.40.0 / 2026-09-30 — Windows 维护机原生复验 v0.40.0 draft：矩阵最后 2 条红是上游 `calc_stations` 的病态求根（停滞方向 = 浮点噪声、时刻 ±1 s），不是 Windows 缺陷；同一星历路径短路在装过别的占星软件的机器上静默读旧星历
+
+- **症状**：7b8da79（启动器关短路）后的 release-runtime run 36807231297：macOS lane 绿；windows-latest（pytest 1433 s）与
+  windows-11-arm（2227 s）都是 1777 passed / **2 failed** / 28 skipped，红的恰是
+  `tests/test_sync311_newtools.py::test_live_chart_service_reproduces_the_upstream_goldens[sample|south_sidereal]`（`AssertionError: ephemeris`）。
+  本机原生 lane（draft 资产 `--assets-dir`）同样 1777 passed、只红这 2 条——凯龙回来了。逐行 diff 只落在星历快照「留与顺逆转向：」表：
+  方向 `Direct` / `Retrograde` 对调（sample 4 行全对调，south_sidereal 37 行里 17 行），外加 south_sidereal 两行时刻差 1 s（木星
+  2025-02-04 06:40:23→24、冥王星 2025-10-13 23:52:09→10）；入座 / 月相 / 食相与其余三个工具逐字节相同。
+- **根因**（上游 `astroextra.calc_stations`，只读核对）：逐日扫速度变号 → `refine_crossing` 对速度二分 24 次 →
+  `'direction': 'Direct' if hit_speed >= 0 else 'Retrograde'`，`hit_speed` 是**根处**的速度。用 draft 载荷自带的 pyswisseph（20230604）实测：
+  - Swiss Ephemeris 的速度带 5–9e-9 °/日的数值抖动，停滞处速度的变化率却很小（冥王星 4.6e-4、天王星 8.7e-4、木星 3.4e-3 °/日²），
+    根落在「速度符号由噪声决定」的窗口里：根附近 ±5 s、10 ms 步长采样，冥王星速度符号翻 181 次、窗口宽 6.9 s；天王星 3.7 s；
+    木星 / 土星 / 海王星 ≈ 0.5 s；水 / 金 / 火 ≤ 0.03 s。
+  - **方向是纯噪声**：按运动交替推真值（区间起点 `dailyPositions[0]` 的速度定初态，每过一个停滞点翻一次），mac 金标 41 行错 19、
+    Windows 41 行错 20——两边都是抛硬币。mac 同一次实抓里，同一个物理停滞点（水星 2026-02-26，352.565°）在 sample 标 Retrograde、
+    在 south_sidereal 标 Direct：两场景只差时区 → 日网格不同 → 二分终点不同 → 噪声不同。天文锚：天王星 2026-02-04 金牛 27°27′
+    停滞转顺，mac 金标写 Retrograde。
+  - **时刻**：跨平台浮点差让二分落在窗口里的不同点，取整到秒后差 ±1 s（上界 = 窗口宽 + 1 s 取整）。
+  - 上游对入座已经这么修过（「入座符号取『已知的进入星座』cur_sign，而非由 hit_lon 反推」）——停滞方向同理应取括号端（`nxt` 处）
+    符号已知的速度。
+- **守卫（只动测试，产品输出不改）**：live 比对的 `_lift_station_rows` 把停滞行拿出来——星体 / 位置逐字节相等、时刻差 ≤ 10 s
+  （实测窗口 6.9 s + 1 s 取整，留余量）、方向不比；其余全文照旧逐字节。放宽前先证明不丢引擎漂移的检出：同一载荷 SWIEPH vs MOSEPH，
+  停滞时刻只挪 1–28 s（中位 4.6 s，单靠它抓不住），但约一半月相时刻、四成月亮入座时刻按秒变——那些行仍逐字节比。离线负向对照两条：
+  `test_station_rows_are_lifted_out_and_nothing_else`（只换停滞数据行；时刻认不出的行留在全文里逐字节比；取整进位的 24:00:00 按次日算）、
+  `test_station_comparison_tolerates_the_noise_window_only`（11 s / 位置差 0.01° / 多一行都红）；自我退役守卫
+  `test_upstream_station_direction_is_still_ill_conditioned`（推导真值与 mac 标签必须矛盾、同一物理停滞点必须在两场景标反——上游修好、
+  重抓 fixture 后变红，届时把方向放回比对，10 s 不撤）。`rt-draft2` 上整文件 49 passed，live 两场景四工具全绿。
+- **产品层（待用户拍板，未做）**：skill 按上游原样渲染方向，用户看到的星历停滞表约一半方向是错的（两个平台都是）。两条路：
+  ① 上游修（推荐，只报告不回写）：`calc_stations` 改用括号端的 `speed`（变号后那一侧）判向，一行改动；② skill 侧声明式 deviation：
+  `build_ephemeris_snapshot_text` 按运动交替重算方向并在快照里写明偏离。偏离上游输出属用户拍板事项。
+- **同一短路的另一面（探针：不起服务、不碰端口）**：`ensureEphePath()` 后主线程与新线程各算 Sun / Moon / Chiron / Ceres，再用
+  `swisseph.get_current_file_data` 看实际读的是哪份文件。draft 载荷自带解释器：短路默认（未设或 `=1`）时新线程读编译期默认路径
+  `\sweph\ephe\`（盘符相对）——本机 `C:\sweph\ephe` 恰有别的占星软件留下的 2001–2014 星历，于是**不报错、静默换数据**：凯龙差 0.14″、
+  谷神差 0.18″、月亮 1e-6°；`=0`（7b8da79 的修法）时新线程读载荷自带文件、与主线程逐值相同。同一缺陷两种症状：干净机（托管 runner）
+  小行星丢、行星退 Moshier；有旧星历的机器静默偏差——「Windows 绿」不能只看没报错，要比数值。
+- **星阙桌面端（只报告）**：用户自己的桌面端（`%LOCALAPPDATA%\HorosaDesktop\embedded-runtime\4bd95cad…`，Python 3.11.9）是同一份上游
+  flatlib，短路默认开、没有任何地方设 0；用它自带的解释器离线跑同一探针，结果与上面相同（新线程读 `C:\sweph\ephe`）。按铁律只做离线
+  探针，没碰 8899 / 9999。上游修法见上一条（按线程记账或 Windows 默认关）；用户侧可试用户级环境变量 `HOROSA_EPHE_PATH_FASTPATH=0`
+  后重启桌面端（桌面端启动器是否透传环境变量未验证）。**更正（10-01）：这条判断错了**——桌面端启动器给 chart 进程设了
+  `SE_EPHE_PATH`，带上它重跑探针，新线程读的就是自带星历；桌面端不受影响，无需设任何变量。见 2026-10-01「冷线程算星历」条目。
+- **复验时踩的坑**：lane 惯用的 18899 / 19999 被另一路工作流的进程（desktop_installer_bundle 的 python）短暂占住 → Java「exited before
+  becoming ready」、再起报「port 18899 already in use by PID …」。没碰那个进程，换全新根 `rt-draft2` + 28899 / 29999（先核对不在
+  `excludedportrange` 里）。上游 flatlib 在 import 时往 stdout 打一行路径，探针的 JSON 输出要加前缀标记再取。
+- **法则**：① 跨平台逐字节金标碰上病态求根（在导数≈0 处求根、取根处导数的符号），先量噪声窗口，只放宽病态的那一格，放宽量取「实测
+  窗口 + 显示取整」，并证明放宽后引擎漂移仍被其它行抓到；② 「取根处导数的符号」类判据就是噪声，方向要从括号端已知的符号取；③ 同一
+  C 库状态缺陷在不同机器上症状不同（报错 vs 静默换数据），Windows 复验要比数值。
+
+### v0.40.0 / 2026-09-30 — draft 矩阵两条 Windows lane 红：上游星历路径短路 `HOROSA_EPHE_PATH_FASTPATH` 撞上 Swiss Ephemeris 的线程本地状态（`sweodef.h`）
+
+- **症状**：v0.40.0 draft 的 release-runtime run 36797237395：macOS lane 绿；windows-latest 18 红 / 1758 过，windows-11-arm 17 红；
+  publish 按设计跳过。红的全是 chart 类 live 测试，信封 `tool.backend_param_error`；lane 日志里 724 次 `POST /` 有 628 次回
+  `{"err":"param error"}`，chart 服务栈底是 `KeyError: 'Chiron'`（`perchart.setupPlanets`）——flatlib `getObjectList` 吞掉逐星异常
+  （「个别天体在其星历物理域外…跳过该星」），到 setupPlanets 取凯龙才炸。
+- **先排除的**：载荷不缺文件（zip 里 157 个 swefiles，`seas_18.se1` 与 vendored 同字节）；没有 env 覆盖；lane 路径改动早于 v0.39.0
+  （v0.39.0 Windows lane 绿）；pyswisseph 两版都是 2.10.3.2、都在 Windows 上从 sdist 构建。
+- **根因**（一次性诊断分支 `diag/win-swisseph`，run 36802700937 / 36803364178，windows-latest + windows-11-arm 都下真 draft 载荷）：
+  - 裸 pyswisseph、同一线程：原样 / 正斜杠 / 尾分隔符 / 8.3 短路径 / 无空格副本 / 换 cwd，Sun / Moon / Chiron / Ceres 全 OK；
+  - 主线程 `set_ephe_path` 后 4 个新线程算 Chiron：160 次全错 `SwissEph file 'seas_18.se1' not found in PATH '\sweph\ephe\'`——
+    新线程看到的是**默认路径**。`sweodef.h` 把全部状态声明成 `TLS`：非 `__APPLE__`、非 `WIN32` 时 GCC 取 `__thread`、MSVC 取
+    `__declspec(thread)`（setuptools 只有编译器自带的 `_WIN32`，不定义 `WIN32`）。所以 mac 上是进程全局，Windows 上是每线程一份。
+  - 上游 v3.11.2（9cd9078f）新增星历路径短路：`_EPHE_PATH_ACTIVE` 是进程级 Python 变量，`ensureEphePath` 见它等于 `SEACTIVE_PATH`
+    就跳过真调用 → 只有 import flatlib 的主线程设过路径；CherryPy `thread_pool=30` 的池线程和并行预热线程都在默认路径下算 →
+    行星静默退 Moshier、小行星直接失败。v0.39.0 钉的 0604fa41 没有这段短路——这就是 v0.39.0 绿、v0.40.0 红的唯一差别。
+  - 真实代码路径对照（两台结果相同）：PerChart 跑在新线程上，短路默认 0/7、`HOROSA_EPHE_PATH_FASTPATH=0` 7/7 且与主线程逐值相同；
+    真 CherryPy chart 服务（启动器式 bootstrap）0/12 → 12/12。
+- **修复**：Windows 启动器模板 `runtime_templates/windows/start_horosa_local.ps1`（wheel 里同一份，Windows 每次 start 由
+  `_apply_runtime_overrides` 重拷进载荷）在 `$PyProc = Start-Process` 之前设 `$env:HOROSA_EPHE_PATH_FASTPATH = "0"`——上游自带的
+  kill-switch，回到 v3.11.1 的「每次都真设路径」语义；代价只是上游测的每张盘约 6.6 ms 提速在 Windows 上不吃。vendored 代码一字不改。
+- **守卫**：`verify_runtime_scripts.py` Windows 不变量 5（那行存在、值是 "0"、在起 chart 之前）+ 上游开关名漂移警报（上游树在场时，
+  仍有 `_EPHE_PATH_ACTIVE` 而开关改了名 = 红）；`--self-test` 新增 4 个负向对照（删行 / 设 1 / 挪到起 chart 之后 / 上游改名），
+  全部被抓；`tests/test_runtime_launcher_templates.py` 三条（含对真 vendored `swe.py` 的「'0' 仍是关」断言）。负向对照实测：删掉模板那行
+  → 3 条 pytest 与守卫同时红。端到端守卫仍是 release-runtime 的 Windows lane——它这次抓住了。
+- **诊断时踩的坑**：
+  - 第一版诊断脚本按前缀整段打印 `HOROSA_*` 环境变量，本机试跑时把维护者 shell 里的 `HOROSA_JEV_API_KEY` 打进了本地会话输出
+    （runner 上没有这个变量，GitHub 日志里是空字典，未外泄）。诊断脚本只许打印白名单里的非机密开关，绝不 dump 环境。
+  - 内嵌 Python 带 `._pth`，**不认 `PYTHONPATH`**——诊断脚本要像启动器 bootstrap 那样自己 `sys.path.insert`，否则
+    `ModuleNotFoundError: No module named 'flatlib'`，白跑一轮。
+  - 门禁顺带抓到的定时炸弹：`tests/test_docs_currency.py` 拿冻结的 2026-09-29 当「今天」去校验**真台账**，新事实 `verified_on 2026-09-30`
+    被判「in the future」——任何一次复核都会这样红（台账自己要求复核时挪日期）。改成 `dt.date.today()`（与 CLI 同），「未来日期」的覆盖
+    挪到合成样本的负向对照里；改回冻结日期 → 红，已验。
+  - windows-11-arm 镜像的 `tar.exe` 解这份 zip 会跳过 3 个「文件名不可读」条目并 exit 1（只影响诊断 workflow 自己的解包，产品安装走
+    Python zipfile）；诊断步骤一律 `if: always()`，一步失败不挡后面的对照。
+- **法则**：mac lane 绿不代表 Windows 绿——C 库状态的平台差异藏在编译宏里（这里是 `__APPLE__`），Python 代码里看不出来。上游任何
+  「记住 C 库状态」的进程级短路 / 缓存，同步时都要问一句「这份状态是不是按线程的」。
+- **上游（只报告，不回写）**：星阙 Windows 版若同样用 MSVC 构建的 pyswisseph、并以多线程服务，同一短路会让它在 Windows 上丢小行星；
+  稳妥的修法是把 `_EPHE_PATH_ACTIVE` / `_JPL_FILE_ACTIVE` 改成按线程记账（`threading.local()`），或在 Windows 上默认关掉。
+
+### v0.40.0 / 2026-09-29 — Windows 维护机 tag 前闸：`listening_server` 自报抓到真因（WinError 10013 = 探针→再绑的窗口）；矩阵 Windows 超时复验为「慢不是挂」
+
+- **症状**：① `run_ci_gates.py`（独立 worktree @188a472，cp1252 忠实镜像）24 条只红 1 条：
+  `tests/test_runtime_ports_identity.py::test_listener_pids_finds_a_real_listener` **ERROR at setup**；7cde519 给夹具加的自报写得
+  明明白白：探到 10832、`child exited rc=1`、`PermissionError: [WinError 10013] An attempt was made to access a socket in a way
+  forbidden by its access permissions` on `self.socket.bind`。10832 不在本机 `netsh … excludedportrange`（5357 / 8883 / 8884 /
+  50000–50059）里；单独跑恒绿，全量 4 次里中 2 次（09-24 曾按「冷起慢」把等待 10 s→30 s——方向错了：子进程不是慢，是绑不上）。
+  ② 09-28 每周矩阵两条 Windows lane 都 `[pytest] FAIL {"seconds": 1500.0, "problems": ["pytest timed out"]}`，macOS 绿；1d29762
+  已把 nt 预算改成 2700 并让 pytest.log 流式落盘，但从没在真 Windows 机上跑过。
+- **根因**：① 夹具是「探针 `bind(('127.0.0.1', 0))` 拿号 → 关 → 再 spawn `python -m http.server <号>`」——两步之间那个号被别的
+  进程独占（`SO_EXCLUSIVEADDRUSE`）或被系统保留就是 WSAEACCES；本机动态端口段只有 1024–15000（`netsh int ipv4 show dynamicport
+  tcp`），全量 pytest 的端口 churn 把这条窗口撞出来。`tests/test_http_and_clients.py::test_streamable_http_handshake_end_to_end`
+  同一形状（探针拿号 → `serve --port <号>`）。② 慢不是挂：本机 lane（`verify_runtime_live.py` release 模式 × 公开 v0.39.0）
+  12 步全绿，pytest 1111 s / 1755 passed / 0 failed / 49 skipped（18 条版本偏斜）；top-40 合计 466 s，最重三条是
+  `test_service.py::test_all_callable_techniques_*`（110 技法 × docx/pdf/json 渲染：54 / 26 / 21 s），其余是 sync311 live 引擎
+  用例 5–15 s，没有单条病态；hermetic 的两条 doctor 用例各 10 s = 每次 doctor 约 5 s，其中 `process_command`（PowerShell CIM）
+  本机实测 0.45 s/次、netstat 0.07 s——Windows 税在 identity/doctor 路径上反复付（AGENTS §8 已有 doctor 25 s 硬顶那行）。
+- **guard**：① 夹具改成**子进程自己绑 0 号并把端口打印出来**（`ThreadingHTTPServer(('127.0.0.1', 0))` → `print(port, flush=True)`
+  → `serve_forever`），夹具 30 s 内读那一行（读到即已 bind+listen；旧法只等到 bind，netstat 还得再等 listen），没读到照旧自报
+  （死活 / rc / stderr 尾）；`_listener_pids_with_patience` 等下游不变。② streamable-http 用例：serve 没有 `--port 0`，只能有界
+  重试——**仅对「绑不上」签名**（10013 / 10048 / address already in use / EADDRINUSE / attempting to bind）的早退换号重试 3 次，
+  其它早退带 stderr 立刻红，免得吃掉真 serve 缺陷。③ 复验：两模块 ×3 全绿；**两种合成 churn（connect/close；
+  SO_EXCLUSIVEADDRUSE + 探针循环）各 40–60 次都没复现**——真触发比合成模型丰富，证据以自报为准，修法靠消灭窗口而不是调秒数。
+  ④ 矩阵预算不动（维护者的活），本轮只给数字：托管 2 核 runner 约慢本机 2–2.5×（09-28 它 >1500 s 时本机同套 ≈1100 s），
+  估 2200–2800 s，**2700 是边际**；可选减负点 = 三条 110 技法渲染用例在矩阵 lane 上抽样、`process_command` 一次 CIM 查全表。
+- **法则**：**要一个「别人」的监听进程，就让那个进程自己绑 0 号并报端口；「先探再由另一进程绑」在 Windows 上是竞态，不是
+  等待不够**——夹具自报一到「exited rc=1 + bind 异常」就别再加秒数；端口必须外定的服务（`serve --port`）只对绑不上的早退
+  有界换号，其它早退立刻红。**矩阵超时先分「慢 / 挂」**：流式 pytest.log + 本机 `--durations=40` 一跑就分清，预算只对「慢」有意义。
+
+### v0.40.0 / 2026-09-29 — 文档全面复审与实时更新制度化：`docs/DOC_MAP.md`、`third_party_facts.json`、`gen_agent_mirrors.py`、`bump_version.py`
+
+- **触发**：v0.40.0 发布前，用户要求按全部既往对话与注意点重审所有 harness / skill / 元文档，并把「实时更新文档」做成制度之后再发版。
+  四路只读审计（AGENTS / SKILL + 镜像 + CLAUDE / README + docs / 维护流程）共报约 120 条，其中「曾经为真、后来没人同步」的陈旧事实占七成。
+- **抓到的典型陈旧**：
+  - README×2「契约 v14 镜像 aiExport v56」（真值 15 / 58，两个版本没动）；EN 闸门数 84 / 免闸 8（真值 100 / 10，zh 根本没有免闸行）；
+    三组分组标题 28 / 5 / 10（表内 33 / 13 / 11）；EN 知识域徽章 30（真值 31）；`data.export_format` 早已并入 `export_snapshot`，
+    却仍在 EN README / INPUT_CONTRACTS / EXPORT_AUDIT_GUIDE 里当字段讲；`HOROSA_TOOLSETS` 漏 `export/knowledge` 域与 `reference` 别名。
+  - AGENTS：`mcp[cli]>=1.28.1`（锁 1.30）、「发布三件 + PyPI 自动跑」（PyPI 暂缓）、`setup` 四客户端（九）、`_CLIENT_CONFIG_PATHS` /
+    `HEXAGRAM_PALACE_ELEM` / `release.yml` 等已不存在的符号、上游文档路径指向不在 Horosa-Public 的文件、live 计数 382 / 678 写死、
+    §9 十几条重复且无分节；九条 v0.40.0 台账「版本号在 AGENTS 里、规则不在」。
+  - OPERATIONS 仍教人在 8899 / 9999 起 ken 验证（违反端口铁律）；OFFLINE / REPO_LAYOUT / vendor README 仍讲 Windows 构建机 +
+    `runtime/windows/bundle/wheels`（v0.38.0 起 Windows 半从 darwin 种子在托管 runner 派生）；REPO_LAYOUT 的 `src/tools` 6 文件（实 51）、
+    `src/shared/localNongliAdapter.js`（已退役）；RUNTIME_MANIFEST_SPEC 说 `runtimes.node` 可选（必需）；13 条台账小节没有索引行。
+  - 第三方事实 15 天内变了四件（Windsurf → Devin Desktop 路径、Codex 每工具 5000 B、mcp 1.30 头 API、Actions Node 24）而文档零感知。
+- **根因**：文档更新靠记忆而非守卫——既有守卫只锁「能从代码派生的数字」，锁不住文档存在性、台账→规则的蒸馏、手改的镜像、
+  第三方事实的过期、版本站点清单；而每一条陈旧都恰好落在这些盲区里。
+- **制度（协议 v3，AGENTS §2 第 5 件；一次 change 内全部落地）**：
+  - `docs/DOC_MAP.md`：每份指导性文档一行（用途 / 读者 / 更新触发 / 守卫）；`verify_docs_sync.check_doc_map` 断言仓内每份 guidance doc
+    都有行、每行文件都在（首跑就抓到 `CODE_OF_CONDUCT.md` 漏登记）。
+  - 蒸馏守卫 `check_lessons_distilled`：每个 `### vX` 小节要有索引行；最新 3 个版本的版本号**与小节标题里的代码标识符**必须出现在
+    AGENTS.md——只查版本号时九条 v0.40.0 教训「版本在、规则不在」照样绿（负向对照在 `tests/test_docs_currency.py`）。
+  - 四份客户端镜像改为**生成物**（`gen_agent_mirrors.py`，`--check` 进 docs-sync）：数字从注册表渲染，手改即红。
+  - `contracts/third_party_facts.json`：18 个第三方主题的事实 + `source_url` + `verified_on`；超过 120 天 CI 告警，
+    `docs-currency.yml` 每周一严格模式并开 / 刷新 issue「第三方事实待复核」。
+  - `bump_version.py`：16 个版本站点单一清单 + `--check`（含两份 manifest 示例）；`docs/templates/HANDOFF_TEMPLATE.md`；
+    preflight 新闸「上游 pin 必须在公开远端某分支上」（v0.40.0 悬空 pin 的直接回应）。
+  - 三把 README 新锁：分组标题数 = 表内 ID 数（`check_group_headers`）、契约号 = `exports.registry` 两常量 + payload 示例
+    （`check_export_contract_versions`）、闸门 / 免闸数 = 注册表派生（`check_gate_counts`）；README 版本行改为「本仓版本」措辞
+    （main 领先公开 latest 的窗口里不再声称「已打包并校验」）。
+  - AGENTS §9 按六个主题分 `###` 小节、合并重复（doctor R4 → B6、MCP schema 三合一、按名杀进程 → 身份条）、补九条蒸馏；
+    §7 版本 bump 改为单入口；Compaction gate 改为「章节 > ~120 行必分节」。
+- **法则**：能写成断言的事实不许只写成句子；写不成断言的事实要有 `verified_on` 与到期告警；生成得出的文档不许手改；
+  改代码的同一 change 改文档——`docs/DOC_MAP.md` 的「更新触发」列就是清单。
+
+### v0.40.0 / 2026-09-29 — 发布前复审：上游 v3.11.2 漏同步、悬空的 pin、六小时偏差的节气种子、Windows 矩阵预算、客户端世界 15 天的变化
+
+背景：用户要求「再查一遍有没有漏掉的更新 / 适配问题 / 别的问题，一个大版本全包进去」。上一会话把上游同步到 v3.11.1+3 修（pin 9b74714b）
+并做完拍板项，main = 7cde519、CI 绿、未发版。本轮从三处开始：上游树本身、周一 04:23Z 的 schedule 矩阵、以及 2026-09-14 那次九处第三方
+文档核实之后的变化。
+
+1. **上游已到 v3.11.2，且 skill 钉的提交已不在任何上游分支上。**
+   - 症状：Horosa-Public HEAD = 9cd9078f（v3.11.2，2026-09-28，本机未推送）；`git branch --contains 9b74714b` 为空——上游把 v3.11.1 之后的
+     三个修复并进了 v3.11.2 的发布提交（内容全部保留，逐文件核过：22 个文件无一回退，11 个继续演进）。CI 形状下 `verify_upstream_sync`
+     没有上游 checkout，永远绿；本机 `--require-upstream` 一跑：2 个哨兵 + 51 个 runtime 子树文件 + 12 个 core-js 条目漂移、HEAD 领先 1 提交。
+   - v3.11.2 对 skill 有意义的部分（上游 `docs/windows-porting-and-release-checklist.md`「v3.11.2 同步要点」就是清单）：
+     · 八字：新设置**南半球月令** `southMonth`（none 缺省 / chong；只对南纬生效；本地引擎 `flipMonthPillar` 月支 +6、月干五虎遁重起；
+       Java `/bazi/birth` `/bazi/direct` 读同名参数进缓存键）；非东八区按出生**绝对时刻**判交节；「春分定卯时」按直接时间；年柱按立春本身；
+       经纬度「度 + 分」按分 / 60（此前 118e27 → 118.037°，真太阳时偏移最多差 4 分钟）；日柱不再另减一天；公元前岁数虚岁对齐（`alignJavaBaziAges`，
+       Java 回退结果在取数入口 +1）；`:60` 秒进位；农历随时间算法。
+     · 农历 / 节气：交节时刻精确求解（此前系统性晚 ~12 s）并四舍五入到秒；海外出生按北京时间编算的农历表以出生地日期查；**2033 年闰十一月**
+       （此前闰七月；1642 / 2128 / 1813 / 2185 同理）；奇门 / 河洛 / 节气页按当地时间比交节（`buildLocalJieqiYearSeed(year, zone)` 折成当地钟表，
+       `heluoSolarTermOfDate(dateStr, zone, quHuaGong)` 单源）。
+     · 六爻：**间爻按世应位置取**（世应在初四取二三、二五取三四、三上取四五；此前写死三四爻，64 卦中 48 卦把世 / 应本身算进间爻），逐爻带旺衰 /
+       动静 / 空破 / 对世应冲合生克，发动提示「事多阻隔」——`liuyaoFacade.js` / `liuyaoSnapshotEx.js` / `LiuYaoConst.js` verbatim 重 vendor 即得。
+     · 玄学史天象库 `public_data.sqlite` 重生成（84 条年号日期、`julian_date` 置空、`modern_date` 即史料儒略历日期）——随 runtime 载荷。
+     · Java：响应主体保序（同参字节稳定）、组件延迟初始化、crypto v2（`X-Horosa-Crypto` 能力协商；skill 不发该头且置空 `webencrypt.rsaparam.class`，
+       走旧明文路径不变——live 全绿为证）、`/chart` 缓存键加 `_calRev`；启动器 `start_horosa_local.sh` 原生脱离 + 6 个 R5 JVM 旗标
+       （mac 载荷随上游脚本自动获得；skill 的两个补丁锚点仍唯一）。
+     · Python 引擎一批「结果不变」的提速开关（`HOROSA_FAST_JSON_*` / `HOROSA_SWE_LON_MEMO` / … 全是上游 runtime 自己读的 env，不进 skill 的 ENV 注册表）。
+   - 做法：`sync_vendored_runtime_sources.sh`（jar 3.11.1-runtime1 → 3.11.2-runtime1，dist-file / 引擎 / 启动脚本同步）→ `revendor --from-manifest`
+     （9 个 verbatim 重渲染；新 vendor `utils/beijingTimeShift.js`、`utils/perfFlags.js`（headless 下 `flagEnabled` 恒 true = 上游缺省全开）、
+     `bazi/baziAgeText.js`）→ 三个 bespoke 复核：`baziSnapshot.js` 逐 hunk 落上游改动（南半球月令行 / `baziAgeText` / `addDisplayYears` /
+     `alignJavaBaziAges`）后 restamp，两个 guolao 件的上游 diff 只是 [#84] 双触发收敛（UI 调度）→ 直接 restamp → Python：`southMonth` 进
+     `_BAZI_OPTION_VOCAB` / schema / guidance（只在南纬出生时问）/ 技法卡；`time_basis.py` 标签跟 `timeBasisLine.js:5`；`tools/heluo.js` 改调上游单源
+     `heluoSolarTermOfDate`（自带 port 删除）→ 知识包全部重收割（27 手册 / 236 条不变，正文随上游 4 份 HelpDoc 更新）→ `--write-state` 9cd9078f。
+   - 验证：JS loadcheck 365 / selfcheck（+7 条值级：南半球月令 未→丑・己丑；Java 岁数对齐含跨纪元；河洛纽约 2026-02-03 = 立春初候 vs 北京大寒三候；
+     种子 = 精确表；间爻位置；perfFlags）/ handcopy 绿；离线全量绿；**live 全量对 vendored v3.11.2 实例（8877/9977）1766 passed / 14 skipped / 0 failed**；
+     段级 harness 110/110 clean；export 契约 v58 不变（`verify_export_section_baseline --source upstream` 与 mirror 都 ok）。
+   - 教训：**pin 与上游 HEAD 的关系每次发布前必对一次**（`git branch --contains <pin>`）：pin 不在任何分支 = 上游改写了历史，不能靠 `git diff pin..HEAD`
+     的「250 个文件」直觉判断，要逐文件核旧内容是否保留（这次 22 个文件全保留）。规则不变：**公开发布前 pin 必须在上游的公开远端上**（9cd9078f 目前只在维护机）。
+
+2. **「同步了却没同步」第七例：`src/shared/localNongliAdapter.js` 是 v0.9 时代的自写近似公式。**
+   - 症状：v3.11.2 改了上游 `utils/localNongliAdapter.js`，但它不在 manifest 里——因为 skill 一直用的是 `horosa-core-js/src/shared/` 下同名的
+     **自写件**（e75ce07，2026-06）：1900 历元的 `S_TERM_INFO` 定气近似公式（日粒度精度），不是上游的 lunar-javascript 精确节气表。
+     值级：2026 立春 近似公式 = 北京时间 02-04 10:16:32，真值 04:02:08，**差 6 小时 14 分**。
+   - 谁吃它：`tools/qimen.js` 的年种子回退（Python 没给 `jieqi_year_*` 时）、`vendor/divination/zeri/qimenScanEngine.js`（奇门择日扫描，**直接用**）、
+     `vendor/guolao/guolaoMoiraWheelLimits.js`（七政百六大限的立春 / 冬至年界，**直接用**）、`vendor/dunjia/DunJiaCalc.js` 本地路由。交节当日 6 小时内的
+     奇门局数 / 择日命中 / 七政年界都可能与上游不同。
+   - 根因：manifest 全集守卫（v0.40.0 第 5 条）只锁 `vendor/` 树，`src/shared/` 在它视野之外；revendor 的路径推断还主动把上游 import 「relocate」到
+     shared 件上（`../../utils/localNongliAdapter.js → ../../shared/localNongliAdapter.js`），于是每次重 vendor 都把上游 DunJiaCalc 接回旧公式。
+   - 修：`utils/localNongliAdapter.js` verbatim vendor（deviation：`./lunarDomainGuard.js → ../bazi/lunarDomainGuard.js`），删除 shared 件，
+     四个 import 改指 vendor（DunJiaCalc / qimenScanEngine 由流水线重渲染自动改；guolaoMoiraWheelLimits / tools/qimen.js / selfcheck 手改）。
+     行为差：域外年（lunar-javascript 不可靠域）上游返 `null` 走后端实算，旧公式会吐一个近似值——`buildLocalJieqiYearSeed(12000)` 现在必须为 null。
+   - 守卫：selfcheck「jieqi 年种子 = lunar-javascript 精确节气表」（+08 与 −05 两个时区、dayGanzhi、旧公式负向对照 10:16:32 必须 ≠ 真值）；
+     `tests/test_core_js_shared_provenance.py`：`src/shared/` 只许 allowlist 里的自写件，且任何 shared 文件的 basename 不得与 manifest 里的上游文件同名
+     （负向对照：把 `localNongliAdapter.js` 放回 shared 即红）。
+
+3. **八字闰月出生的农历行「闰闰五月」——上游 BaZi.js:317 的缺陷，按声明式偏离修。**
+   - 症状：1990-07-15（闰五月）本地引擎快照 `农历：一九九〇年闰闰五月廿三`（main 上同样如此，与本轮同步无关）。
+   - 根因：`buildNongli`（baziLunarLocal.js:1104）的 month 已是 `${getMonthInChinese()}月`（闰月自带「闰」），而快照的 `nongli.leap ? '闰' : ''` 是给
+     Java 结果（month 不带前缀）写的——两条路合流后闰月双前缀。上游页面同样打出「闰闰」。
+   - 修：只在 month 尚未以「闰」开头时加前缀（bespoke 文件内注释标明偏离与出处）；selfcheck 两向断言（本地形状不叠字、Java 形状仍加前缀）。
+     记入报告的「上游问题」清单，不写回上游。
+
+4. **周一 schedule 矩阵：两条 Windows lane 在 pytest 1500 s 处超时，且什么都没留下。**
+   - 事实：run 36413240575（2026-09-28，7cde519 × 公开 v0.39.0）darwin 583 s 跑完 1771 测试；windows-latest / windows-11-arm 都恰好在 `BUDGET["pytest"]=1500`
+     被杀。v0.38.1 发布矩阵的比例是 mac 226 s : Windows 970 / 1022 s（1210 测试）——Windows 在这套 live 套件上慢 4–5 倍，树长到 1771 测试后 1500 s 必然不够。
+   - 更糟的是产物里**没有 pytest.log**：`subprocess.run(capture_output=True)` 遇 `TimeoutExpired` 时输出全在内存里，lane 只写了「pytest timed out」——
+     分不清是慢还是挂在某条用例上。
+   - 修：`PYTEST_BUDGET_SECONDS = {"nt": 2700, "posix": 1500}`（job 上限 90 min，ARM lane 其余步骤约 400 s，仍有余量）；pytest 改 `Popen(stdout=日志文件)`
+     流式落盘，超时先 kill 再把尾巴 40 行与 `budget_seconds` 写进 step。守卫：`test_pytest_budget_is_host_aware`、`test_live_pytest_keeps_the_partial_log_when_it_times_out`
+     （负向对照 = 旧实现无日志）、成功路径同样落盘。
+   - 教训：**超时预算要按主机测出来的比例定，且超时本身必须留下证据**；「lane 红了」如果不能回答「红在哪一步的哪一行」，等于没跑。
+
+5. **第三方世界 15 天的变化（2026-09-14 → 09-29，逐条读官方页核实）——四条要动手，其余记录。**
+   - **Windsurf → Devin Desktop**（2026-06-02 更名；2026-09-08 v3.9.19 移除 Cascade，Devin Local 成唯一 agent，读 Devin CLI 的 MCP 文件：
+     `~/.config/devin/mcp_config.json` / `%APPDATA%\devin\mcp_config.json` / 项目 `.devin/mcp_config.json`，根键仍 `mcpServers`，字段 command/args/env/disabled）。
+     skill 只写 `~/.codeium/windsurf/mcp_config.json` → 新装 Devin Desktop 永远看不到 horosa。修：路径表 Devin 用户级 → 项目级 → 旧 Cascade 路径（已有文件者原位合并）；
+     提示语 / 精简面理由 / README 行随之改；`test_windsurf_client_points_at_devin_paths_with_legacy_cascade_fallback`。
+   - **Codex 0.158.0（2026-09-28）**：`mcp_servers.<name>.tool_input_schema_max_bytes` 缺省 **5000 B**，超出的 inputSchema 被「压缩」——参数说明静默剥掉。
+     实测全量面最大 3843 B（`horosa_astro_india_rectify`）、精简面 1147 B，今天没有超的；`verify_mcp_list_budget.py` 加**每工具**硬顶 5000 B（两面都查，
+     `tests/test_mcp_list_budget.py` 合成 6 KB 工具必被点名）。同版还有 `startup_readiness = "catalog"`（冷启动首轮看不到工具的缓解）与 0.157 的
+     stdio 描述符收紧（server 及后代进程只继承 stdio）——都不需要改配置。
+   - **mcp Python SDK 1.30.0（2026-09-07）**：`mcp[cli]>=1.29.0,<2` 让 wheel / uvx 用户实际装到 1.30；`streamablehttp_client(url, headers=…)` 弃用、
+     头改经 `httpx.AsyncClient`（`streamable_http_client(url, http_client=create_mcp_http_client(headers=…))`）；pydantic 下限 ≥2.11；streamable-http 空闲会话 30 分钟回收。
+     修：锁升 1.30.0、pydantic 下限 2.11、测试与 lane 改新 API（留旧入口退路）。协议：SDK 仍 2025-11-25，规范最新 2026-07-28——记录，不动。
+   - **GitHub Actions 2026-09-23 移除 Node 20**：runner 强制用 Node 24 跑 node20 action（9-25 的 CI 因此仍绿，但已是「被迫迁移」）。11 个 action 主版本升到
+     各自的 Node 24 主版本（checkout v5 / setup-python v6 / setup-node v5 / upload-artifact v6 / download-artifact v7 / cache v5 / setup-uv v7 /
+     attest-build-provenance v3 / codeql v4 / dependency-review v5）——刻意避开 download-artifact v8（哈希不符即错 + 不再自动解压）与 setup-uv v10
+     （`release` 事件下关缓存）。验证：push CI + 本次发布的 draft 矩阵与 publish job（全部 action 都在这条链上跑过一遍才算数）。
+   - 记录不动：`windows-11-arm` 镜像 9-21～30 换新（缺省 Python 3.13 / Node 24；我们钉 3.12 与 Node 22，9-28 的 lane 已在新镜像上装起 runtime）；Gemini CLI 工具全名
+     无条件 `mcp_horosa_<tool>`（最长 38 < 63；`verify_mcp_client_compat` 前缀改为该形态）；Claude Code 2.1.28x 的 `claude plugin validate` 会查 MCP 条目
+     （horosa 的四个 `user_config` 键都已声明）；mcpb 2.1.2 仍是最新；uv 0.12.14–0.12.20 无 `uvx --from` 语义变化；Node 22 维护 LTS 到 2027-04，Node 26 于 2026-10-28
+     进 LTS（载荷继续随 Node 22 线）。
+   - 教训：**客户端矩阵里的每个名字都要有「上一次核对日期」的意识**——一个被收购改名、一个加了默认预算、一个 SDK 换了 API、一个平台删了运行时，
+     全发生在 15 天里，而 skill 的测试对这四件事一条都不会红。
+
+6. **本轮数字**：上游 diff 250 文件（`9b74714b..9cd9078f`）；runtime-source 重灌 51 文件 + jar；core-js 12 verbatim 重渲染 + 4 新 vendor + 3 bespoke 复核 + 1 自写件退役；
+   知识包 32 文件重收割；离线 pytest 全绿；live 1766 / 14 / 0；harness 110/110；tools/list 全量 254210 B（+southMonth 说明）、精简 15260 B；
+   `verify_upstream_sync --require-upstream --write-state` → 9cd9078f / 3.11.2 / v58。
+
+7. **明确没做（待用户）**：上游 9cd9078f 推到 Horosa-Public 公开远端（pin 公开性，发布前提）；Windows 启动器模板镜像 R5 的 6 个 JVM 旗标（可选项，
+   上游写明「可选对齐」）；自动把 Windows 非 ASCII runtime 根迁到 ASCII 位置；推运区间扫描 / 六爻卦辞补齐（维持不做）。
+8. **发布当天第三次改写（2026-09-30）**：上游本地先后出现 2300bbab / 0a8b44f8 / fd3b68f0（skill 曾逐个重钉到 fd3b68f0 并推送 188a472），
+   推送公开远端时却又被压进 **v3.11.3 发布提交 f27c00a9**（父 9cd9078f）——fd3b68f0 再次悬空，preflight 的 pin 闸照设计拦住。
+   在 vendored 子树里 fd3b68f0 → f27c00a9 只有增量（chart 服务分级启动门 + 两份上游测试 + 两处 React 尾部标签，后者在 truncate 之外），
+   jar 随 `RuntimeWire.RUNTIME_VERSION` 3.11.2-runtime1 → 3.11.3-runtime1。按 runbook 重钉 f27c00a9（core-js 369 verbatim 不变、知识包只有戳变）。
+   规则不变且再次被证明必要：**只钉已在公开远端的提交；用户说「已推」后先 `git ls-remote` 核实，再动发布。**
+
+### v0.40.0-dev / 2026-09-24 — Windows 维护机 lane：main × 公开 v0.39.0 runtime 的 6 条 live 红是版本偏斜——live 闸只看「活不活」，不看「够不够新」
+
+- **背景**：同一轮复验，`verify_runtime_live.py` 用全新根 `rt-lane` 真下载公开 v0.39.0（`horosa-runtime-win32-x64-v0.39.0.zip`，
+  60 s 装 / 21 s 起）：非 ASCII 根拒装、doctor、四引擎、**九客户端全绿（含 codex）**、HTTP 握手、挂客户端不停、自动换端口、stop
+  ——Windows 原生的 12 步全过。唯一红：live pytest `1733 passed / 6 failed / 28 skipped`。
+- **症状 → 定性**：6 条 = `test_sanshiunited_combines_ken_qimen_taiyi`（`taiyi.kook` 为 None）、`test_sync311_chartfamily`
+  派生盘标签「，整宫(变换后上升)」、`test_sync311_newtools` ephemeris 金标两例（行格式差一列）、`test_sync311_shenshu` wuzhao
+  castSeed 复现（断言信息自己写着「旧码不带 castSeed → 后端 random.Random() 真随机」）与 cetian「地点：上海」（引擎回「星阙地点」）。
+  逐条对回提交史：`kook` 随 sanshi 同步（`21e3076` / `5a6148d`，快照改由 vendored 上游 `buildSanShiUnitedSnapshotText` 产出）
+  进 main；其余全是 sync311 钉的上游 v3.11 行为。而 lane 装的是 v0.39.0 payload（`export_registry_version` 14），本树契约
+  `AI_EXPORT_SETTINGS_VERSION` 15——**这些行为要下一版 runtime 才有**。JS 技法在 lane 里走的也是已装 runtime 的 core-js
+  0.39.0（解析顺序 env → installed manifest → bundled，AGENTS §6 早有记载）。结论：偏斜，不是回归，也不是 Windows 问题。
+- **为什么会红而不是跳过**：`requires_chart` / `requires_runtime` 只看两件事——实例活不活、是不是显式点名的（AGENTS §8
+  「默认端口栈不可信」）；「实例够不够新」没有任何闸。`pdSyncRev` 心跳闸只管主限法。于是主干一旦领先于公开 runtime，
+  钉新行为的 live 用例在「main × latest」形状下必红——**托管矩阵每周一（`23 4 * * 1`）就是这个形状**（`actions/checkout`
+  无 `ref` = main，资产 = 公开 latest），下一次跑必红同样 6 条，把真回归淹在里面。
+- **修**：`tests/test_local_js_tools.py` 新增 `requires_current_runtime_contract`——读已装 payload 的 `export_registry_version`
+  （`<runtime_root>/current/runtime-manifest.json`），小于本树 `AI_EXPORT_SETTINGS_VERSION` 即 skip，理由写明
+  「payload N < tree M：引擎早于这些断言钉的上游同步（偏斜，非回归）」；**未知不跳**（外部 vendored 实例没有已装 payload，
+  它的新鲜度由 preflight / mirror 守卫另管）。挂到 sync311 三个模块的全部 17 条 live 用例 + sanshiunited。判定函数纯函数化，
+  `tests/test_live_contract_gate.py` 四条（旧 / 相等或更新 / 未知 / 从清单读）。skip 理由避开 lane 的 `FORBIDDEN_SKIP_REASONS`
+  子串。CI 形状（`HOROSA_RUNTIME_ROOT` 空目录）实测 installed=None → 不跳；指向 `rt-lane` 实测 14 < 15 → 跳。
+- **顺手：一条真 flake 的定性与加固**。门禁复跑 `test_port_bindable_distinguishes_held_from_free` 红一次（首跑绿）：夹具
+  `listening_server` 起 `python -m http.server` 只等 10 s，Windows 全量 pytest 下 CPython 冷起 + Defender 可超过 10 s，到点
+  照样 yield → 下游 `port_bindable(port) is False` 红成一条像产品缺陷的断言。`_bindable_on` 不设 SO_REUSEADDR、语义确定，
+  不是端口探测 bug。夹具改 30 s，到点仍可绑就 `pytest.fail("http.server never started listening … slow spawn, not a port bug")`。
+- **法则**：live 闸要问三件事——活不活、点没点名、**够不够新**；主干领先公开 runtime 是常态，钉新行为的 live 用例必须能
+  说出「我在等下一版 runtime」而不是红。夹具的就绪等待到点必须自己点名，不许静默放行。
+
+### v0.40.0-dev / 2026-09-24 — Windows 维护机复验 main（f05f727）：benchmark smoke 在 cp1252 管道上炸——stdio 守卫对「打印数据」失明
+
+- **背景**：v0.39.0 五件齐、`--check` [OK]，Windows 半边无需补；本机按「原生复验」角色在独立 worktree `hs-lane` 跑
+  `run_ci_gates.py` + `verify_runtime_live.py` + 桌面端占默认端口的真机形状。当天 mac 侧为 windows-smoke 连红四次
+  盲修（node 子进程 encoding、ESM file:// URL），CI 刚转绿。
+- **症状**：门禁 **23/24**——唯一红是 `Run HorosaBench local-only smoke`：`scripts/run_benchmark.py --skip-runtime`
+  在 `print(text)` 处 `UnicodeEncodeError: 'charmap' codec can't encode characters in position 3323-3324`。
+  09-22 同一步还是绿的。
+- **根因**：报告是 `json.dumps(report, ensure_ascii=False)`；基准用例新进了 `休门`（奇门 required_fragments）与
+  `宝剑骑士（逆位）` 等塔罗牌名共 15 种 / 58 处非 cp1252 字符。`run_ci_gates.py` 用管道收子进程输出 → Windows 上
+  子进程 stdout 落回 locale = cp1252 → 首个 CJK 即炸。ubuntu 的 `test` job 是 UTF-8 恒绿；`windows-smoke` **根本不跑
+  这一步**。守卫层面：`tests/test_scripts_stdio.py::test_every_script_that_prints_non_ascii_forces_utf8_stdio`
+  的检测器只扫 **print 字面量**里的非 ASCII（`NON_ASCII_PRINT`），`print(变量)` 打印数据的形状它看不见——同一盲区下
+  共 **19 个脚本**（含 verify_error_recovery / verify_export_section_baseline / verify_silent_* / verify_runtime_release
+  / verify_server_json / build_knowledge_index 等门禁步骤）没有 reconfigure，今天没炸只因它们的数据恰好全是 ASCII。
+- **修**：① 19 个脚本逐一补仓内既有惯用块（`for _stream in (sys.stdout, sys.stderr): … reconfigure(encoding="utf-8",
+  errors="replace")`，紧跟 `import sys`，字节级插入、EOL 原样）；② 守卫检测器扩到「`ensure_ascii=False` + `print(`」
+  （打印数据 = 承诺输出非 ASCII），新增 `test_guard_catches_a_script_that_prints_non_ascii_data`（只写文件不打印的不算、
+  `json.dumps` 默认 ASCII 的不算）；③ ci.yml `windows-smoke` 加同名 benchmark 步骤——它是唯一 stdout 非 UTF-8 的 runner，
+  这类炸只有它能红。验证：定向 23 绿；cp1252 管道下 `run_benchmark.py --skip-runtime` exit 0。
+- **法则**：脚本「打印非 ASCII」有两条路——字面量**和数据**，守卫两条都要看；凡 `ensure_ascii=False` 进了 `print(`，
+  reconfigure 就不是可选项。跨平台守卫要落在**会红的 runner** 上：ubuntu 上恒绿的编码闸等于没有。
+- **本机同轮其它原生证据**：桌面端占着 8899/9999 时 doctor 点名「占着端口的是星阙自己（多半是桌面端）」并列出
+  `HorosaDesktop\embedded-runtime\…` 映像（5ef87cb 在它为之而写的形状上首次真机通过）；lane 用全新根 `rt-lane`
+  （release 模式 `download_problems` 要求真实下载字节 > 0——已装同版本的 `rt-verify` 会短路成假红，故换新根）。
+
+### v0.40.0 / 2026-09-24 — 首推 windows-smoke 红：测试里起 node 复算金标的子进程按 cp1252 解 CJK
+
+- 症状：v0.40.0 候选第一次上 Windows runner，`windows-smoke` 的 pytest 红 11 条（六爻 / 正传 / 节气宿盘 / guidance 词表 / 择日判读…），
+  全是 `UnicodeDecodeError: 'charmap' codec can't decode byte 0x8d`（读线程里炸 → `stdout=None` → `json.loads(None)` 再炸一层）。
+  本机（macOS）与 ubuntu job 全绿。
+- 根因：同步各波新增了一种主要测试形态——测试自己 `subprocess.run(["node", "-e", …], text=True)` 跑 vendored 上游 JS 算金标；
+  7 处都没给 `encoding=`，Windows 上 `text=True` 按控制台代码页解。`tests/test_subprocess_encoding.py` 的守卫只扫 `src/`
+  （v0.37.0 那次是产品代码踩的同一坑），tests/ 是盲区。
+- 守卫：7 处补 `encoding="utf-8"`（node 恒 UTF-8 输出）；`test_subprocess_encoding.py` 新增对 tests/ 的 node 调用扫描 +
+  负向对照（旧形状必红、非 node 子进程不误报）。
+- 规则：**在 tests/ 里起子进程读文本，与 src/ 同一条纪律——`encoding="utf-8"` 显式给。** Windows job 是唯一能抓到它的地方，
+  推之前本机没法复现（macOS 默认 UTF-8），所以守卫必须是静态扫描。
+- 第二轮（同一推送修完编码后再红 9 条）：`node --input-type=module -e "import(process.argv[1])"` 在 Windows 上不接受裸盘符
+  绝对路径（`ERR_UNSUPPORTED_ESM_URL_SCHEME` ×18），只认 `file://` URL；macOS / Linux 的 `/abs/x.js` 恰好能过。守卫：tests/node_esm.py
+  是起 node ESM 的唯一入口（Path 参数转 `as_uri()`，字符串形式的绝对 `.js` 路径直接拒绝），`test_subprocess_encoding` 禁止别处再写
+  `--input-type=module`（负向对照两条）。规则：**测试里给 node 的模块路径一律传 Path、经 helper 转 URL；本机绿不等于 Windows 绿的
+  又一个实例，静态守卫先行。**
+
+### v0.40.0 / 2026-09-24 — 首推 CI 红：stdio 探针把全量面工具数写死在 ci.yml 里
+
+- 症状：v0.40.0 候选第一次推上 main，CI `test` job 在「Zero-install path from the wheel works」这一步红：`assert probe["tools"] == 116 == probe["expected_tools"]`，
+  而探针报 `expected_tools: 120`；windows-smoke 的两处 pwsh `-ne 116` 同样会红。本机 24 步门禁全绿——`run_ci_gates.py` 不跑这两步（它们要
+  `uvx --from <wheel>` 真起 server），而工作流文本里的数字没有任何守卫。
+- 根因：v0.38.1 R9/R18 把「全量面 = 116 个工具」写成字面量塞进 ci.yml（三处）和 README 客户端表（每份 6 行），四个新工具（ephemeris /
+  returntimeline / prenatalsyzygy / prog）让真值变成 120，docs-sync 的工具计数只盯「110 技法」措辞，看不见「全量 116」。又一个「计数写在文档里、
+  真值在别处」（同形：v0.38.0 B0 marketplace.json 97 工具）。
+- 守卫：ci.yml 两个探针改从 `contracts/mcp_list_budget.json` 读 `full_tools` / `compact_tools`（这份契约本身由 `verify_mcp_list_budget.py` 对真
+  server 核过）；`verify_docs_sync.check_full_surface_counts` 扫 README×2 的「全量 N / full (N)」行对 `full_tools`，并禁止 ci.yml 出现
+  `-ne <数字>` / `== <数字>` 形式的工具数断言；`tests/test_ci_workflow_shape.py` 同一正则的负向对照。
+- 规则：**任何写进工作流 / 文档的计数都要能指出它的真值文件；指不出就不许写数字。** 本机门禁不覆盖的 CI 步骤，推之前至少把它的断言值核一遍。
+
+### v0.40.0 / 2026-09-24 — 审计 P0：报告类 MCP 工具的 `output_path` 是任意路径写；P1：运行期契约不在安装包里
+
+两条都是 v0.40.0 同步收尾时的接口 / 分发审计结论（交接文档 §6.1），用户拍板后与同步一起修。
+
+1. **P0 安全：`horosa_report_render` / `horosa_report_from_tool` / `horosa_technique_report` 的 `output_path`。**
+   - 症状：三个工具接受 `output_path`，经 `Path(...).expanduser().resolve()` 后 `renderers.render_report` 用 `os.replace` 直接覆盖目标；
+     没有「只能写到输出目录」的约束；annotations 还标着 `destructiveHint=False`。MCP 工具的调用方是模型——一次被提示注入的
+     `horosa_report_render(output_path="~/.zshrc")` 就把用户的 shell 配置换成一份 JSON 报告，而客户端因为「非破坏性」不问一句。
+   - 根因：报告类工具从 CLI 时代继承了「路径是用户给的」假设；搬到 MCP 面后调用方变成了不可信的模型输出，路径语义没跟着变。
+     annotations 的口径只看了「会不会删」，没看「会不会覆盖别的文件」。
+   - 守卫：`HorosaSkillService._report_output_path`——缺省仍是存储层缺省产物路径；相对路径按输出目录解析；绝对路径必须落在
+     输出目录或 `HOROSA_REPORT_OUTPUT_ROOTS`（`os.pathsep` 分隔的白名单根，`Settings.report_output_roots`）之内，否则
+     `report.output_path_not_allowed`（带 `allowed_roots`，**不写任何文件**；`..` 逃逸同样拦）。三个工具 `destructiveHint=True`
+     （report_from_tool 还非幂等）。`tests/test_report_output_path_guard.py`（负向对照：把闸换回「resolve 即用」的旧写法，越界写入
+     真的发生）+ `test_mcp_robustness` 注解断言。
+2. **P1 打包：`contracts/` 不在 wheel / MCPB 里。**
+   - 症状：`decisions/policy.py`（Jev 阈值锁）/ `decisions/eval.py` / `reports/technique_card.py`（算源契约）用
+     `Path(__file__).resolve().parents[3] / "contracts"` 找文件——源码树成立，wheel 安装后 `parents[3]` 是 site-packages 的父目录。
+     后果：uvx / wheel 安装下 Jev `enforce` 永不生效，技法依据卡的算源一律「未标注」。这是 v0.39.0 **已经出货**的 bug；
+     源码树运行不受影响，所以本机全绿、live 全绿、CI 全绿。MCPB bundle 的 `.mcpbignore` 也整个排掉了 `/contracts/`。
+   - 根因：又一个「构建期 include 列表与运行期路径假设各写各的」（同形：v0.38.0 B0 的 Dockerfile 漏 COPY force-include）。
+     `verify_wheel_contents.py` 只锁了当时知道的条目，新加的运行期数据文件没人登记。
+   - 守卫：`horosa_skill/contracts_locator.py`（源码树 `<pkg-root>/contracts/` → 包内 `horosa_skill/contracts/`，都缺回源码树路径）；
+     pyproject force-include 两份运行期契约；`.mcpbignore` 改 `/contracts/*` + 反选两份文件（父目录整体忽略时反选无效，只能这么写）；
+     Dockerfile COPY 两份；`verify_wheel_contents.REQUIRED_ENTRIES` 锁两条；`tests/test_contracts_packaged.py`（负向对照：旧的
+     `parents[3]` 表达式在模拟的 site-packages 布局下指向不存在的路径）。
+   - 规则：**代码里任何 `Path(__file__)…parents[n]` 找数据文件的写法，都要问一句「安装成 wheel 之后这条路还在吗」**；运行期要读的
+     仓内数据文件一律走 force-include + 定位器 + wheel 守卫三件套。
+
+### v0.40.0 / 2026-09-24 — 并行同步各路实现者的踩坑：stub 杀死纯逻辑、移植口径、测试替身与 worktree
+
+背景：v3.11.x 同步拆成十路并行实现（隔离 worktree），各路交回的报告里有一批与技法无关、会再犯的形态。按「有没有机器守卫」分两类。
+
+**有守卫的**
+
+1. **stub 掉的 import，死的是纯逻辑、不是 UI。**
+   - 症状：六壬择时 / 三式择时的六壬条件对任何条件都 0 命中（形状合法的空结果，live 样例 元首课 修后 0 → 19）。
+   - 根因：`liureng/LiuRengMain.js` 的 manifest 把 `ChuangChart` / `LRXiangDoc` / `LRSanChuanRelationMini` 当「只有 React 尾部用」
+     stub 成空，而保留的纯逻辑（`buildSanChuanData` 里 `new ChuangChart`）也在用 → ReferenceError 被 try/catch 吞成 null。
+     selfcheck 当时只断言 `Number.isFinite(hit_count)`，看不见。
+   - 守卫：`revendor_core_js._stubbed_names_still_used`——stub 掉的绑定仍被保留代码引用、且 stub 没定义同名 → `--check` 报 ⚠
+     （负向对照：给 LiuRengMain 重加这两条历史 stub，分别报 ChuangChart / buildXiangContext）；首跑还揪出 `DateTime`（UI 草稿恢复链，
+     不可达）→ stub 改为定义同名、调到即抛明确错误的类。selfcheck 择日命中改锚独立算出的真值。
+2. **worktree 里的子进程测试跑的是主 checkout 的代码。**
+   - 症状：四路实现者各自在 worktree 里看到 stdio/http 测试报「116 个工具」，而本树已是 120。
+   - 根因：共享 venv 的 editable install 指向跑过 `uv sync` 的主 checkout；`python -m horosa_skill…` 子进程不经 pytest 的
+     `pythonpath=["src"]`。同形还有：同一秒内改回同长度代码会留下陈旧 `.pyc`（`PYTHONDONTWRITEBYTECODE=1`）。
+   - 守卫：`tests/conftest.py` 会话期把本 checkout 的 `src` 前置进 `PYTHONPATH`；`test_subprocess_children_import_this_checkout_not_the_editable_install`
+     （负向对照：worktree 里去掉 pin 即红，子进程解析到主 checkout）。
+3. **生成器不幂等：契约是手改的。**
+   - 症状：`gen_technique_provenance.py` 重跑，契约 26 个工具被改写（神数 14 路丢 `/wangji/xinyi` 与 `yanqin_yanfa`、bazi_inverse 被判成
+     python_chart_backend、guolao_chart 从 composite 变 headless_js……）；反过来契约也落后生成器 9 处（择日八键 `export_technique` 仍 null）。
+   - 根因：AST 只扫 runner 本体，helper 间接调用的证据与逐工具说明只能手改契约；`eps and not js` 一律判 chart 服务。
+   - 守卫：`EXTRA_EVIDENCE` / `NOTE_OVERRIDES` 进生成器，Java 端点判 java_backend；`--check` + `test_technique_provenance_generator.py`
+     锁「契约 == 生成器输出」（负向对照：改前契约下报 9 个工具不一致）。
+4. **`_js_round` 名为 JS Math.round，实为向零截断。**
+   - 症状：世俗盘实现者变异测试发现 `service._js_round(-1.7) == -1`（JS 为 -2）；AGENTS §4 一直写的是 `floor(x+0.5)`。
+   - 根因：`int(x+0.5)`，注释假设「age/span 恒正」，而调用点后来已不止这些。服务里另有一份正确的 `_js_math_round`。
+   - 守卫：改 `math.floor`（正数行为不变）；`test_js_round_mirrors_math_round_for_negative_values`（旧实现在 -0.7 / -1.7 / -2.5 三处红）。
+
+**只有测试、没有通用守卫的（照着做）**
+
+5. **移植口径**：`/nongli/time` 的 `year` 是**正月初一**口径干支、`yearJieqi` 才是立春口径——六爻以时起卦旧移植取
+   `yearJieqi`，立春到正月初一之间年数就与上游 `buildTimeGua` 不同（连同月/日用了地支序而非农历月日数，三处合起来卦都不同）；
+   两层两个缺省——奇门 Python 侧缺省发 `chaibu`、JS 本地层缺省 `zhirun`，盘按拆补算、标签写置闰（缺省必须一处
+   定义、两层同读）；上游 builder 读 `params.date` 是 `YYYY/MM/DD`，skill 归一成 `YYYY-MM-DD` → 七政 [大限] 出生年 0；moment
+   `add(x,'days')` 把小数天四舍五入到整天，照搬成 `timedelta(days=float)` 让波斯向运日期差一天；上游 AstroTxtMsg 是单字名（日/月），
+   skill 的 ASTRO_TEXT_MAP 是全名（太阳/月亮）——v56 宫神星表就这么印错而测试也断言错值；上游页面的**出厂缺省**≠引擎缺省
+   （六爻贵人 页面 2、引擎 0），只送调用方选项会落到引擎缺省；种子与缺省照上游 headless 路径（`build*SnapshotForFields` /
+   `aiAnalysisContext`），不照页面 state。
+6. **工具自身的盲区**：`_drop_orphaned_imports` 把注释里的提及也算「在用」（`LiuYaoReference` 出现在注释里 → 整个
+   `LiuYaoBoard` import 被留下、只能再手写 stub）；边界契约生成器按局部变量名跨函数配对（`const base = {…}` 被记到别的
+   函数调用名下 → 假死键）。已知局限，遇到就改名/显式 stub，并在报告里点名。
+7. **测试替身会说谎**：`/liureng/runyear` 的 fake 回的是真端点从不发的包装形态，离线全绿而 live 下 liureng_runyear 四课/
+   三传/行年全空（三式实现者：改为按「端点 + 决定结果的请求字段」键控的**录制回放**夹具，回放与 live 逐字节一致才准裁剪——
+   请求形状一错即 miss，天然负向对照）；离线 fake 收到的 `/chart` 端点是 `"/"`（按 `/chart` 做键会静默落到罐装盘）；FakeClient 回显斜杠日期；
+   对所有端点同答一份的桩藏住了玄史 `id`/`slug` 映射错（改为逐端点校验真实下发参数）；导出解析器会去重段名，同一张卡出两次
+   对 missing/unknown 检查不可见；择日快照段间无空行，按 `\n\n` 切段会漏段；上游自己的 jest 骰子盘夹具把 `aspects` 嵌错了层，
+   真后端下那几段不可达而上游测试照绿（上游 bug，已如实上报，不写回上游）。
+8. **运行期语义**：合法的 JSON `null`（「查无」）被 `_call_remote` 当失败无限重试，且每轮都真打后端；输入归一化会把嵌套
+   `options.gender` 的 male/female 递归改成 1/0（五兆恰好只收字符串）；`/jieqi/year` Java 与 Python 两端都有、数据不同
+   （Java 多 bazi.fourColumns 与 chart.nongli），`test_endpoint_registry.py` 那句「chart-only」注释已改正。
+9. **上游代码自己也会崩**：逐字 vendor 的 `jyotishSnapshot` 有暂时性死区（`scS`）与键名错（`index`/`month`），从没在真数据上跑过；
+   世俗盘卡 builder 吞掉每张卡的异常，闭包坏了只表现为「卡不见了」——只有值级金标抓得到。
+10. **动态 `import('./x')` 没补 `.js`，懒加载路径静默返回空。**
+   - 症状：六爻实现者要接 [断诀命中]/[占类断语] 时发现 vendored `gua/data/liuyaoDoctrineCache.js` 的 `loadDoctrine()` 恒返回 null。
+   - 根因：re-vendor 只给静态 `from './x'` 补扩展名；动态 `import('./tianjiDoctrine')` 在原生 Node ESM 下 ERR_MODULE_NOT_FOUND，
+     被模块自己的 catch 吞成「断语库缺失」。模块照常加载，loadcheck 恒绿。
+   - 守卫：transform 补动态相对 import 的 `.js`（`_DYNAMIC_RELATIVE_IMPORT`）+ `test_dynamic_relative_imports_get_the_js_suffix_too`；
+     重渲染后同一调用返回 40 键断语库（修前 null）。
+11. **worktree 隔离的 agent 建在「当前目录所在的仓」——一次落进了只读上游。**
+   - 症状：派发三式合一 agent 时 shell 恰好 `cd` 在 `Horosa-Public/…/src`（刚查完上游源码），worktree 被建成
+     `Horosa-Public/.claude/worktrees/agent-*`（上游仓多出一个 worktree + 一个分支）。agent 按规则先跑 `git log`/`worktree list`
+     察觉不对，只做了只读命令；约一分钟内被叫停。
+   - 处置：停 agent；harness 随之移除该 worktree 与分支（核对：上游 `.git/worktrees` 不存在、无 `worktree-agent-*` 分支与 reflog）；
+     手删它留下的空 `.claude/worktrees/` 目录。上游工作区里一处 `SELFCHECK_LOG.md` 修改早于本会话（9-22），未碰。
+   - 守卫：派发前先 `cd` 回本仓并 `git rev-parse --show-toplevel` 核对；agent 规则第一条改为 LOCATION CHECK（toplevel 不在本仓
+     `.claude/worktrees/` 下即停手、零写入、一行报告）。这是编排侧的流程守卫，无法在仓内代码里机器化。
+12. **类型收窄会吞掉上游缺省；未声明的键会被 MCP 扁平面丢掉。**
+   - 七政 `doubingSu28` 声明成 bool：`True` 被后端读成宿度制 1（斗柄定房法），上游缺省是 2（回归今宿），2–8 七档根本传不进来；
+     宿占 / 节气年盘同病。上游是枚举就声明成枚举（int 0–8，缺省照上游），别用 bool「近似」。
+   - 汉堡盘 `school/orb/strictFactors/frames/…` 未在 `GermanyInput` 声明：CLI 走整包能用，MCP 扁平签名把顶层键静默丢掉
+     （A6 同类）。长尾旋钮用 `ADVERTISE_HIDDEN` / `x-horosa-hidden` 声明而不广告：校验照收、tools/list 零字节。
+   - 日界开关的 schema 缺省 `False` + `model_dump` = 每次都发 0，Java 把 JSON `false` 读成 0，盖掉上游缺省 1；
+     缺省改 `None`（不发即后端缺省），本地引擎路径显式传 1/1（lunar 本地引擎把「缺键」当「不换日」而非上游缺省）。
+13. **两路实现各发明一种「声明而不广告」，合并时一行赋值把另一种覆盖掉。**
+   - 症状：命理 chunk 合并后 tools/list 一次 +8 KB（253 → 262 KB，离 256 KiB 硬顶 18 B）；acg/india/guolao/mundane/germany…
+     的长尾旋钮全部回到广告层。
+   - 根因：西占用模型级 `ADVERTISE_HIDDEN`，命理用字段级 `x-horosa-hidden`；git 自动合并把两行 `unadvertised = …` 都留下，
+     后一行覆盖前一行——语法、测试全绿，只有字节预算守卫抓到。
+   - 守卫：两者取并集；`tests/test_mcp_hidden_fields.py` 逐字段锁两种声明法都不进广告层（负向对照：合并版下模型级那条红）。
+     并行拆分时同一机制只许一处定义（后来者复用先行者的机制，别再发明第二种）。
+14. **自拼快照的「占位」藏住了条件段；截断会悄悄收窄导出。**（三式合一 agent）
+   - Python 自拼 sanshiunited 时给缺席段补「本盘未产出」占位，registry 于是从不需要 optional 登记；换成上游 builder 原样输出后
+     8 段立刻报 missing——占位等于在导出层替上游「编」段。守卫：条件段按上游双登记，skill 不补占位段。
+   - `truncate_before` 剪掉 React 尾部时连带剪掉了尾部的 `export { … }` 列表（LiuRengMain 的 `buildLiuRengReferenceBundle` 等 8 个
+     导出靠它），vendored 调用方链接失败。修：transform 保留「头部已定义名」的尾部 export 列表（+ 单测）。
+   - 录制回放夹具的键太窄（`/chart` 只按 date/time 键控）会让「请求错了 hsys」回放出看似正确的答案；键必须含所有改变结果的字段。
+   - 共享 shim 少一个常量（`constants/AstroConst.js` 缺 URANUS/NEPTUNE/PLUTO/MC…）→ 以它为键的表全变 `obj[undefined]` 互相覆盖、零报错；
+     三式合一改用对上游打戳的 curated 子集，七政侧另查。
+15. **页面 getter 的兜底值不是页面缺省；「缺键透传」会翻转缺省。**（数算 agent）
+   - AGENTS §4 曾据 `fieldVal(f,'timeAlg',1)` 把 canping/heluo/yizhangjing 缺省写成 1（钟表时）；可那个全局字段恒被预置为 0，
+     字面 1 从不触发——skill 多个版本按钟表时出数算盘（1998-02-20 11:05 上海：巳时 vs 旧 午时）。找缺省追字段种子。
+   - vendored `baziLunarLocal` 判 `after23NewDay === 1`，`undefined` 即 24 点换日（与上游出厂 1 相反）；canping/heluo「缺键透传」
+     于是把 23:30 生人的日柱算成前一天（戊戌 vs 己亥）。凡「不给就不传」的工具，下游若把缺键当 0，必须补上游缺省。
+16. **`BirthInput` 不是家族共享旋钮的安全落点；条件行要移植 helper 而不是移植「意图」。**（西占正文 agent）
+   - 广告层用「不在 BirthInput 里」判定子类自有字段：把 `after23NewDay` 声明进 BirthInput，紫微 / 八字 / 奇门原本广告着的同名键
+     被静默踢出 tools/list（症状只是预算缩了 564 B）。家族共享的隐藏旋钮放 mixin + `ADVERTISE_HIDDEN`（`_ChartDayBoundaryKnobs`）。
+   - 上游 `fieldValue` 从不返回 `undefined`（缺省 `null`），所以 `排盘规则：` 这类「看似条件」的行实际恒出——按条件移植就少一行。
+   - 离线 CaptureClient 记录的是**远端**路径（`/chart` 落成 `/`），断言端点要过 `_chart_server_endpoint`。
+
+### v0.40.0 / 2026-09-24 — 上游 v3.11.x 重同步：六处「同步了却没同步」
+
+背景：上游从 v3.10.0（0604fa41，aiExport v56）走到 v3.11.1 + 三个发布后修（HEAD 9b74714b，aiExport v58；后三个在上游
+本机未推送）。runtime-source 97 文件、core-js 89 文件、导出契约两版、四个新技法键一起漂移。同步过程中撞到六个「看起来同步了、
+其实没有」的形态：
+
+1. **live 复验跑的是已装 runtime 的旧 JS 引擎。**
+   - 症状：起好 vendored 新后端、只设 `HOROSA_SERVER_ROOT/HOROSA_CHART_SERVER_ROOT` 跑 live 套件与段级 harness，jinkou 缺 18 段、
+     qimen 缺 10 段、tongshefa 缺 5 段；拿提交前的旧代码对照也一样缺 → 差点记成「上游/后端问题」。
+   - 根因：`HorosaJsEngineClient._candidate_engine_roots` 的顺序是 `HOROSA_CORE_JS_ROOT` → **已装 runtime 的随包 core-js** →
+     本仓源码树。维护机装着一份旧载荷，于是所有 JS 技法跑的是它，与被测代码无关；两个「对照组」用的是同一个旧引擎。把
+     `HOROSA_RUNTIME_ROOT` 钉到空目录重跑，101/106 工具干净、剩余 5 个只差上游新段。CI 无 runtime，永远看不到。
+   - 守卫：`tests/conftest.py` 会话期 `setdefault HOROSA_CORE_JS_ROOT=<本仓 horosa-core-js>`；
+     `tests/test_conftest_engine_pin.py` 锁「本仓优先」+ 负向对照（去掉 pin 时已装副本胜出）。复验手工脚本同样要钉。
+2. **curated 件 restamp 了源 sha，却没把上游改动带进副本。**
+   - 症状：本轮复核 `suzhan/SZConst.js` 时发现它连 0604fa41 的上游都没跟上——双鱼分野上游早已把形近误植的「魏」改「卫」，
+     本仓仍是「魏」，而 manifest 里的 `upstream_sha256` 恰好等于 0604fa41 那份上游。
+   - 根因：curated / bespoke 只断言「上游源 sha == 记录的 sha」，**不比内容**；某轮有人 `--restamp` 了却没逐项落改动，看守就此失明。
+     （本件的 FengYe 表恰好没人消费，所以没伤到输出——下一次未必这么幸运。）
+   - 守卫：能表达成「上游全文件 + 声明式 deviation」的手工件一律改 **verbatim**：`suzhan/SZConst.js`（replace_text 注入 localStorage
+     空 shim）与 `tongshefa/TongSheFaCore.js`（truncate_before 类定义 + 4 个 UI import stub + 解构删除，`_reexport_required` 补 export）
+     已改；流水线输出逐字等于 vendored 文件，上游一动 `verify_upstream_sync` check 3 就红。
+   - **同一轮第三次**：三式实现者发现 `liureng/LRConst.js`（curated）sha 戳等于上游而内容停在旧版——缺 B 派「甲戊兼牛羊」/
+     C 派「干合阳阴贵」两张贵人表（贵人 3/4 直接 TypeError）与阴阳系昼夜互换（第 4 参被静默丢弃）。「上游全文件 import 了
+     headless 不存在的路径」这条 curated 理由早已过期（唯一 import 已解析到共享 shim），改 verbatim 后流水线逐字复现。
+3. **v0.38.1 A16 修了知识包产物，没修生成器。**
+   - 症状：重跑 `build_hover_knowledge_bundle.mjs`，`astro/liureng/qimen.json` 的 `source` 又变回维护者本机绝对路径，
+     `test_knowledge_pack_sources_are_relative_upstream_paths` 红；`generated_at` 还取 `now()`，每跑一次 index.json 漂一次。
+   - 根因：A16 当时手改了三份 JSON 产物，生成器照旧写 `path.resolve(...)` 的绝对路径。
+   - 守卫：生成器改写相对上游根的 posix 路径 + 上游 HEAD 提交时间（与 gen_knowledge_packs.py 同纪律，同 commit 重跑逐字节一致）；
+     产物测试仍在。法则：**修生成的东西，修生成器**。
+4. **re-vendor 变换漏了裸 `export default fetchReturnSet;`。**
+   - 症状：新 vendor 的 `divination/election/returnCharts.js` 网络函数被正确剥掉，末行 `export default fetchReturnSet;` 留着 →
+     模块加载期 ReferenceError。
+   - 根因：`_prune_default_export` 只认 `export default { … }` / `export { … }` 两种聚合形态。
+   - 守卫：补第三种形态（被剥的裸标识符整行删）+ `tests/test_revendor_transform.py` 两条（含「没被剥的默认导出原样保留」），
+     负向对照：去掉该段后旧函数留下陈旧导出。
+5. **vendored JSON 数据不在 manifest 里，上游改值零信号。**
+   - 症状：星运族 agent 移植 [行星年四档] 时发现 vendored `divination/data/hellenisticData.json` 的日/月中年仍是 39.5，
+     上游 v3.11.0（846756b5）早已改成 69.5 / 66.5；agent 只好在 Python 侧手抄上游值绕开。
+   - 根因：`vendor_manifest.json` 只由 `bootstrap_manifest` 按 `*.js` 生成，32 份 vendored JSON 仅 1 份（v0.27.0 手加）在册；
+     `revendor --check` 与 `verify_upstream_sync` check 3 都只看 manifest → 另 31 份 JSON 永远是绿的。
+   - 守卫：31 份 JSON 全部登记为 verbatim（对 JSON 即逐字节比对上游，负向对照：换回旧文件 `--check` 即 FAIL）；
+     `test_every_vendored_js_and_json_file_is_in_the_manifest` 锁「vendor 树 .js/.json 集合 == manifest 集合」（负向对照：旧
+     manifest 下报 31 份未登记）；Python 手抄表 `predictive_text.PLANETARY_YEARS` 与 vendored JSON 互锚。
+6. **知识库计数没有真值守卫，文档里同一件事写着四个数。**
+   - 症状：重收割后手册条目 235 → 236；文档里 README「31 域」与「30 域」并存，SKILL.md 与 AGENTS.md 还写「24 域」，条目数停在 235/408。
+   - 根因：工具数、测试数、门面数都有 `verify_docs_sync` 的真值检查，知识库的域数 / 手册数 / 条目数只有人记得时才改。
+   - 守卫：`check_knowledge_counts`——真值取 store 实际加载的 bundle 与 helpdoc 条目，16 条措辞正则逐处比对（每条至少命中一次，
+     措辞改了守卫不会悄悄变瞎）；负向对照：修文档前报 13 处不符。
+
+### v0.39.0 / 2026-09-22 — Windows 维护机复验 v0.39.0：星阙桌面端占着默认端口时 doctor 把它说成「查不出身份的进程」；setup 探针对「运行中会话占着 venv 文件」只给一屏 uv 噪声；Jev 数据集指纹按原始字节算
+
+- **背景**：v0.39.0（可选云端决策层）发布后五件齐、托管流水线与 windows-smoke 全绿，Windows 半边无需补。本机按
+  v0.38.0 起的「原生复验」角色做「门禁 → lane → 真机场景」，并第一次在**星阙桌面端开着**的状态下复验——8899/9999
+  由 `%LOCALAPPDATA%\HorosaDesktop\embedded-runtime\<sha>\rt\{python,java}` 占着（这是装了桌面端的用户的默认形状）。
+- **① doctor 误诊（用户可见）**。症状：用户默认根（`.mcp.json` 不设 `HOROSA_RUNTIME_ROOT`）的 doctor 报
+  `needs_attention`：「端口被非本工具的进程占用：java_backend 端口 9999 被 **一个查不出身份的进程** 占着…」，next_action
+  叫人「关掉上面点名的进程」。根因：`classify_endpoint` 的 `identity.nonce_mismatch`（与 `identity.other_app`）分支由
+  身份握手下结论后**提前返回、不收集 holders**；`_doctor_summary` 只看 holders，空就写「查不出身份」——可握手明明答出了
+  `horosa-chart` / `horosa-backend`（桌面端自己的 nonce），ctypes 也能直接拿到映像路径。最常见的真实形状（桌面端 + skill）
+  被说成「有不明进程占端口」，还被引导去关掉自己的桌面端。修：`identity._name_holders_cheaply` 在这两个分支点名监听者
+  （Windows 只用 ctypes 映像、不起 PowerShell；实测 listener_pids 27 ms 首次后缓存、映像 0.3 ms）；`_doctor_port_holders`
+  带上 `app` / `evidence`；`_doctor_summary` 按握手**实际证明了什么**措辞——星阙标记 →「另一份星阙实例（…很可能是你开着的
+  星阙桌面端，或另一个 runtime 根下的服务）」，next_action 先给「不想关它：HOROSA_PORTS=auto；想用它的引擎：
+  HOROSA_SERVER_ROOT/HOROSA_CHART_SERVER_ROOT（外部模式）」；只有什么都没证明时才说「查不出身份」。
+- **② setup 探针的 Windows 文件锁**。症状：lane 的 `client_setup` 里只有 codex 红（v0.38.1 复验起两次）：
+  `setup.stdio_probe_failed`，stderr 尾巴是 uv 的 `failed to remove file …\.venv\Lib\site-packages\../../Scripts/horosa-skill.exe
+  : … (os error 32)`。根因：本 session 的 horosa MCP 会话（`uv run … serve`）占着 venv 的 exe；codex 形状的探针不继承
+  `UV_NO_SYNC`，`uv run` 发现 venv 元数据落后（`git pull` 换了版本号）要同步，删不掉被占文件，server 未启动即退出——
+  macOS/Linux 能替换运行中的文件，所以只在 Windows。用户侧同形：客户端开着 horosa、终端里 `git pull` 后再 `setup`。
+  修：`cli._diagnose_probe_stderr` 只锚不本地化的两头（uv 的英文 `failed to remove file` + Rust 的 `(os error 32)`；
+  中间的系统描述随显示语言变），认出就换成中英双语原因 + 下一步，`details.diagnosis` 与 `steps.stdio_probe.diagnosis` 同带，
+  原始 stderr 保留、错误码不变。**本机复验法**：别在本 session 的 venv 上跑 lane / 门禁——`git worktree add --detach
+  C:\Users\maxwe\hs-lane <sha>` + 自有 venv（`uv sync --dev` + core-js `npm ci --omit=dev`），测的正好是要推送的那个提交。
+  （先试过把被占的 exe 改名再 `uv sync`：这颗 trampoline 打开时没给删除共享，NTFS 改名同样被拒——此路不通。）
+- **③ Jev 数据集指纹按原始字节算（隐患，非现行缺陷）**。`decisions/eval.py::dataset_sha256` = `sha256(read_bytes())`，
+  锁进 `contracts/jev_thresholds.json`。正常检出全平台 LF（`.gitattributes` `* text=auto eol=lf` 压过本机
+  `core.autocrlf=true`；本机实测 raw == LF 归一化 == 锁），但 `gen_jev_eval_sets.py` 用文本模式写——Windows 上重生成即
+  CRLF，随后 `compile` 会写进只在那台机器成立的 sha，提交后（git 归一化回 LF）全平台 `check` 报 dataset changed。
+  与 v0.35.0 vendor 戳恒红同型。修：哈希前 `\r\n → \n`（LF 内容空操作，已提交的锁仍有效，`jev_eval.py check` 实测 ok）；
+  三处提交物写入器改 `newline="\n"`；AGENTS §9 那条「vendor stamps are EOL independent」泛化为所有跨平台文本摘要，并修掉
+  该条里 `newline="` 与 `"` 之间误写入的真实换行符（渲染成 `newline=" "`）。
+  **自己在这条上的误判也记下**：先用 Git Bash 的 `grep -c $'\r'` 数 CRLF，得出「routing 213 行 CRLF」，其实那是文件总行数
+  （命令替换里的 `$'\r'` 没按预期生效）；`git ls-files --eol`（`w/lf`）与字节级 sha 比对才是可信判据。
+- **守卫**：`tests/test_runtime_lifecycle.py::test_doctor_names_another_horosa_instance_instead_of_calling_it_unidentifiable`；
+  `tests/test_runtime_ports_identity.py::test_handshake_decided_foreign_branches_name_their_holders_without_powershell`；
+  `tests/test_setup_command.py::test_probe_stderr_diagnosis_recognises_the_windows_file_lock`（英/中文 Windows、.pyd、os error 5
+  与无关 stderr 不误认）+ `::test_setup_names_the_windows_file_lock_when_the_probe_dies_on_it`；
+  `tests/test_decisions_eval.py::test_dataset_sha256_is_line_ending_agnostic`。
+- **本机原生证据**：门禁（`run_ci_gates.py`，worktree 形状）两次 24/24 全绿：修复前 `98ef9ec` 1227 passed、最终代码提交 1229 passed。lane（`verify_runtime_live.py`，公开 v0.39.0 真下载装进 `rt-verify`）install 83 s / start 20 s / 四引擎 / **九客户端全绿（含此前两轮环境性红的 codex）** / HTTP 握手 / 挂客户端不停 / 自动换端口 / live pytest 1297 passed / stop 全过——唯一红是**本轮自己引入的**回归（见下）。用户默认根（`.mcp.json` 用的那一个）v0.30.0 → v0.39.0 用真实命令 `horosa-skill upgrade` 升级，桌面端正占着旧清单钉的 8899/9999：`ok`、`stopped_before_swap=False`、`runtime.install_ports_held_elsewhere` 点名 pid 19392 / 7316 的 `HorosaDesktop\embedded-runtime\…` 映像，两颗进程 pid 与路径前后完全一致——v0.38.1 换目录闸修复（2e6db9c）在最真实形状下的首次原生验证（修前这里是 `install_refused_running_foreign`）。doctor 前后：「被 一个查不出身份的进程 占着」→「被 另一份星阙实例（horosa-backend；pid 7316 …\HorosaDesktop\embedded-runtime\——很可能是你开着的星阙桌面端…）占着」。
+- **本轮自己踩的两个坑**：（a）用 Git Bash 的 `grep -c $'\r'` 数 CRLF，得出「routing 213 行 CRLF」并据此断言现行缺陷——其实是文件总行数；`git ls-files --eol`（`w/lf`）与字节级 sha 才是可信判据。（b）给 doctor 摘要加的公开常量起名 `HOROSA_APP_MARKERS`，撞上约定「`src/` 里的 `HOROSA_*` 字面量专属环境变量」（`test_config.py::test_env_registry_covers_all_flags_code_reads` 锁着）；定向测试挑不到它，是 lane 的全量 live pytest 抓到的——改为函数 `identity.is_horosa_app()`，并 amend 未推送的提交。**法则**：动了 `src/` 就在最终提交上跑全量（门禁或 lane），定向测试只是加速，不是闸
+- **法则**：诊断文本要按证据**实际证明了什么**措辞，「没收集」≠「查不出」；Windows 上「运行中的文件不可替换」是一类
+  独有失败，遇到先认签名再给人话；跨平台比对的文本摘要一律先归一化换行，写 LF 提交物的脚本一律 `newline="\n"`。
+
+### v0.39.0 / 2026-09-22 — 发布前 CI 红：错误信息双语棘轮抓到新包 28 处 raise；本机只跑了「顺手的守卫」而不是 run_ci_gates.py
+
+- **症状**：bump 0.39.0 推上 main，ci.yml `test` job 在 `verify_error_recovery.py` 一步红：`non-bilingual error messages rose 110 → 138`
+  （`decisions/questions.py` 22、`jev_http.py` 3、`eval.py` 2、`layer.py` 1）。推之前本机跑了 docs-sync、六把顺手的 `verify_*`、
+  全量 pytest（1234 绿）、npm、preflight——全绿。
+- **根因**：新包的 raise 信息全是英文单语。棘轮按「异常类名以 `Error` 结尾 + 字面 message 同时含 CJK 与拉丁」按文件计数，
+  没有任何 pytest 用例断言双语，所以本机测试不会红，只有 CI 那一步会。更根本的：AGENTS §6 第 0 条早写着「push 前跑
+  `scripts/run_ci_gates.py`」（它解析 ci.yml 的 `test` job 逐步执行），我跑的是自己记得的子集——正是 v0.38.0「本机绿 ≠ CI 绿」的重演。
+- **修**：32 处（含 4 处不以 `Error` 结尾、棘轮不计的 `JevResponseInvalid` / `JevUnavailable`）改成「中文 / English」字面双语，英文原句保留
+  （没有测试断言 message 文本）。新增包级零容忍守卫 `tests/test_decisions_governance.py::test_every_raise_in_the_decisions_package_is_bilingual`
+  （全局棘轮只挡总量上升，别处还债这里新欠也能过；负向对照 `test_bilingual_raise_guard_catches_a_single_language_message`）。
+  本次发布改为跑 `run_ci_gates.py` 再推。
+- **法则**：**本机门禁只有一个名字：`run_ci_gates.py`，不是「我记得的那几把」**；仓里每一条按文件计数的棘轮（双语信息、
+  静默降级、静默空返回、未定义名）都是新代码的 API 契约——新包落地时就按它写，不等 CI 来教。
+
+### v0.39.0 / 2026-09-22 — 决策层（TypeSafe Jev）接入期：护栏只包住了 provider，问题构造漏在外面
+
+- **症状**：S3 门类面第一次跑离线用例，`liureng_gods` 整个变成 `tool.internal_error`——`QuestionSpecError:
+  instructions must be English`。决策层号称「失败一律关闭式降级」，可这条异常照样把一次真实起课打死。
+- **根因**：`DecisionLayer.ask()` 的 try/except 只包住 `provider.decide()`；问题构造（`build_zhan_question()`）
+  在调用 `ask()` 的**参数表达式**里执行，早于任何护栏。而问题规格校验又是我自己刚加的（instructions 禁 CJK），
+  自家 instructions 引用了「大六壬」「老婆/妻子」这类必要的中文线索词——规则写死成「零 CJK」是错的，
+  抽取面**必须**引用原话线索。
+- **guard**：`HorosaSkillService._decision_guard(surface, fallback, fn)` 把三个面的**整个**决策块（构造 + 调用 +
+  采纳）包进去，任何异常 → `_degrade` 进 `envelope.warnings` + 返回确定性结果；负向对照
+  `test_a_bug_in_the_decision_surface_degrades_instead_of_failing_the_technique`（monkeypatch 让构造函数抛
+  ValueError，技法必须 ok=True 且 warnings 里有「决策层」）。规则改成 `cjk_ratio ≤ 0.30`（英文为主、允许中文线索词），
+  `test_question_construction_points_follow_the_house_rules` 逐面锁。
+- **法则**：**可选增强的每一行代码都要在同一个降级护栏里**——「provider 失败会降级」不等于「这个面失败会降级」；
+  护栏的边界要画在**调用方看得见的最外层**（进入面 / 离开面），不是画在网络 I/O 周围。
+
+### v0.38.1 / 2026-09-15 — install/upgrade 的换目录闸不认 root：别的根的实例占着旧清单的端口就拒装，提示还救不了（Windows 维护机原生复验抓到）
+
+- **症状**：本机按 v0.38.0 起的新角色跑 `verify_runtime_live.py` 复验 v0.38.1（独立 root `rt-verify` + lane 端口
+  18899/19999），第 2 步 `install` 就红：`runtime.install_refused_running_foreign`，`details.conflicts` 两端点
+  `identity.evidence = identity.app_marker`、`started_by_us = false`、`holders = []`，`force_ignored = true`。
+  rt-verify 的旧清单（上一轮按默认端口装的 0.38.0）baked `8899/9999`，而这两个端口被 `%LOCALAPPDATA%\Horosa\runtime\current`
+  根下的旧实例（v0.30.0，桌面端 / 早前 manager 起的，挂着客户端所以 `stop` 也拒）占着。
+- **根因**：`_stop_own_services_before_swap`（v0.38.1 R3「升级就地不砍正在跑的服务」）只看 `started_by_us`，
+  **不看持有者跑在哪个根**。可占着端口的两颗进程映像/命令行全在 `%LOCALAPPDATA%` 根——换 rt-verify 的 `current/`
+  动不到它们的任何文件，「替换别人在用的 runtime」这个前提根本不成立，它只是**端口被占**。而提示里的
+  `HOROSA_PORTS=auto` 对这形状无效：闸探的是**旧清单**钉的端口，改端口只影响新清单。真实用户形状 = 桌面端开着 +
+  之前按默认端口装过（人人如此）→ `install`/`upgrade` 永久拒绝、按提示做也不通。`holders: []` **不是** bug：
+  app_marker 路径按设计只「升级不点名」（v0.37.0 那条注释），`port_holders(8899)` 在本机实测能解析出两颗进程。
+- **修**：`identity.holders_outside_runtime_root(port, runtime_root)` —— 端口的监听者若**全部**可证明跑在本根之外
+  （映像路径 / 命令行都不在本根下，复用 `_holder_evidence`）返回它们，任一住在本根下 / 点不出名 / 没监听者 / 没端口
+  → `None`（**永远不把「查不到」当「在别处」**）。闸改成：不是我们起的端点若全部证明在别处 → **放行**、不停任何进程、
+  记 `runtime.install_ports_held_elsewhere` 警告（`held_by` 点名 + 正确的 next_action：关那份实例，或给本 runtime 换端口
+  再 `start`）；证明不了 → 仍 `install_refused_running_foreign`，`--force` 仍不覆盖。本根自己起的服务仍走停 → 换 → 起。
+- **守卫**：`tests/test_runtime_ports_identity.py::test_holders_outside_runtime_root_*`（在别处 / 本根下 / 命令行引用本根 /
+  点不出名 / 无监听者 / 无端口）；`tests/test_runtime_manager.py::test_install_proceeds_when_the_busy_ports_belong_to_another_runtime_root`
+  （放行 + 警告 + 绝不 stop + current 已换）、`::test_install_still_refuses_when_only_some_busy_ports_are_provably_elsewhere`
+  （一个端口证明不了就整体拒）；原 `::test_install_refuses_to_replace_a_runtime_someone_else_is_running` 改为钉住
+  「查不到持有者」这一分支。本机原生复现（`scratchpad/repro_swap_gate.py`）：`rt-repro` 根按默认端口装 v0.38.1 →
+  再 `--force` 装 → 放行 + `install_ports_held_elsewhere`（`held_by` 点名 pid 141964 / 41580 及其 %LOCALAPPDATA% 映像）、
+  `stopped_before_swap=False`、两颗占用进程 pid 前后不变。lane 侧运维解法 = 清掉 rt-verify 的旧 `current/` 与状态
+  再跑（无旧清单 → 无闸）。
+- **法则**：**「不是我们起的」≠「换目录会伤到它」——闸要问的是「它的文件在不在我要换的根下」**；任何按端口做的
+  拒绝，其提示给出的绕行路径必须对触发形状真的有效（这里 `HOROSA_PORTS=auto` 就不是）。
+
+
+### v0.38.1 / 2026-09-14 — 复审：自动化的盲区与 Windows 编码（B0 平台 / B1 升级与 doctor / B2 客户端 / B3 矩阵与 CI）
+
+- **起因**：v0.38.0 公开（CI / CodeQL / 三真机矩阵全绿）后再查一遍「任何平台、任何客户端是否顺滑」。三路只读审计 + 九处第三方官方文档核实 +
+  每条发现在源码里坐实。结论：主线成立，剩下 6 条 P0、~25 条 P1、~20 条 P2，全部一次做完（用户决定 2026-09-14）。
+- **① Windows 编码（P0）**：`procs.process_command` 让 PowerShell 吐文本再按 UTF-8 解，而 Windows PowerShell 5.1 往管道写的是 **OEM 代码页**
+  （en-US cp437 / zh-CN cp936）——`C:\Users\张三\…` 回来是 `????` 或 U+FFFD，与 Python 侧 Unicode 路径永不相等，用户名带中文/重音的
+  **健康**机器被判 `port_conflict_foreign` / `stop_refused_foreign`。修：归属证据按「不经代码页」排序——ctypes `QueryFullProcessImageNameW`
+  的映像路径（新强证据 `process.image_under_runtime_root`）→ PowerShell 只搬 UTF-8 字节的 base64 → tasklist 按 `oem` 解；两份 `.ps1`
+  模板首行 `[Console]::OutputEncoding = UTF8`。守卫：`tests/test_subprocess_encoding.py`（AST：`text=True` 无 `encoding=` 基线 0）、
+  base64 路径测试 + 旧解法对 OEM 字节得 U+FFFD 的负向对照、模板首行测试；真机证明 = 矩阵 lane 的带空格 + 中文工作目录（R10）。
+- **② doctor 最坏 165 s**：每个子进程探针各自 5–15 s，加起来没人管（两端口 × 两地址族的 netstat + 每个持有者一次 PowerShell + node/uv 探针），
+  而 MCP 客户端 60 s 掐工具——doctor 恰在最需要它的时候挂。修：`runtime/budget.py`（scope/clamp/timed）+ doctor 25 s / status 15 s 硬顶、
+  `ports._run` 2 s memo、Windows 一条裸 `netstat -ano` 同时解析 v4/v6、映像命中就不起 PowerShell、探针并发；`report.budget` 记 timings / skipped。
+  顺手：`port_bindable` 双栈（只听 `[::]:port` 的服务此前被当空闲端口发给 HOROSA_PORTS=auto）；`PAYLOAD_LONGEST_ENTRY_CHARS` 200→180
+  （darwin 实测 179，默认根在用户名 ≥ 6 字符时被误报「装不下」）→ `verify_runtime_release.py` 双向闸。
+- **③ 升级不停服务（P0）**：`install()` 直接 `replace` + `rmtree(previous)`——Windows WinError 32/5，macOS 旧进程继续从已删路径服务、新载荷
+  永远不启动。本机就是活例：已装 0.3.0、doctor 说 ready、从不提示过期。修：换目录前 `endpoint_identities`——全不可达直接换；全部
+  `started_by_us` → 先停、换完再起（`stopped_before_swap` / `restarted`）；任一可达但不是我们起的 → `runtime.install_refused_running_foreign`，
+  **`--force` 不覆盖**（不杀陌生人是不变量）；previous/ 清理失败分头部（`install_previous_locked`，current 不动）与尾部（warning
+  `previous_cleanup_deferred`）。doctor 新字段 `latest_version` / `freshness`（来源 `.latest-manifest-cache.json`，默认只读缓存，零外网不变量保住）
+  + warning `runtime:payload_outdated`（版本落后或 `export_registry_version` < `exports.registry` 常量——本机 6 < 14）。
+- **④ selfcheck 必红**：`setup` 之后紧跟 `selfcheck`，工具路径只为等 runtime 阻塞 5 s，每个平台都以 `runtime.starting` 退出 1（原审计表述
+  「runtime start 报 start_timeout」有误：`start` 早已返回 `starting`）。修：selfcheck 在 managed + 已装 + 不全可达时先全预算 `start_local_services()`；
+  仿真宿主（Windows on ARM / Rosetta 进程）的出厂预算 45 → 120 s（矩阵 ARM 实测 59.6 s），显式 env 永远优先。
+- **⑤ 客户端细节**：Docker 网关缺 `HOROSA_CHART_SERVER_ROOT`（chart 族全失败）；README 教裸包名的 `pip install horosa-skill`（PyPI 未开通，404）；Zed / VS Code 的
+  JSONC 配置让 `--write` 拒写（新 `jsonc.py` 文本级 upsert，注释与其它键逐字节保留）；Cline / Zed 各自 per-server `timeout`（秒，默认 60）
+  没写；Codex 不转发 shell 环境——runtime 根只设在 shell 里时 Codex 起的 server 用**另一套目录**（env 表写两个绝对根；**不写 `env_vars`**：
+  老版本 deny_unknown_fields 整块拒收）；`.vscode` 用 Claude Code 的占位符是绿的而 `${env:HOME}` 是红的（按客户端白名单，展开后再查
+  pyproject）；`runtime.not_installed` 的修复提示默认你有 checkout（`runtime/hints.py` 按 checkout / wheel URL / 插件目录 / MCPB 生成，
+  由 `HOROSA_INSTALL_CONTEXT` + `HOROSA_PLUGIN_ROOT` 注入）；ChatGPT / claude.ai 连接器只接 OAuth 而本 server 只有静态 Bearer——README 改口
+  「经终结 OAuth 的 HTTPS 网关」并给配方，不实现 OAuth 资源服务器（用户决定）；`.agents` 入口指针指向不存在的
+  `horosa-skill/skills/…`；精简面下 agent 会把「平铺名不在」读成「技法不存在」——六份镜像统一 `horosa_tool_run` 段落。
+  探针改按客户端形状起 server（Codex = 最小环境 ∪ env 表；cwd = 项目根）并读新资源 `horosa://runtime/status` 比对宿主 runtime 根。
+  `setup --launcher uvx-wheel` 把 wheel 预下载到 `~/.horosa/wheels/`（uv 对直链依赖会按 HTTP 缓存头再验证，离线不保证）。
+- **⑥ 自动化的盲区（P0）**：三台真机矩阵**从不走真下载**——两种模式都 `--assets-dir` → file://（2026-09-14 那次 schedule 跑的 lane-report
+  里 `install.source` 仍是 `file://…lane-manifest.json`）；每周 cron 的 03:00 槽晚了 5.5 h 才触发（GitHub 整点槽延迟/丢弃）；HTTP 传输、MCPB
+  解包、wheel 在 Windows 上、`claude mcp add --scope user`、带空格/中文的路径、升级就地、挂着客户端的 stop、出厂预算——没有任何 lane 跑过。
+  修：release/schedule 模式传公开 `--manifest-url`（安装器自己的下载链）+ 结果带 `download{bytes,…}`；cron 移到 04:23 + completeness 的
+  `weekly-matrix-kick`；lane 增九客户端 setup、claude-code user scope、streamable-http 握手（401/421/116）、第二个 stdio 客户端挂着时 stop 必拒、
+  restart + HOROSA_PORTS=auto 复用登记表端口、出厂预算启动、带空格 + 中文工作目录；publish job 用 `verify_matrix_digests.py` 比对三条 lane
+  装的 sha 与 draft 资产 digest（退路 SHA256SUMS），publish=true 必须 run_matrix=true、skipped 不再放行，翻公开后再 dispatch 一次 release
+  模式矩阵；completeness 用资产 digest 校 SHA256SUMS 每一行、断言 `min_os`、解包已发布的 `.mcpb`；`min_os` 由契约进清单，install 下载前拒老系统。
+- **横切教训（第三例）**：「本机环境替测试补了一个它没声明的前提」——v0.37.0 是归属判定（本机 9999 上跑着真 runtime），本轮是
+  **矩阵 lane 传了 file:// 就以为验过下载**、以及 **stop 的客户端登记只有 RECOVERY_TABLE 里的一条错误码而没有任何代码路径**（`runtime.stop_refused_clients_attached`
+  在错误表里躺了一个版本，`stop_local_services` 从没读过登记表）。规则：**一条错误码 / 一个 lane 步骤存在，不等于那条路径被走过**——
+  每个「我们验过」都要能指着一份产物（lane-report 的 `download.bytes`、`installed_archive_sha256`、`clients_attached_stop.attached`）。
+- **CI 首推抓到 4 条「本机不会红」（2026-09-14 run 34869125562）**：① Linux runner 设着 `XDG_CONFIG_HOME=/home/runner/.config`，C19 起它覆盖
+  合成 home → 路径表用例只在 Linux 红（用例改 `env={}`，先在本机 `XDG_CONFIG_HOME=… pytest` 复现出红再改）；② Linux 上 `run_tool` 的第一跳如今是
+  `runtime.platform_unsupported`（A9），其 agent_recovery 没提 doctor → `test_operational_errors_carry_agent_recovery` 红（死胡同建议补
+  `horosa-skill doctor --explain`）；③④ hints 测试把 `Path(root) / "horosa-skill"` 写死成 POSIX 斜杠，Windows 上是反斜杠（行为正确，断言按平台拼）。
+  ⑤（第二推）R9 让 wheel 路径的 `setup` 真起 stdio——探针跑的是配置里那条 `uvx --from <发布页 wheel URL>`，而 CI 上这个版本**还没发布**
+  （uvx：Failed to download …/v0.38.1/…whl），Linux 与 Windows 同红。修：CI 预置 C15 的本地缓存 `~/.horosa/wheels/<whl>`（Windows 取
+  USERPROFILE），setup 写 `--from <本地 wheel>`，探针离线真起。教训：**「客户端将要执行的命令」在 CI 上必须先问「它指向的东西此刻存在吗」**。
+  规则不变：**推送之后看 CI**，五条都是维护机（macOS、无 XDG、能上 github.com 取已发布 wheel）替测试补了前提。
+- **⑥ draft 真机矩阵抓到的产品缺陷：Windows 上 runtime 根必须纯 ASCII（三轮真机，每轮揭开一层）**：R10 把 lane 工作目录改成
+  「horosa 测试 lane」后，两条 Windows lane（windows-latest / windows-11-arm）连红：
+  · 第 1 轮（draft，run 34880898270）Java stderr `Unable to access jarfile D:\a\_temp\horosa ?? lane\…`——随包 JDK 17 的 java.exe 用
+    `GetCommandLineA` 读参数，runner 的 ANSI 代码页 cp1252 表示不了的字符变 `?`。修：jar 参数改为相对 `$Root` 的纯 ASCII `$JarArg`（b4a2f40）。
+  · 第 2 轮（draft，run 34885945827）`could not find java.dll`——java.exe 找自己时（`GetModuleFileNameA`）同样丢字，参数怎么改都绕不开。
+    修：install 拒绝「ANSI 代码页表示不了」的根（d9e9aa5），lane 的 Windows runtime 根改成 cp1252 能表示的「horosa lane é」。
+  · 第 3 轮（dry run，run 34888946816）Java 起来了，但 chart 引擎报 `tool.backend_param_error`、29 个 chart 族 live 测试红；chart 服务的
+    stderr 是 `KeyError: 'Chiron'`——flatlib 把星历目录（runtime 根下的 swefiles）交给 pyswisseph，pyswisseph 以 **UTF-8** 编码传给 C 的
+    `fopen`，而 Windows 的窄字符 fopen 按 ANSI 代码页解字节：**任何**非 ASCII 字符都对不上，哪怕代码页能表示。Chiron 离不开星历文件，
+    行星还能靠内置 Moshier 算，于是症状是「部分技法报参数错误」这种误导性的样子。
+  所以规则只能是**纯 ASCII**，受影响的真实用户也比第 2 轮以为的多得多：**中文系统（cp936）上的中文用户名同样中招**（Java 能起，星历打不开），
+  默认 runtime 根 `C:\Users\张三\AppData\Local\Horosa\runtime` 就是这个形状——而维护者的机器、此前所有 lane 都是 ASCII 路径。
+  定稿（与长路径同一套路：先检测、早拒绝、给确切修法）：`manager.windows_runtime_path_ok`（纯 ASCII）→ install 在读清单 / 下载之前
+  `runtime.path_not_ascii`（修法 `setx HOROSA_RUNTIME_ROOT C:\horosa`，agent_recovery.must_ask_user），doctor issue
+  `windows:runtime_root_not_ascii`，`doctor.windows` 带 `ansi_code_page` / `runtime_root_ascii` / `path_fix`；相对 `$JarArg` 保留。
+  lane：Windows runtime 根改为纯 ASCII 带空格的「horosa lane runtime」，中文留在工作目录（数据目录 / 客户端配置 / 日志）；Windows 专属步骤
+  `non_ascii_root_refusal` 在真 cp1252 主机上走一次真 CLI，断言中文根被拒（d9e9aa5 的 windows-smoke 意外先证明了一次）。
+  没做的：自动把 runtime 挪到 ASCII 位置（ProgramData / junction）——对中文用户名这一大类用户会更顺，但那是新的 ACL / 抢注 / DLL 植入面，留给维护者决定。
+  教训：**只在「维护者自己的机器形状」上验过的路径，等于没验**；**修一层就宣布修好，要等真机把下一层也跑过**——第 1、2 轮的修法 commit
+  都写着「真机证明 = 下一次 draft」，下一次正是推翻它的那一次；以及**「代码页能表示」不是安全判据，原生库各有各的字节约定**。
+  同一批跑还抓到 lane 自己的 bug：Windows venv 的 python.exe 是 launcher，`serve` 登记的是子进程 pid，按 Popen pid 找客户端必然落空（本机实跑 lane 时先修掉）。
+- **⑦ 发布期（2026-09-14）：一次公开；publish job 里两条从没跑过的路径，先在真 draft 上修掉**：
+  · 过程：tag v0.38.1 在 draft 期间重指两次（draft 矩阵抓到 Windows 缺陷 → 修 → 删 tag 重打 → seed / .mcpb / wheel 从新 commit 重建；终版 tag → 4ac8a1b）
+    → dry run 34893385857（4ac8a1b，三 lane 绿，windows-latest live pytest 1210 passed、零 KeyError）→ `sync_windows_release.py --check --tag v0.38.1 --draft` [OK]
+    → `release-runtime.yml -f publish=true -f run_matrix=true`（run 34900145215，b23d49b）：派生 Windows 半 → assemble → 三 lane 绿 → publish job：
+    `verify_matrix_digests` 三条 lane 装的归档 = release 资产 digest（darwin b02592a6… / 两条 Windows 2c3b8cbf…）→ draft [OK] → 翻 latest（22:13:03Z）
+    → dispatch completeness（34902977795 绿：SBOM、`.mcpb` 解包且 server.json sha = ebdaff83、wheel 零安装报 0.38.1、清单带 min_os、digest 对 SHA256SUMS）
+    → 公开 latest [OK] → dispatch release 模式矩阵（34902982361 绿：三 lane 都经公开清单 URL 真 HTTPS 下载——darwin 737083959 B / 11.6 s、
+    windows-latest 723171811 B / 45.4 s、windows-11-arm 723171811 B / 19.0 s，均 1 次、未走镜像；已装归档 sha = 公开 digest；HTTP 探针 116 个工具；
+    两条 Windows lane 的 `non_ascii_root_refusal` 用真 CLI 拒掉中文根；ARM 仿真起 runtime 60.7 s）。
+  · 新知 ①：`GET repos/{owner}/{repo}/releases/tags/{tag}` 对 **draft 返回 404**。R5 字节一致性闸的第一版就用它——第一次真跑必红。
+    是在 dispatch publish 之前、拿真 lane 产物 + 真 draft 资产把闸预跑一遍才发现的（a2eedff：列表端点 + `--paginate` + 按 tag 选）。
+  · 新知 ②：job 级 `permissions:` **整块替换** workflow 级。publish job 只声明了 `contents: write`，而翻公开后的两条 `gh workflow run` 需要
+    `actions: write`——这两步是 v0.38.0 公开之后才加的，从没真跑过（0af3a60）。本次两条后续 run 的 triggering actor 都是 `github-actions[bot]`，路径已证。
+  · 顺带：同一 commit 的推送起了两条 CI（34893379906 / 34893381989），门禁读最新那条，它的 OpenClaw smoke 超时（见 ⑧）→ `gh run rerun --failed` 绿。
+    21:35Z 的 scheduled completeness 红在 mcpb sha（main 已回填 v0.38.1 的 ebdaff83，公开的仍是 v0.38.0 的 7bb5b63e）——「回填先于公开」窗口里的预期红，翻公开后自愈。
+  教训：**publish job 的每一步，在它第一次改变公开状态之前，都要先对真 draft 跑过一次**——shape 测试锁得住「写成了什么样」，锁不住「GitHub 对这个输入怎么回应」。
+- **⑧ 发布后自查抓到的三条（2026-09-14，公开之后）**：
+  · **一条随 v0.38.1 出货的 NameError**：`cli._friendly_runtime_error_payload` 的 `runtime.platform_unsupported` 分支（1aefdd2，B0 A9/A10）读
+    `(details or {})`，而函数里根本没有 `details` 这个名字——Linux / Intel Mac 上 `client openclaw-setup` / `openclaw-check` 本该打印网关出路，
+    实际是一段 traceback。没有任何测试、lane、维护机（darwin-arm64）走过那一行：它只在「我们不发载荷的平台」上可达。
+    抓法是对全树跑一遍 pyflakes 的 F821（顺带抓出 `astro_sidereal.py` 两处 `Any` 未导入——在 `from __future__ import annotations` 下运行时无害）。
+    修：分支读 `exc.details`；回归测试（负向对照：旧代码 `NameError: name 'details' is not defined`）；新闸 `scripts/verify_undefined_names.py`
+    （`ruff==0.16.7` 钉死为 dev 依赖，只选 F821/F822/F823 这三条「运行时必崩」规则、不选风格规则，src/scripts/tests 基线 0，`--self-test`
+    用同形状的合成模块证明能抓；对已出货源码跑出 3 条 = 负向对照），接 ci.yml test job（`run_ci_gates.py` 自动镜像）。修复在 main，要随下一版才到用户手里。
+  · **Windows CI 的 OpenClaw smoke 偶发超时**（run 34893381989 第 1 次尝试；同 commit 的另一条重复 CI 绿，`--failed` 重跑绿）：
+    `npx mcporter call horosa.horosa_knowledge_registry` 撞 150 s，而截获的 stdout **已经是完整的工具结果**，stderr 是
+    `npm warn exec … will be installed: mcporter@0.9.0`。正常形态：整个 setup 142 s（install 19 s / start 17.5 s / smoke 103 s 覆盖 ≥ 3 次调用）。
+    两个候选原因从日志里**分不开**：① npx 首次安装算进了这一次调用的预算（mcporter 依赖 rolldown，其 Windows 原生绑定 24 MB）；
+    ② 结果打印后进程没退出——mcporter 自己的 `docs/hang-debug.md` 描述的正是这个症状，并点名「子 MCP server 拖住 stdio」；TS SDK 起 server 时
+    stderr 是 inherit，而 SDK 的 `close()` 有界（stdin.end → 2 s → SIGTERM → 2 s → SIGKILL）、mcporter 之后强制 exit，所以真拖住调用方管道的只能是
+    server 的后代进程。本轮不下没证据的结论，只把两条路都变成可判：`_run_openclaw_smoke_check` 在 mcporter 走 npx 兜底时先 `npx mcporter --version`
+    （独立 300 s 预算）；超时详情新增 `output_complete`（并修掉 POSIX 上 `TimeoutExpired.stdout` 是 bytes 被旧代码丢成 "" 的问题），友好提示分
+    「npx 下载超时 / 结果完整但没退出（给 `MCPORTER_DEBUG_HANG=1`）/ 没回来」三种；新 `tests/test_stdio_server_exit.py` 用真子进程（不带
+    `--skip-runtime-start`，预热线程照跑）握手 + 真调一次工具 + 关 stdin，断言 15 s 内退出（负向对照：注入一个非 daemon 的 sleep 线程 →
+    「still running 45.0s」红）——Linux 与 Windows 的 CI 都跑。孤儿 `serve` 不是小事：它一直登记为 attached client，`runtime stop` / 升级会拒。
+    没做：CI 里设 `MCPORTER_DEBUG_HANG=1`——mcporter 0.9.0 的 debug 分支在 dump 后立刻 `process.exit(0)`，Windows 管道上可能截断 stdout，等于亲手造一个新 flake。
+    下一次再超时：预热之后 `output_complete: true` = 退出期挂起，`false` = 调用本身慢。
+    **修后 CI 实测（de7d3c3，run 34905947666）**：windows-latest 上 `npx_warmup_seconds` = **127.8 s**——光是 npx 首次安装 mcporter 就逼近旧的
+    150 s 单次调用预算；预热之后几次工具调用合计约 13 s（smoke 共 141.2 s），随后 `openclaw-check` 的预热 1.1 s（已缓存）。原因 ① 足以单独解释
+    那次超时；② 没有被排除，但已不需要它来解释。所以「分不开」的那一跑，靠的是把阶段拆开后的下一跑来回答。
+  · **本机误跑 lane 暴露的隐患**：自查时按计划文件里的 `for g in scripts/verify_*.py` 把全部脚本裸跑了一遍——`verify_runtime_live.py` 于是在本机
+    以默认参数真起了一条 lane（临时目录、非默认端口，隔离本身没问题），在 install 下载到 689 MB 时被发现并中止、临时目录清掉；没走到 start 与客户端
+    步骤，`~/.claude.json` 与 Codex 配置的 mtime 都早于这次运行。顺着看代码发现真正的坑：Claude Code user scope 步骤**继承真 HOME**——维护机上
+    `claude` 在 PATH 时，`claude mcp add --scope user` 写维护者自己的 `~/.claude.json`，清理 `claude mcp remove --scope user horosa` 还会删掉维护者
+    **原有的** horosa 条目；托管 runner 没有 `claude`，矩阵永远只走「打印命令」分支。（此前本机跑 lane 靠「把 claude 从 PATH 拿掉」这条口头注意。）
+    修：该步骤的 setup / get / remove 全部用 `claude_user_scope_env()`（`HOME` / `USERPROFILE` / `CLAUDE_CONFIG_DIR` → `<work>/claude-user-home`）；
+    测试断言三次调用的这三个变量都落在 lane 工作目录内（负向对照：旧代码不传 env → 继承真 HOME）；并在本机用真 `claude` 以唯一名字的探针验过：
+    add / get / remove 全落在隔离目录，真 `~/.claude.json` 的 sha256 前后不变。`verify_matrix_digests.py` 裸跑 exit 2（需 publish job 的输入）是预期。
+  教训：**只在没人跑的平台上可达的分支，就是没测过的代码**——对「运行时必崩」这一类错误用静态检查兜底，别指望 pytest 走到；
+  **带着完整输出的超时是证据不是噪声**：先把证据留全（bytes 也要解码），再按阶段拆预算，让下一次失败自己说出是哪一段。
+  **靠口头注意维持的隔离不算隔离**（「本机跑 lane 先把 claude 拿出 PATH」）——写进代码并用真二进制验一次；门禁的本机镜像只有 `run_ci_gates.py`。
+- **守卫清单（本轮新增）**：`test_subprocess_encoding`、`test_runtime_procs_encoding`（OEM 负向对照）、`test_runtime_ports_cache`（netstat 1 vs 4）、
+  `verify_runtime_release` 双向长度闸、`verify_wheel_contents` 主目录路径闸、`test_scripts_stdio`、`verify_client_configs` 覆盖 `.cursor/.vscode`
+  （白名单与 cli 锁步）、docs-sync 五闸（PyPI 命令 / 连接器行 / 入口文档指针 / 镜像计数 / 示例配置无裸 uv）、`verify_matrix_digests`、
+  `verify_mcpb_manifest --bundle`、`test_release_pipeline_shape` +6（旧写法 `--assets-dir "` / 整点 cron / skipped 放行 必红）、R7 本地 HTTP e2e、
+  R14 挂着客户端不停、R3 顺序 `["stop","swap","start"]`（旧 `["swap"]`）、R11 顺序 `["start","run_tool"]`（旧 `["run_tool"]`）；发布后：`verify_undefined_names`（F821 基线 0）、`test_stdio_server_exit`（关 stdin 15 s 内退出）、npx 预热与 `output_complete` 四条 cli 测试、lane 的 Claude Code user scope 隔离测试。
+### v0.38.0 / 2026-09-14 — 反向的「本机绿≠CI绿」：Windows 维护机红、CI 绿——两条测试没声明对本机环境的暗含前提
+
+- **症状**：v0.38.0 公开后在本机复验，`scripts/run_ci_gates.py`（ci.yml `test` job 的本机镜像）与真机 lane 的
+  live pytest 各撞到同一批红，而 GitHub 的 `test`（ubuntu）/`windows-smoke` 全绿：
+  ① `test_resolve_uvx_command_derives_from_the_uv_sibling`——断言「无 uvx 时从 `uv` 兄弟推导出 `uvx`」，但只
+  monkeypatch 了 `shutil.which`，没挡住 `_windows_uvx_fallbacks()` 扫真实安装目录。本机三处目录
+  （`%LOCALAPPDATA%\Programs\uv`、`%APPDATA%\…\Scripts`、`%USERPROFILE%\.local\bin`）里真装着 uvx，fallback 先
+  命中，压根走不到兄弟推导那支 → 拿到真 `uvx.exe` 路径而非 tmp 桩。ubuntu `test` job 只因 `os.name != "nt"` 整条
+  fallback 被跳过才绿——**托管 windows-latest lane 同样会红，只要那台装了 uvx**。
+  ② `test_runtime_launcher_patch` 三条 spawn `bash` 校验补丁脚本的用例偶发 `WinError 2`（bash 找不到），而 bash
+  就在 PATH 上：本机同时跑着第二套 pytest + runtime lane（进程 churn + Defender 扫描）时，裸名 `"bash"` 的
+  `CreateProcess` PATH 搜索输给竞态。孤立跑一直绿、清场后整套也绿（`envsentinel` 全程 spawn 探针零失败）——是
+  **并发满载下的 flake**，不是有序污染；`test_setup_command::test_stdio_probe_*`（真 spawn `uv run … serve`）同族偶发。
+- **根因**：都是横切教训 #7「维护机的环境会替测试补上它没声明的前提」的**镜像**——这次是维护机环境**破坏**了测试
+  的暗含前提（本机装了 uvx / 本机被自己另一套跑满）。两台 CI runner 恰好满足前提（无 uvx 的 ubuntu / 空载）于是绿，
+  维护机不满足于是红；真机 lane 的 live pytest 是唯一同时踩到两者的地方。
+- **guard**：① uvx 测试 `monkeypatch.setattr(client_tools, "_windows_uvx_fallbacks", list)`——把已装目录扫描清零，
+  强制走它命名的兄弟推导路径（任何平台都对，posix 上本就不调该函数）；② 三条 bash 用例导入期
+  `BASH = shutil.which("bash")` 解析一次绝对路径再 spawn（跳过每次调用的 PATH 搜索 = 消掉竞态），bash 缺席即模块
+  skip。**`run_ci_gates.py` 本身是这批的 meta-guard**：它在本机按 ci.yml `test` job 形状把每条门禁原样跑一遍，正是
+  它把这两条从「只有真机 lane 才撞见」提前到本机每次可复现。
+- **法则**：**测试 spawn 系统工具（bash/uv/…）一律导入期解析成绝对路径，别用裸名**——满负载 Windows 的 PATH 搜索
+  会偶发 `WinError 2`；**扫真实安装目录的解析器，其测试必须把那层 monkeypatch 掉**，否则测的是「这台机器装没装该
+  工具」；**复验时一次只跑一套重活**，否则把自己制造的并发 flake 当成产品缺陷去追。
+
+### v0.38.0 / 2026-09-11 — A6 首次托管发布：v0.38.0 双平台一次公开；两条发布期新知（GITHUB_TOKEN 的 release 事件不触发下游、publish 会再派生一次）
+
+- **过程**：CI 绿（6987a3e）→ `git tag v0.38.0` → `publish_release.sh --draft --dispatch`（seed 737 MB + .mcpb + wheel + SBOM 上 draft；
+  run 34572343136：build-windows 5 min 派生、assemble 双平台清单 + attestation、三 lane 真机全绿）→ `sync_windows_release.py --check
+  --tag v0.38.0 --draft` **[OK] complete** → `gh workflow run release-runtime.yml -f version=0.38.0 -f publish=true`（run 34574921999，
+  再跑一遍派生 + 三 lane，publish job 先 `--check --tag --draft` 再 `gh release edit --draft=false --latest`）→ 公开 `--check` [OK]，
+  `releases/latest/download/runtime-manifest.json` 列 darwin-arm64 + win32-x64（URL 钉 v0.38.0、带 size），
+  `uvx --from <wheel URL> horosa-skill --version` = 0.38.0，`gh attestation verify` 对清单与 seed 归档 exit 0。
+  「缺半」窗口首次为零：Windows 用户从公开的第一秒起就有自己的半边。
+- **新知 ①**：用 `GITHUB_TOKEN` 做的 `gh release edit --draft=false` 产生的 `release: published` 事件**不触发任何 workflow**
+  （GitHub 防递归规则）——`release-completeness.yml` 与 `publish-pypi.yml` 都没跑。`workflow_dispatch` 是明文例外，所以 publish job
+  现在自己 `gh workflow run release-completeness.yml`；PyPI 通道开通后也要在 publish job 里显式 dispatch（或用 PAT）。本次手动
+  dispatch 了 completeness（绿）。
+- **新知 ②**：`publish=true` 那一跑会**再派生一次** Windows 半（zip 字节不同：723171512 → 723171643，时间戳所致），清单 / SHA256SUMS /
+  attestation 在同一跑里同步重生成，所以自洽；但 draft 上的第一份 zip 被 --clobber 覆盖、第一次的 attestation 作废。可接受，
+  但更好的形状是 publish 跑复用 draft 上已验证的资产（后续项，记在 memory）。
+- **新知 ③（发布后追到）**：`.mcpb` 打包**不可复现**——`--draft` 那一轮重打的包字节不同，上传的是它，而 `server.json` 里提交的
+  `fileSha256` 还是前一次 no-upload 构建回填的值（a06dbc1d… vs 发布上的 7bb5b63e…），注册表客户端装前校验必失败。修：把发布
+  上那份的 sha 提交回 main；守卫：`release-completeness.yml` 下载发布上的 mcpb 算 sha 与 main 的 `server.json` 对齐（≥ 0.37.0）。
+  规则：**sha 回填只能来自真正上传的那一次构建**，`--draft` 之后必须 `git diff server.json` 并提交。
+- **法则**：**公开的判据只有 `--check` 的 [OK]**（本次两次都 [OK]）；**下游 workflow 不要指望 release 事件，publish 侧显式 dispatch**。
+
+### v0.38.0 / 2026-09-11 — 主干 CI 红了 19 个 commit 没人看：本机门禁全绿 ≠ CI 绿；Windows checkout 与 macOS runner 各有一套「本机不会红」
+
+- **症状**：v0.38.0 专项从 B0（87da8ec）起每次推送都跑了本机全量 pytest + docs-sync 才提交，但 GitHub CI 的 `test` 与
+  `windows-smoke` **连续 19 个 commit 全红**，直到 A5 dry run #3 在真机 lane 上跑 live pytest 才撞见同一批失败，回头查
+  `gh run list` 才发现。四类根因，全部是「本机不会红」的形状：
+  ① `tests/test_tracked_text_is_lf.py`（B0 加的 CR 守卫）读**工作树**字节——Windows runner 的 checkout 把文本写成 CRLF：
+  本机的 `.gitattributes`（`* text=auto eol=lf`）**从来没进过仓库**（0d98f4b 把它当「本地 IDE 配置」一起 gitignore 了），
+  GitHub 的 Windows checkout 只有 Git for Windows 的 autocrlf，守卫从加上那天起在 Windows 上就没绿过，而 mac 上永远绿；
+  ② `test_client_config_locations_darwin_and_linux_shapes` 用 `str(Path).endswith(".config/zed/settings.json")`——Windows 上
+  `str(Path)` 是反斜杠；③ `test_quarantined_binaries…` 用只有 `{"version"}` 的假归档，manifest 默认路径按**宿主 OS** 解析
+  （Windows 上 `runtime/windows/*`）→ 文件全缺、quarantine 一个都没查；④ `test_rosetta_python_still_gets_the_arm64_payload`
+  只 monkeypatch 了 `sys.platform`，`native_machine()` 先看 `os.name`。另：托管 macOS 26 runner 的 `netstat -anv` 把别的进程的
+  监听 socket 打成 `CLOSED`（本机打 `LISTEN`），`_listener_pids_darwin` 只认 `LISTEN` → 「端口上明明有监听进程，却一个持有者都
+  查不出来」（A5 lane 两条红）。
+- **guard**：① `.gitattributes` 改为跟踪（它是仓库策略不是本地状态），CR 守卫改读 **git 索引 blob**（`git ls-files -s` 的 sha
+  喂 `git cat-file --batch`；`cat-file --batch` 不认 `:<path>`）——守的是提交内容，不是 checkout 写出来的字节，且断言
+  `.gitattributes` 已被跟踪并含 `eol=lf`；
+  ② 路径断言用 `Path.as_posix()`；③ 假归档 manifest 显式写全 `runtimes`/`artifacts` 路径（`test_setup_command._fake_archive`）；
+  ④ 测试同时钉 `os.name`；⑤ `ports._darwin_listener_line`：外端地址 `*.*` 才是监听的签名，状态列不可信（负向对照：CLOSED 行必须
+  被认出、已连接行必须被排除）。⑥ **机器闸**：`preflight_release.py` 新增 CI 闸——`gh run list --commit <HEAD>` 的 ci.yml 结论
+  必须 success（红 / 未跑 / 进行中都阻断；`gh` 缺席只警告）；`publish_release.sh --draft` 同样先查。
+- **同一轮又追到两条**：⑤ CI 的 `test` job 跑 `verify_error_recovery.py`（双语消息棘轮），本机从没跑过它——`_assert_min_os`
+  与 uvx 缺席两条新消息是英文单语，110 → 112 就红（修：`errors.bilingual`；根治：`scripts/run_ci_gates.py` 把 ci.yml `test` job
+  的 23 条门禁原样在本机跑，`test_guard_wiring` 锁它覆盖每条单行 verify_*）；⑥ windows-smoke 的 qimen `tool run --stdin` 载荷没带
+  `agent_confirmed_settings`，B0 让 step 诚实之后它一直被闸门拒（exit 2）——之前几十轮是被 pwsh 吞掉的；修完又撞 pwsh
+  `ConvertFrom-Json` 默认大小写不敏感（信封里 `xunKong` / `xunkong` 并存直接抛错）→ `-AsHashtable` + `['key']` 取值。
+- **法则**：**推送之后看 CI 结论，红了先修再继续**——本机全绿只证明「在维护机上绿」；**新守卫要在三种 runner（ubuntu /
+  windows / macos）的形状下都想一遍**：路径分隔符、行尾、宿主 OS 决定的默认值、系统工具的输出差异。
+
+### v0.38.0 / 2026-09-11 — A5 首跑抓到的产品缺陷：非默认端口下 `runtime stop` 永远停不掉（停脚本拿的是裸 os.environ）
+
+- **症状**：本机跑 `verify_runtime_live.py`（`HOROSA_LOCAL_BACKEND_PORT=19999` / `HOROSA_LOCAL_CHART_PORT=18899`）：install / doctor /
+  start / 四引擎 / 四客户端 setup 全绿，`runtime stop` 退出 0、结果 `ok: false`、状态卡 `stop_requested`，两个端口照样在听——
+  Java 与 Python 服务留在机器上（本次按 PID 手动清掉）。
+- **根因**：上游停脚本按 **端口命名的 pid 文件** 找进程（`.horosa_py.<CHART_PORT>.pid` / `.horosa_java.<BACKEND_PORT>.pid`，
+  `CHART_PORT="${HOROSA_CHART_PORT:-8899}"`）。启动路径给启动器传了 `HOROSA_SERVER_PORT` / `HOROSA_CHART_PORT`，停路径却传裸
+  `os.environ` → 停脚本去找 8899 / 9999 的 pid 文件 → "not running (pid file missing)" → 什么都没杀。v0.37.0 的
+  `runtime stop` 测试全是 stub 脚本，端口一致性从没被断言；默认端口下两边恰好一致，所以维护机上永远绿——
+  `HOROSA_PORTS=auto`、显式改端口、矩阵 lane 三种真实用法全中招。
+- **guard**：`manager._launcher_env()` 单一来源（端口 + HOME 族），start 与 stop 都用它；
+  `tests/test_runtime_manager.py::test_stop_passes_the_same_ports_as_start_to_the_stop_script`（旧代码必红）；
+  `verify_runtime_live.py` 的 stop 步骤给 60 s 宽限后仍要求端口释放、状态清空，并把 stop 的原始结果带进 lane 报告。
+- **法则**：**起与停必须同源同环境**（端口、HOME、身份口令以外的一切），谁改启动器 env 就同一 change 改停脚本 env；
+  只用 stub 测过的生命周期操作，在真机 lane 上跑一遍才算数。
+
+### v0.38.0 / 2026-09-11 — A5 托管流水线 + 真机矩阵：「CI 起不了 runtime」是旧时代的规则，发布从此 draft → 派生 → 三台真机 → [OK] 才公开
+
+- **症状**：① 发布靠 `publish_darwin_release.sh --publish` 先发一个 darwin-only 清单的**公开** release，Windows 半由构建机人肉补传——
+  中间那段时间每一次 Windows install 都 404，「缺半」台账记了六个版本；② `release.yml` 挂 `runs-on: self-hosted` 而仓库从未注册过
+  runner，20 次 tag 触发排队 24 h 后被取消、零 step 执行，attestation / SBOM 都是纸面覆盖；③ 「CI 起不了 runtime」写进 AGENTS §7 的
+  年代只有 Linux runner，如今 macos-latest（arm64）/ windows-latest / windows-11-arm 都是现成的真机，但从未有一条流水线在它们上
+  装过、起过、调过 runtime——发布是否真的能装能跑，只在维护者一台 Mac 上成立过。
+- **guard**：① `scripts/publish_release.sh`（改名自 publish_darwin_release.sh）：无参只构建校验；`--draft` 把 seed / .mcpb / wheel / SBOM
+  放上 **draft** release，**永不上清单、永不建公开 release**（`--publish` 已删除并报错指路）；`--dispatch` 触发流水线并 `gh run watch`。
+  ② `.github/workflows/release-runtime.yml`（仅 dispatch，owner 守卫，并发组按版本）：`resolve`（draft 上必须有 seed；非 dry run
+  的 release 必须仍是 draft）→ `build-windows`（windows-latest 缓存钉版本工具链，`build_runtime_release_windows.py --seed`）→
+  `assemble`（`verify_runtime_python_lock --seed`、`generate_release_manifest --url-base <tag>`、SHA256SUMS、SBOM、
+  `verify_runtime_release --expect-platforms darwin-arm64,win32-x64`，artifact `runtime-release-assets`，非 dry run 才上 draft +
+  `attest-build-provenance`）→ `matrix`（workflow_call）→ `publish`（`inputs.publish && !dry_run && matrix 绿或跳过`：
+  `sync_windows_release.py --check --tag vX --draft` 必 [OK] → `gh release edit --draft=false --latest` → 再 `--check`）。
+  ③ `.github/workflows/runtime-matrix.yml`（workflow_call + dispatch + 每周一对公开 latest；**绝不挂 push/PR**）三 lane：
+  macos-latest→darwin-arm64、windows-latest→win32-x64、windows-11-arm→win32-arm64（装 win32-x64，x64 CPython 让依赖全有 wheel、
+  也正是用户 x64 Python 的形态）；ARM lane `continue-on-error: ${{ inputs.arm_nonblocking != false }}`；失败也上传 lane 报告 /
+  doctor 快照 / launcher.log / `.horosa-local-logs`。④ `scripts/verify_runtime_live.py`（纯 Python 驱动 CLI 子进程，JSON + 退出码）：
+  `--assets-dir` 把清单 URL 本地化成 file://（draft / dry run 时 tag URL 还不存在，但 ARM 回退仍走清单路径）→ install（断言
+  `platform` / `platform_fallback` 与 lane 期望一致）→ doctor（installed / platform_supported / payload_platform / emulated / files）→
+  `runtime start` + 轮询 doctor（issues==[]、双端点可达、**chart-only 降级即失败**）→ chart / qimen / nongli_time / bazi_birth
+  （ok、段非空、`missing_selected_sections==[]`、`technique_card.compute.matches_declaration`）→ `setup --client` 四客户端（写配置 →
+  回读 → 真 stdio 探测）→ live pytest（`HOROSA_*_SERVER_ROOT` / `HOROSA_NODE_BIN` 指向已装 runtime，`-rs` 输出里闸门 skip 理由
+  不得出现）→ `runtime stop`（端口释放、状态清空）；纯函数由 `tests/test_verify_runtime_live.py` 负向对照。⑤ 形状锁
+  `tests/test_release_pipeline_shape.py`（只手动触发 / 不 `gh release create` / publish 必 needs matrix 且先 [OK] / 矩阵不挂 push /
+  三 runner / ARM 由输入控制 / 旧 release.yml 与 publish_darwin_release.sh 不复活）；`test_guard_wiring.RUNNERS` 收录两条新
+  workflow 与 publish_release.sh（`verify_runtime_live.py` 由矩阵调用，不再是孤儿守卫）。
+- **首次 dry run（run 34562626963）抓到**：`build-windows` 死在 `.venv\Scripts\python.exe: No module named pip`——uv 的 venv
+  **没有 pip**，`fetch_native_wheels` 默认用 `sys.executable -m pip download`。修法：`runtime_seed.resolve_pip_python()` 依次试
+  显式 `--python` / 本解释器 / `sys.base_prefix` 的解释器（setup-python、uv-managed CPython 都带 pip）/ PATH 上的 python3|python，
+  以 `-m pip --version` 为准；workflow 显式传 `--python "$env:pythonLocation\python.exe"`；`test_resolve_pip_python_skips_interpreters_without_pip`。
+  另：job 级 `env:` 不能引用 `runner.temp`（dispatch 时解析即报错），只能在 step 里用 `$RUNNER_TEMP`。
+- **第二次 dry run（run 34563086660）——三台真机全部装起跑通**：build-windows 5 min 派生出 Windows 半、assemble 过双平台清单 +
+  verifier；macos-latest / windows-latest / **windows-11-arm（x64 仿真）** 三 lane 都 install → doctor → start → 四引擎 → 四客户端
+  `setup`（真 stdio 探测 116/11/11/116 工具）→ stop 全绿，只剩 live pytest 步骤与报告打印四处 verifier 自己的错：① doctor 的
+  `endpoints[*].url` 带探测路径（`…/common/time`），verifier 原样导出成 `HOROSA_SERVER_ROOT` → 闸门探 `…/common/time/nongli/time`
+  404 → `java_routes_dead`，Java 明明活着的 lane 把全部 Java 族 live 用例 skip 掉（修：`origin_of()` 只取 scheme://host:port）；
+  ② Windows 控制台 cp1252 编不了报告里的中文，`print(json)` 在全部步骤通过之后炸（修：`sys.stdout.reconfigure(utf-8)` +
+  job env `PYTHONIOENCODING`/`PYTHONUTF8`）；③ upload-artifact 在 Windows 上拒绝 `runner.temp` + `~` 混合根（"rootDirectory … is not
+  a parent directory"），证据一份都没传上来（修：verifier 把 launcher.log 与服务日志拷进 `<lane>/logs/`，上传只给一个根）；
+  ④ macOS lane 的 `test_runtime_ports_identity` 两条红：满负载下 `netstat -anv` 超过 `_run` 的 5 s → 空串 → 「查不到持有者」
+  （修：15 s + 用例耐心重试 + 失败信息带诊断）。另把 lane 的 runtime 端口改为非默认 19999/18899（维护者 live 配方同款；
+  默认端口上跑真服务会让假定端口空闲的离线用例误红——AGENTS §8 早有这条）。
+- **dry run #4（run 34568103210，2026-09-11）全绿**：三 lane 各 install → doctor → start → chart/qimen/nongli_time/bazi_birth →
+  `setup` ×4（stdio 探测 116/11/11/116）→ live pytest **1025 passed / 0 failed / 14 skipped**（无闸门 skip）→ stop；
+  windows-11-arm 装的是 win32-x64（`platform_fallback.mode = x64-emulation`，doctor `emulated: true`），全程 19 min。ARM lane 随即
+  转阻断（`arm_nonblocking` 默认 false）。
+- **法则**：**清单只在两平台齐了才上 release**；**发布前的真机证据由流水线产出，不由「维护者机器上跑过」代替**；「CI 做不到 X」
+  这类规则要写清时代前提，runner 变了就要重审。
+
+### v0.38.0 / 2026-09-11 — B6 doctor 的机器条件：码没有人话、长路径与磁盘预检从没测过、quarantine 没人查、「不上外网」只是口头承诺
+
+- **症状**：① doctor 的 issue / warning 码只是字符串（`services:not_running`、`missing:boot_jar`…），agent 与脚本用户拿到码就原样甩给
+  用户；② `_guard_windows_long_paths` 只在 Windows 真机上才走到、`_require_install_disk_space` 只在磁盘真满时才走到——两者零测试，
+  而安装临时目录 `.horosa-install-XXXXXXXX/extract/` 白吃 20 个字符（最深载荷条目本身已近 200，260 上限下这 20 个字符就是装得上 /
+  装不上的差别）；③ macOS 上浏览器下载的归档解出来的 python / java / node 带 `com.apple.quarantine`，首次执行被 Gatekeeper 拦下，症状是
+  「起不来 + 无日志」，doctor 一个字不提；④ x64 Python 在 ARM 芯片 / Rosetta 下跑，用户不知道自己在仿真里；⑤ 下载读超时 120 s、
+  每镜像 3 次写死，慢网 / 企业代理下只能反复 `install`；⑥ 「doctor 不上外网」没有守卫。
+- **guard**：① `manager.DOCTOR_ISSUE_CODES`（`missing:*` 前缀族）+ `cli._DOCTOR_WARNING_CODES` + `cli._DOCTOR_ADVICE` 逐码
+  `user_summary` / `next_action`，报告新增 `advice[]`；`doctor --explain` 把 6–10 行人话写 **stderr**（stdout 仍纯 JSON）；
+  `test_every_doctor_code_has_advice` 锁步，`test_issue_codes_in_source_are_all_registered` 扫 `doctor()` 源码里的
+  `issues.append("…")` 字面量与 `f"missing:…"` 前缀（新码不登记必红）。② 临时目录改 `.hi-XXXXXXXX/x/`（常量 `_INSTALL_TEMP_PREFIX` /
+  `_INSTALL_EXTRACT_DIRNAME` / `_INSTALL_TEMP_OVERHEAD`），doctor 新增 `windows{long_paths_enabled, runtime_root_length,
+  projected_deepest_path, headroom_chars, ok, fix}` 按同一常量估；`_guard_windows_long_paths` 首个测试（注册表关 + 深条目 →
+  `runtime.install_long_path`；开 / 短条目 = 负向对照）；磁盘预检五组参数化（有 size 4×、无 size 3 GB、坏 size 回落）。
+  ③ `_quarantine_report`：`xattr -p com.apple.quarantine` 查 python / java / node，flagged → issue `quarantine:runtime_binaries` +
+  `quarantine.fix = xattr -dr …`，只报不改（非 macOS / 未装 = 空）。④ `platform:emulated_process` warning（`arch.emulated`）。
+  ⑤ `HOROSA_RUNTIME_DOWNLOAD_TIMEOUT_SECONDS` / `HOROSA_RUNTIME_DOWNLOAD_ATTEMPTS` 进 `ENV_FLAG_REGISTRY` + `FIELD_ENV_MAP`
+  （provenance），`_download_with_resume` 读 settings（测试：2 次 × 1 源 = 2 个 Client、read=300）。⑥ `doctor --probe-network`
+  （默认关）逐镜像 HEAD 清单 URL（`stop_at_first_success=False`，每个镜像都报）；负向对照：默认路径把 `_probe_manifest_url` 换成
+  raise 仍绿。
+- **法则**：**每个诊断码都要有人话，且人话与码在同一处登记**；**只在真机才走到的分支必须有测试**（负向对照让它真红一次）；
+  **doctor 只报不改**——修复命令交给用户，且默认不碰外网。
+
+### v0.38.0 / 2026-09-10 — B5 面向 agent 的文档：没有 MCP 的 agent 没有契约、四家客户端打开仓库第一眼看不到规则、SKILL 里抄的命令没人核对
+
+- **症状**：① SKILL.md 全篇按 MCP 工具名写，shell-only agent（CI bot、`codex exec` 无 MCP、只会跑命令的工具）不知道
+  `tool run --input/--output`、退出码、闸门在 stderr 里长什么样，Windows PowerShell 5.1 走管道还会把中文重编码；② Gemini CLI /
+  Copilot / Windsurf / Cline 各自先读自己的文件（`GEMINI.md`、`.github/copilot-instructions.md`、`.windsurf/rules/`、`.clinerules/`），
+  仓里一份都没有——这些 agent 在看到 SKILL.md 之前就已经开始「帮」用户手算；③ 文档里抄给 agent 的 `horosa-skill …` 命令与
+  `--flag` 没有任何守卫核对（B0 才发现 ci.yml 里调了三十几轮不存在的 `--output`），agent 拿到 Typer usage 报错会判定「工具坏了」
+  （issue #5 的模式）；④ Codex 排障表没有「先跑 `client check`」这一步，Windows 特有的反斜杠 TOML、绝对路径、无头 `codex exec`
+  的 `defaults_accepted` 边界都没写。
+- **guard**：① SKILL.md 新增「Shell-only agents (no MCP)」（命令表 + 载荷文件 + 退出码 0/2 语义 + 闸门流程 + 信封键）与
+  「First 3 commands on a fresh machine」（macOS zsh / Windows PowerShell / 源码 checkout 三块，各三条命令，钉版本 wheel URL 由
+  `check_pinned_install_commands` 锁）；`.agents` Codex 镜像同一契约。② 四份薄镜像各 ≤ 30 行：指向 SKILL.md + 禁手算 + 闸门
+  （`agent_guidance.required` → `agent_confirmed_settings`）+ 只读 `export_snapshot` + `setup --client <x>`；
+  `verify_docs_sync.check_agent_mirrors` 锁存在 / 行数 / 指针 / 四个关键词，四份也进 `COUNT_DOCS`（负向：105 必红、31 行必红、
+  缺关键词必红、缺文件必红）。③ `tests/test_skill_shell_contract.py`：两节里每条 `horosa-skill …` 逐 token 对到 Click 命令树
+  （子命令存在、`--flag` 在 `opts ∪ secondary_opts`）；负向 `--nope` / 未知子命令 / 只写到命令组必红；路径里的 `…/horosa-skill &&`
+  不算命令。④ `examples/clients/codex.md`：排障先跑 `client check --client codex`（五个问题码逐行对应）+ 新「Windows」节；
+  windows-smoke 新增 codex 形状 TOML 生成 → `client check` → tomllib 断言 120/600 与绝对路径 `uv.exe`。
+- **法则**：**文档里给 agent 抄的每条命令都要有守卫对到真实 CLI**；**每个客户端先读的那份文件里必须有闸门**，哪怕只有
+  十行——策略仍只在 SKILL.md 一处，镜像只许指针 + 三个关键词。
+
+### v0.38.0 / 2026-09-10 — B4 一条命令接入：接入曾是四条命令 + 手粘配置，而且没有任何一处验证「客户端将要执行的那条命令真能起 server」
+
+- **症状**：① README 的接入路径是 `install` → `client config` → 手动粘进客户端文件 → 重启客户端 → 在客户端里发现没有工具
+  → 再来 `client check`；issue #14 直说「安装说明对 AI agent 不够友好」，issue #18 的「一堆报错」是超时没写；② `client config`
+  只打印建议、`client check` 只看文件、进程内 MCP 测试绕开 spawn——绝对路径对不对、uvx 缓存能不能建、Windows 上 spawn 走不走得通，
+  三者都只有用户在客户端里失败时才知道；③ 零安装用户（wheel 装出来的包旁边没有 pyproject.toml）跑 `client config --launcher uvx-wheel`
+  直接 BadParameter：生成器不分启动器一律先 `_resolve_skill_root`；④ 网络不通的机器要等 120 s 下载超时才知道装不了。
+- **guard**：① `horosa-skill setup --client <target>`，七步固定并逐步记录 `steps.<name>`：`network_probe`（HEAD 清单 URL 走镜像，5 s，
+  失败立刻报 `setup.network_unreachable` 并给三条出路）→ `install`（版本短路即幂等）→ `config`（自动定位 + `_merge_client_config`
+  安全合并；claude-code 在 CWD 有 `.mcp.json` / `--scope project` 时写项目文件，否则 `claude` 在 PATH 就执行 `claude mcp add --scope user`
+  并记 `rollback`，不在 PATH 只打印命令）→ `doctor`（与 `doctor` 命令共用 `_doctor_report`；`--skip-install`/`--dry-run` 下只报不拦）→
+  `client_check`（回读**磁盘上**的条目，共用 `_client_check_report`）→ `stdio_probe`（用 `mcp` 客户端真 spawn 配置里那条命令 +
+  `--skip-runtime-start`，断言工具数 = 该客户端工具面；顺带焐热 uvx 缓存）→ `next_steps`（各客户端重启话术 + 一句试用提示 +
+  `selfcheck` + doctor 的 warnings）。② 失败包写 stderr、退出码 2：`step` / `code` / `config_untouched` / `backup_path` /
+  `retry_command`（探针失败时自动带 `--no-probe-network`）；`tests/test_setup_command.py` 锁「第 3 步之前失败用户配置一个字节不动」
+  （负向：装失败时预置文件逐字节相等）、dry-run 零副作用、幂等（第二次写出逐字节相同 + `.horosa-bak`）、Intel/mirror/uvx-wheel
+  启动器、claude-code 三种 scope（真调 `_claude_mcp_add` 的替身记录命令）、真 stdio 探测数出 11 个工具、stderr 尾巴随失败包。
+  ③ `_build_client_config_payload` 只在 `uv` 启动器与 mcporter/openclaw 形态下解析 checkout；`_default_setup_launcher`：checkout 内
+  `uv`，否则 `uvx-wheel`；ci.yml 的 wheel 步骤真跑 `uvx --from <wheel> horosa-skill setup --dry-run` 断言 `launcher.kind == uvx-wheel`，
+  windows-smoke 真跑 `setup --client cursor --skip-install`（写配置 → 回读 → Windows 上真 spawn → 11 个工具）。④ 输出契约冻结在
+  `tests/test_cli_output_contract.py::test_setup_public_keys`；doctor 多一个 `environment.probes.uv`（MCPB 的 `server.type: "uv"` 靠它）。
+- **法则**：**接入的终点是「客户端将要执行的那条命令真起了 server」，不是「配置文件写好了」**；每一步都要能单独失败、失败要说清
+  动了什么没动什么（`config_untouched` / `backup_path`）；进程内测试证明不了 spawn，真 spawn 才算。
+
+### v0.38.0 / 2026-09-10 — A4 安装侧平台策略：Windows ARM 自动装 x64 载荷（公告、不静默），Intel Mac 照旧拒绝，`min_os` 真有人查
+
+- **症状**：① `install()` 只拿本机键去清单里查，查不到就 `runtime.install_missing_platform`——Windows on ARM 被判死刑，
+  而 A0 探针已证明 x64 Temurin 17 / Node 22 / 嵌入式 CPython 3.12 在 Windows 11 的 x64 仿真下全能跑；② A2 派生载荷写进
+  `platform_requirements{arch, min_os}` 与 `derived_from`，但 `_normalize_manifest_data` 只认识它列过的键，装完这两块就没了——
+  `min_os` 写了等于没写，doctor 也看不到载荷来历；③ `_platform_key()` 在 Rosetta 下的 x86_64 Python 报 `darwin-x64`，Apple Silicon
+  用户装了个 Intel 版 Python（旧 Homebrew / conda）就被送去「Intel Mac 走网关」——可载荷自带解释器，宿主 Python 是什么架构根本无关；
+  ④ `cli._platform_supported` 把 `{"darwin-arm64","win32-x64"}` 写死在第二处，契约改了它不会跟。
+- **guard**：① `manager.SUPPORTED_PAYLOAD_PLATFORMS` / `PLATFORM_FALLBACKS = {"win32-arm64": ("win32-x64", "x64-emulation")}`，
+  `tests/test_runtime_platform_fallback.py::test_installer_constants_match_the_release_platform_contract` 与
+  `contracts/release_platforms.json` 锁步（wheel 不带 contracts，所以必须复制一份并锁）；`install()` 目标键缺席而有回退 → 装回退，
+  结果带 `platform_fallback{requested, installed, mode}` + `warnings[{code: runtime.platform_emulated}]`，版本短路那条返回也带
+  （setup 重跑 install 时不能丢公告）；**darwin-x64 永不回退**（负向对照：清单里同时有 arm64 与 x64 包，Intel Mac 仍必须
+  `install_missing_platform` 且 `current/` 不存在）；② `_normalize_manifest_data` 原样带过 `platform_requirements` / `derived_from`；
+  `_assert_min_os` 在下载前查清单条目的 `min_os`、解压后再查载荷自己的 `platform_requirements.min_os`，低于则
+  `runtime.install_os_too_old`（读不到宿主版本不拦）；③ `_platform_key()`：darwin 下 x86_64 + `sysctl.proc_translated == 1` → `darwin-arm64`；
+  Windows 下 `PROCESSOR_ARCHITEW6432` 优先；新 `process_machine()` / `native_machine()`（`IsWow64Process2` → env → Rosetta）→ doctor
+  `arch{process, native, emulated}`，另有 `host_platform / payload_platform / emulated / platform_requirements` 四个顶层键；
+  ④ `_platform_supported` 改读常量；`_platform_dead_end_advice` 的 win32-arm64 文案改成「连 win32-x64 都缺 = 发布不完整」。
+  负向对照三组（清空回退表 / 剥掉透传 / 关掉 min_os 检查）各让 5 / 3 / 3 个用例变红后才算守卫成立。
+- **法则**：**回退只许公告着做**——结果与 doctor 都要说出「本机是什么、装的是什么、为什么能跑」；**载荷自带解释器，平台键看芯片不看宿主
+  Python**；**载荷说了要求就得有人在装之前查**，不然「有 min_os 字段」只是装饰。
+
+### v0.38.0 / 2026-09-10 — A3 发布契约：清单钉 tag、带 size、按契约逐平台判完整，别再靠「两个键都在」
+
+- **症状**：① 清单里的资产 URL 一直是 `releases/latest/download/...`——pin-forward（清单指着上一版的包）从清单本身看不出来，
+  只有 `sync_windows_release.py --check` 拿资产名去对才抓得到；② 清单没有 `size`，安装侧 `_require_install_disk_space` 早就读
+  `asset_meta["size"]`，读不到就退到写死的 3 GiB；③ `release-completeness.yml` 与 `sync_windows_release.py` 各自写死「darwin-arm64 +
+  win32-x64 两个键都在」，平台一变两处都要改；④ README 的平台表只有四行，Windows ARM 走仿真这件事没地方写、也没人锁。
+- **guard**：① `generate_release_manifest.py --url-base https://github.com/<repo>/releases/download/v<ver>`（钉 tag）+ 每条 `size`；
+  `publish_darwin_release.sh` 与 `sync_windows_release.py` 的构建路径都改用它；② `verify_runtime_release.py`：`size` 须为正整数且等于
+  归档真实字节数、`--expect-platforms` 断言键集**恰好**相等；③ `release-completeness.yml` 先 checkout，期望平台集 = `contracts/
+  release_platforms.json` 里 `since ≤ 版本` 的键，逐平台 HEAD 200、`size == Content-Length`、URL 钉的 tag == latest tag（`latest/download`
+  形式接受但不推荐）、`SHA256SUMS.txt` 列全每个归档；④ `sync_windows_release.py`：`assess_from(tag, assets, manifest)` 纯函数按契约逐平台
+  判（归档在场 / 在清单 / URL tag 一致），wheel 自 0.38.0 起必需，`gaps()` 把缺项点名成 `[GAP: …]`，新 `--tag vX --draft` 让流水线在
+  publish 前对 draft 判完整；⑤ `verify_docs_sync.check_platform_table`：README×2 平台表必须给契约里每个平台/别名/不支持项一行
+  （负向对照：删掉 Windows ARM 行必红）；README×2 加 Windows ARM 行、Intel Mac 行写明「本轮不做 x86_64 载荷」。
+- **法则**：**清单要自证**——URL 钉 tag、带 size，判完整不需要第二个信息源；**平台集只写一处（契约），守卫与文档都从它派生**。
+
+### v0.38.0 / 2026-09-10 — A2 Windows 半边从「只有构建机能产」变成「从 darwin 种子派生」
+
+- **症状**：Windows 载荷的唯一产地是维护者的 Windows 机（`vendor/runtime-source/runtime/windows/bundle/wheels` 与 `prepareruntime`
+  只在那台机器上），于是 v0.37.0 的代码推了 main 却没法 tag——空 tag 会让 `releases/latest` 指向没有资产的 release，所有新安装 404
+  （本仓「缺半」台账的老形状）；preflight 的「打包输入」闸在 mac 上恒红，只能降级成警告。
+- **根因**：Windows 构建器把「平台无关的树」（Horosa-Web 子集、jar、core-js）和「平台原生件」（JDK/Node/嵌入式 Python/19 个原生
+  wheel）混在同一条 vendor 输入链里；而前者在已通过 live 全套的 darwin-arm64 归档里本来就有。
+- **guard**：`build_runtime_release_windows.py --seed <darwin tar.gz>`：`verify_seed`（复用发布闸）→ `materialize_seed` → 逐字节复制
+  Horosa-Web/core-js/jar、换上仓内 `.ps1` 模板（BOM 原样）→ 钉版本 Temurin JDK（sha 校验）jlink 到与 mac 相同的 17 模块（非 Windows
+  主机用 host jlink 交叉链接，`--full-jdk` 兜底）→ 钉版本嵌入式 CPython 3.12.10（此前 3.11.9；与种子共用 cp312 wheel）→ 纯 dist 按
+  RECORD 逐文件复制 + 原生 wheel `pip download`（pyswisseph/sxtwl 在目标 runner 上 `pip wheel` 从 sdist 编）→ 钉版本 Node →
+  **`assert_binary_arch`** 对 python.exe/java.exe/node.exe/numpy .pyd 断言 x86_64 → `derive_manifest`（只继承种子的版本与注册表常量，
+  带 `platform_requirements{arch, min_os}` 与 `derived_from`）→ zip。`--skip-sdist-builds` 只给非 Windows 主机做干跑，产物带 `-DRYRUN`
+  后缀不可能被误当发布资产。`verify_runtime_release.py` 新增 `_assert_native_arch`（两平台都查：Windows 三个 exe + numpy .pyd 必须
+  x86_64、mac java/node + numpy .so 必须含 arm64）；`verify_builder_parity.py` 加「Windows 构建器必须有 seed 模式且经 `verify_seed(` /
+  `derive_manifest(`」与「jlink 模块表 = `contracts/runtime_toolchain.json`」；`verify_vendor_runtime_sources.py` 去掉 `runtime/windows` 与
+  `prepareruntime`，preflight 那一闸回到硬闸；`package_runtime_payload.sh` 删掉半接线的 x64 分支。`tests/test_windows_derive_mode.py`
+  用合成种子 + 假工具链 zip 走完 staging → 发布闸四项全过；负向对照：ARM64 的 java.exe 在 staging 就被拒、混进归档也被 verifier 抓。
+- **实测**：本 Mac 从 v0.36.0 种子交叉派生（`--skip-sdist-builds`）：713 MB 的 `-DRYRUN.zip`，jlink 交叉链接成功——前提是 host jlink
+  与目标同大版本（PATH 上的 `/usr/bin/jlink` 是 22，报 `jlink version 22.0 does not match target java.base version 17.0`，
+  `host_jlink(major)` 现在按 `--version` 选 vendored Zulu 17 的那把），`verify_runtime_release.py` 条目/内嵌清单/BOM/架构四闸全过，
+  site-packages 93 个 dist-info（76 纯 + 17 有 wheel 的原生；pyswisseph/sxtwl 留给 Windows runner 编）。
+- **法则**：**平台无关的树只有一个产地（种子），平台原生件只从钉死的工具链与锁取**；**派生出来的每个原生二进制都要按目标架构断言**；
+  「只有某台机器能产出的发布输入」是一种缺半等待发生。
+
+### v0.38.0 / 2026-09-10 — A0/A1 托管派生的地基：种子即真值、依赖集是种子的纯函数；探针推翻了「靠版本号拉 wheel 就够」
+
+- **A0 探针（runner-probe 34555801257，四 runner 全绿）**：`windows-latest` x64 剩 32 GB；`windows-11-arm`（Windows 11 Enterprise，
+  ARM64，剩 121 GB）上 **x64 Temurin 17.0.20.1 `java -version` 1.39 s、x64 Node 22 与 x64 嵌入式 Python 3.12 都能跑**——win32-arm64
+  走 x64 仿真有了证据；`macos-latest` 是 macOS 26.6.2 arm64、Rosetta 在；`ubuntu-latest` 剩 86 GB。另一条要紧的：x64 Python 在
+  ARM64 Windows 上 `platform.machine()` 报 **ARM64**（读 `PROCESSOR_ARCHITEW6432`），所以 `_platform_key()` 天然得到
+  `win32-arm64`，回退逻辑可直接按这个键做（A4）。
+- **A0 wheel 探针（`gen_runtime_python_lock.py --check-index`）**：v0.36.0 种子的 site-packages = 76 纯 + 19 原生 dist（python 3.12）；
+  19 个里 17 个在 PyPI 有 `cp312 win_amd64` wheel，**`pyswisseph==2.10.3.2` 只到 cp311、`sxtwl==2.0.6` 只到 cp310**（两家都没有
+  cp312 的 Windows wheel，mac x86_64 亦然）——现在的 Windows 载荷（Python 3.11.9）之所以有 sxtwl，是构建机自己从 sdist 编的。
+  托管派生因此必须在 `windows-latest` 上用 MSVC 从 sdist 构建这两个包（`pip wheel --no-binary :all:`），锁里以 `wheel_sources[平台][包]
+  = "sdist"` 记明。第一次写 `pip download --dry-run` 全 MISS——pip 25 的 `download` 根本没有 `--dry-run`（只有 `install` 有）；改用
+  PyPI JSON API 看 wheel 文件名，零下载、零 pip 依赖。
+- **A1 落地**：`contracts/runtime_python_lock.json`（由种子生成：pure 逐字节复制、native 同版本重拉、`excluded` 带理由、`wheel_sources`、
+  `platform_overrides` 必须在本台账有记）、`contracts/upstream_python_requirements.txt`（Horosa-Public `scripts/requirements/mac-python.txt`
+  逐字副本 + pin sha 头，`sync_vendored_runtime_sources.sh` 同步刷新——注意上游是浮动版本号，种子里 numpy 2.4.6 对上游 `==2.4.2`，
+  所以**锁的真值是种子不是 requirements**）、`contracts/runtime_toolchain.json`（Temurin `jdk-17.0.20.1+1` x64 zip sha、Python 嵌入包
+  3.12.10 sha、Node 22.23.2 sha、jlink 模块表单一来源、各 runner 事实）、`contracts/release_platforms.json`（darwin-arm64 since 0.9.0、
+  win32-x64 since 0.9.1、别名 win32-arm64→win32-x64 x64-emulation、darwin-x64/linux 明确不支持 + 理由）、`scripts/runtime_seed.py`
+  （`verify_seed` 复用发布闸的 REQUIRED_ENTRIES / 内嵌清单检查；`materialize_seed` 按 sha 缓存解压；`derive_manifest` 只继承不 stamp；
+  `copy_platform_tree`；`copy_pure_site_packages` 按 RECORD 逐文件；`fetch_native_wheels` 有 wheel 就 `pip download`、`sdist` 就 `pip wheel`；
+  `assert_binary_arch` 认 Mach-O thin/fat、PE、ELF）、`scripts/verify_runtime_python_lock.py`（入 ci.yml）。
+- **guard**：`tests/test_runtime_seed.py`（负向：缺 `kin_year_domain.py` 的种子必拒、版本不符必拒、arm64 Mach-O / ARM64 PE 断言 x64 必红、
+  缺 `export_registry_version` 的种子清单不派生）；`tests/test_runtime_python_lock.py`（scipy/plotly 进锁必红、上游新名字未分类必红、
+  override 无台账必红、缺 wheel 判定必红）；`tests/test_release_platforms_contract.py`。
+- **法则**：**派生只从通过发布闸的种子开始；依赖集 = 种子的 dist 集（版本一致），不跑解析器、不新增任何包**；**「有 wheel」要逐包查
+  PyPI 证明，没有的就在目标 runner 上编，并把判定写进锁**；**`@dataclass` + `from __future__ import annotations` 的模块不能靠
+  `spec_from_file_location` 裸加载**（dataclasses 要在 `sys.modules` 里找到它）——被 importlib 加载的脚本用普通类。
+
+### v0.38.0 / 2026-09-10 — B3 零安装绑着 git 与 github.com:443；钉版本的安装命令没人锁
+
+- **症状**：PyPI 暂缓（用户决定）后，唯一的零安装命令是 `uvx --from "git+https://github.com/…@v<ver>#subdirectory=horosa-skill"`：
+  它要求用户机器**有 git**（README 从没写过这个前置）**并且**能直连 github.com 做 clone——issue #14 的机器正是
+  `github.com:443` 不通、`api.github.com` 通；把 repo 链接交给 Claude Code / Codex 自动安装的人在这一步就卡死。
+  另外 README / SKILL / server.json 里所有钉版本的 URL / git ref（`@v0.37.0`、`/v0.37.0/…mcpb`）只靠人手改，
+  `verify_docs_sync.check_versions` 只走 JSON 的 `version` 键，字符串里的版本没人看。
+- **根因**：分发只想过「源码 checkout」与「PyPI」两条路；镜像开关 `HOROSA_RUNTIME_MIRROR` 只给 runtime 归档用，
+  没延伸到「拿到 Python 包本身」这一步；受限网络的做法散落在 README 排障表一行里。
+- **guard**：① 发布脚本第 [5/8] 步 `uv build --wheel` 产出 `horosa_skill-<ver>-py3-none-any.whl` 并随资产上传、进
+  SHA256SUMS；`release-completeness.yml` 对 ≥ 0.38.0 的 latest 断言资产在场**并真跑** `uvx --from <URL> horosa-skill --version`；
+  `ci.yml` 用本 checkout 构建的 wheel 走 `file://` 跑同一条。② `runtime/mirrors.py::mirror_candidates / preferred_mirror_url`
+  （manager 委托）——同一个 `HOROSA_RUNTIME_MIRROR` 同时改写清单、归档与 wheel URL；`client config --launcher uvx-wheel`
+  生成镜像优先、钉版本的 `--from` URL，产物 `launcher{wheel_url, alternatives, pinned_version, install_hint, refresh_hint}`。
+  ③ `client check` 认 `--from …whl`（不再当成「PyPI 未开通」），钉的版本 ≠ 本包版本报 `launcher_version_drift`。
+  ④ `verify_docs_sync.check_pinned_install_commands`：README×2 / SKILL×2 / server.json / examples 里每个 `@v<x>#`、
+  `/v<x>/horosa_skill-<x>-py3-none-any.whl`、`/v<x>/horosa-skill-<x>.mcpb` 必须等于包版本（负向对照 `v0.0.1` 必红；
+  `<!-- docs-sync:ignore-version -->` 冻结历史行）。⑤ 新文档 `docs/INSTALL_RESTRICTED_NETWORK.md`（中英）：镜像前缀 /
+  API 直链 + `install --archive` / U 盘离线搬运 / 代理与企业证书 / 错误码表；README×2 首屏改「零安装（无需 git、无需 PyPI）」。
+- **法则**：**分发的每一条路都要在「没有 git、没有 github.com」的机器上成立一次**；**钉了版本的字符串就是版本号，
+  由 docs-sync 锁，不由人记**；**受限网络的做法要成文，不能只活在排障表的一行里**。
+
+### v0.38.0 / 2026-09-10 — B2 客户端接入：`--write` 会清空 VS Code/Zed 的 settings、裸 `uvx` 在 GUI 客户端里找不到、Windows 上 `client check` 一家都找不到、Codex 缺省超时不报
+
+- **症状**：① `client config --write` 只认 `mcpServers` 根键——VS Code 产物没有可合并块、Zed 是 `context_servers`、claude-code
+  只有一条命令字符串，这三家 `--write <用户的 settings.json>` 走到「整文件写入」分支：用户的主题、别的 server 全没了，文件里
+  还多了 `note`/`tool_surface` 这些说明字段；JSON 目标不备份、`write_text` 非原子。② `--launcher uvx|uvx-git` 生成裸字符串
+  `"uvx"`：Claude Desktop / Cursor / VS Code 在 Windows 上 spawn 子进程时**不继承 shell PATH**，终端里能跑的 `uvx` 在客户端里就是
+  file not found，而 `uv` 那条早就走 `resolve_uv_command` 写绝对路径了。③ `_CLIENT_CONFIG_PATHS` 是一张 POSIX 路径表，Windows 上
+  cursor/vscode/gemini/windsurf/cline/zed 一个都找不到，`client check` 只会说「还没配」。④ Codex 审计只在 `startup_timeout_sec` /
+  `tool_timeout_sec` **写了且太短**时才报；没写（= 默认 10 s / 60 s）静默通过——issue #18「一堆报错」最像的成因。
+- **根因**：合并逻辑按「多数客户端」写死了根键；路径解析只做了 uv 一条；配置路径表按维护者的 mac 写；审计只覆盖了「写错」
+  没覆盖「没写」。四条都是「在维护者的 mac 上永远绿」的形状。
+- **guard**：① `_merge_client_config`：按产物根键（`mcpServers`/`servers`/`context_servers`）只合并 `<root>[<name>]`、写前
+  `.horosa-bak`、临时文件 + `os.replace` 原子替换、非对象/非法 JSON 拒写、没有 server 块的说明产物拒写；vscode 产物补 `servers`
+  块（`type: stdio`）、claude-code 产物补 `mcpServers` 块；`tests/test_client_config.py`：zed 的 `theme` 必须保留（旧代码即负向
+  对照）、`os.replace` 失败原文件完好且无临时文件、写出文件绝不含元键。② `client_tools.resolve_uvx_command`（`HOROSA_UVX_BIN`
+  → PATH `uvx.exe|uvx.cmd|uvx` → Windows 安装目录 → `uv` 同目录推导），三种 uvx 启动器都写绝对路径，找不到时保留裸名并在产物
+  `warnings` 里说明；`client check` 新码 `command_not_on_path`（裸名且 `which` 找不到；绝对路径不查）。不需要 `cmd /c`：uv 发的
+  是真 exe，只有 `.cmd` shim 才需要 shell。③ `_client_config_locations(client, os_name, env, home, cwd)` 纯函数：Windows 走
+  `%APPDATA%`（Claude/Code/Zed）、mac 走 `~/Library/Application Support`、linux 走 `~/.config`；`client config` 的 `config_path`
+  改为真实定位（第一个存在的候选，否则全局级候选）；跨平台形状测试用 `C:\Users\张 三`。④ Codex 审计补 `codex_startup_timeout_missing`
+  / `codex_tool_timeout_missing` / `codex_cwd_missing`；Zed 的 `context_servers` 形状按 zed.dev/docs/ai/mcp 核对（直接 `command/args/env`，
+  无需 `source` 键）。
+- **法则**：**写用户的文件 = 只动自己的那一个键、先备份、原子替换、认不出形状就拒绝**；**写进客户端配置的命令一律绝对路径**（GUI
+  客户端没有你的 shell PATH）；**「没写」和「写错」都是审计对象**——默认值不是安全值。
+
+### v0.38.0 / 2026-09-10 — B1 Windows 启动器：用户名带空格就起不来、Java 绑 0.0.0.0、doctor 看不见监听范围
+
+- **症状**：① `start_horosa_local.ps1` 用 `Start-Process -ArgumentList @($PyBootstrapPath)` 与 `"-jar", $JarPath` 起两个服务。
+  PowerShell 5.1 把 `-ArgumentList` 的元素用空格拼成命令行**且不加引号**：runtime 根在 `C:\Users\John Doe\…` 时，
+  bootstrap 路径被拆成 `C:\Users\John` + `Doe\…`，python 找不到文件退出，java 的 `-jar` 同样断——chart 与 Java 都起不来，
+  而这类用户名在 Windows 上极常见。② Java 启动行没有 `--server.address=127.0.0.1`，Spring Boot 默认绑 0.0.0.0：首次启动
+  Windows 防火墙弹窗、后端暴露到局域网；mac 启动器（上游）早就钉了回环，只有 Windows 模板漏了。③ bootstrap here-string 用
+  `r"$FlatlibRoot"` 这种 raw 字符串嵌路径：尾反斜杠或引号即 SyntaxError（我们的变量目前不会撞上，但那是运气）。④ doctor 只报
+  端口通不通，从不报绑在哪个地址上——已装用户升级后模板重拷了，也没人告诉他们要 `runtime restart`。
+- **根因**：Windows 模板从没在带空格的 profile 路径上跑过；「路径含空格 / 中文」在测试面是零覆盖（v0.38.0 审计实锤）。
+- **guard**：① 路径元素一律 `('"{0}"' -f $Var)` 自带引号，`--key=value` 旗标无空格保持裸；② Java 行加 `"--server.address=127.0.0.1"`；
+  ③ here-string 里改 `$(ConvertTo-Json $X -Compress)`——JSON 字符串字面量 ⊂ Python 字符串字面量，任何路径都安全，字面量仍 ASCII-only
+  （BOM 那两条守卫不变）；④ `scripts/verify_runtime_scripts.py::audit_windows_launcher`（回环 / 引号 / 裸 `-ArgumentList @($` / raw 嵌入四条）
+  + `--self-test` 四种坏法必红（此前 self-test 只在有上游树时才跑，现在 Windows 部分无条件跑），并新增「上游 mac 启动器必须仍钉
+  `--server.address=127.0.0.1`」；`tests/test_runtime_launcher_templates.py` 用 `C:\Users\张 三\…` 真渲染 bootstrap → `ast.parse`
+  → 桩 `runpy.run_path` 逐字节回传，负向对照 = 旧 raw 写法遇尾反斜杠/引号必 `SyntaxError`；Windows 上再用真 `powershell` 渲染一遍；
+  ⑤ mac 侧 `test_runtime_launcher_patch.py`：`-Dhorosa.runtime.root="${ROOT}"` 必须是独立词、`ROOT="/tmp/a b"` 下展开为单个 argv、
+  注入的 `horosa_owns_pid` 在带空格 ROOT 下认得出自家进程；⑥ `runtime/ports.py::listener_bindings/loopback_only`（win `netstat -ano`
+  TCP+TCPv6、mac `netstat -anv`、linux `ss`），doctor 新增 `listener_scope` 与顶层 `warnings[]`，绑非回环 → `listener:not_loopback_only`
+  带 fix；查不到 = `None`，绝不当成干净。
+- **法则**：**给子进程传路径，每个路径元素自己带引号；写进另一种语言的源码，用那种语言的字面量转义（JSON），不用 raw 字符串赌运气**；
+  **两端启动器的网络面必须一致**（回环绑定），差异由守卫抓；**已装用户的修复要靠 doctor 告诉他们**，不是靠 CHANGELOG。
+
+### v0.38.0 / 2026-09-10 — B0 卫生：三处「绿得不真」——pwsh step 吞退出码、计数守卫看措辞、README 否认仓里有的文件
+
+- **症状**：① `ci.yml` 的 Windows smoke 自 v0.30 起就在调 `horosa-skill tool run qimen --stdin --output …`，而 `--output`
+  这个参数直到本批才存在——那一行每次都以 usage error 失败，step 却一直绿：GitHub 的 `pwsh` 把多行 `run:` 当一个脚本跑，
+  只拿**最后一条**命令（`memory query`，回 `[]` 退出 0）的退出码当结果。② `.claude-plugin/marketplace.json` 写「97 local
+  Horosa (星阙) technique tools」从 97 陈旧到 106，文件明明在 `COUNT_DOCS` 里：`COUNT_PROSE_EN` 只认 `N real …`，`COUNT_PROSE`
+  要数字紧挨名词，「local … 20 字后才是 tools」两条都漏。③ README×2 写「仓库暂不提供 Dockerfile」，而
+  `horosa-skill/Dockerfile` + `docker-compose.yml` 早已入库；且 Dockerfile 只 `COPY pyproject.toml README.md src`，pyproject
+  force-include 的 `scripts/runtime_templates/windows` 没拷 → 镜像里 `uv pip install .` 直接失败（与 `.mcpbignore` 那课同型：
+  两张清单没人对）。
+- **根因**：三条都是「证据的形状由偶然决定」——退出码由 step 里最后一行决定、守卫的覆盖面由句子用了哪个形容词决定、
+  文档的真伪由没人去 `ls` 决定。
+- **guard**：① step 首行 `$PSNativeCommandUseErrorActionPreference = $true`（pwsh ≥ 7.3；GitHub 已前置
+  `$ErrorActionPreference='stop'`），并断言 `--output` 文件存在且 `.ok`；`tests/test_ci_workflow_shape.py` 扫所有 workflow 里
+  `shell: pwsh` job 的多行 `run:` 块首个有效行必须是它（负向对照：把那一行换成任何别的都红；bash job 不受管）。`tool run` /
+  `dispatch` / `ask` / `hecan` 真有了 `--output`（stdout 仍打印 JSON，`_emit_json`；`tests/test_cli_output_file.py`）。
+  ② `COUNT_PROSE_EN` 放宽到 `N (real|local) … tools|techniques`，`test_stale_count_forms_are_caught` 加原句模板。
+  ③ `verify_docs_sync.check_docker_claims`（仓里有 Dockerfile 则 README 不得写「暂不提供/No Dockerfile is shipped」且必须提到它）
+  + `tests/test_dockerfile_matches_wheel_includes.py`（force-include 的每个源路径都得在某条 `COPY` 之下；负向对照 = 旧 Dockerfile 必红）。
+- **法则**：**CI 的绿必须由「每一条命令」背书，不是最后一条**；**计数/真伪守卫的覆盖面写成机器规则，不写成措辞巧合**；
+  **仓里有的东西，文档只能描述，不能否认**。另记两条操作教训：改 README 计数不许整文件 `sed s/766/778/`——它把 `0f766e`
+  颜色码和 `37.7667` 经度一起改了，必须按行改并 `git diff` 复核；rebase 冲突用脚本重放改动时，脚本必须 `&&` 进 `git add`，
+  否则脚本半路断言失败、`rebase --continue` 照样把「只剩对方版本」的文件提交上去。同一轮还发现别的会话把本文件以 **CRLF**
+  提交了上来（`.gitattributes` 是 `eol=lf`），并把台账里的字面路径 `current\runtime` 写成了 `current` + **真回车字节** + `untime`——
+  用 `read_text()` 一读那行就被拆成两行。本批把文件归一成 LF、修回那条路径，并加 `tests/test_tracked_text_is_lf.py`
+  （任何被跟踪的文本文件里出现 `\r` 字节即红；负向对照内置）。
+
+### v0.37.0+ / 2026-09-09 — DETACHED_PROCESS 让 Windows 启动器**从未运行过**；弱证据短路把自家 runtime 判成外人
+
+v0.37.0 把启动器从阻塞 `subprocess.run` 改成分离 `Popen`（为的是别让「首次调用」卡在一次 MCP 请求里，
+方向完全正确）。在真 Windows + 真 runtime 上试，两处新代码各有一个只有这台机器能看见的洞。
+
+- 🔴 **`DETACHED_PROCESS` = 无控制台 = `powershell -File` 静默秒退。** 症状：`selfcheck` 报
+  `runtime.start_timeout`（还建议「跑 doctor / install」），而 8899/9999 一个没起、`launcher.log`
+  **0 字节**、启动器自己的 `.horosa-local-logs` 目录都没建 —— 也就是**启动器从未运行**，却被报成
+  「没在 45 秒内就绪」。隔离实验（同一条命令、只换 creationflags）：
+  | creationflags | 12 秒后 |
+  | --- | --- |
+  | `DETACHED_PROCESS \| NEW_PROCESS_GROUP` | `poll()==0`、日志 0 字节、服务零 |
+  | `NEW_PROCESS_GROUP` 单独 | 仍在跑、服务真起来 |
+  | `NEW_PROCESS_GROUP \| CREATE_NO_WINDOW` | 仍在跑、**父进程退出后照旧存活**、chart 起来回 pdSyncRev |
+  根因：DETACHED 让子进程完全没有控制台，PowerShell 主机拿不到控制台就直接 exit 0 且**不写一个字节**
+  （所以连诊断都没有）。**判据顺带纠一处误导**：插桩实测这条错误是在 **13 秒**抛出的（启动器已退出即
+  跳出等待循环），而 details 里写着 `timeout_seconds: 45.0` —— 谁照这个数字去调大预算都白费，
+  真问题是「启动器压根没跑」。起不来时先看 `launcher.log` 是否 0 字节 + 启动器自己的
+  `.horosa-local-logs` 有没有新目录：两者都空 = 没跑，不是慢。而 DETACHED 想要的「活过父进程」在 Windows 上本来就免费 —— 子进程不随父终止。
+  fix = 换 `CREATE_NO_WINDOW`（有控制台、只是不弹窗）。修后同一条 `selfcheck` 立刻变成设计意图的
+  `runtime.starting` + `retry_after_seconds: 5`，按提示重试即全绿（`doctor issues: []`）。
+  guard = `test_windows_launcher_spawn_never_uses_detached_process`（断言 flags：无 DETACHED、有
+  CREATE_NO_WINDOW + NEW_PROCESS_GROUP）。
+  **法则**：换进程创建方式属于「只有目标平台能验」的改动 —— CI 的 windows-smoke 没装离线 runtime，
+  永远走不到 spawn 启动器这一步，所以它全绿不代表这条路通。
+
+- 🔴 **弱证据（app 标记）抢在强证据（命令行）之前 return，`stop` 就停不掉自家 runtime。**
+  `classify_endpoint` 第 1 级：对面自报 `app: horosa-chart` 且**没报 nonce** 时直接返回
+  `identity.app_marker`。可 `app_marker` 不在 `_STRONG_EVIDENCE` 里 → `started_by_us=False` →
+  `stop` 报 `runtime.stop_refused_foreign`。实测：手动跑 payload 自带启动器起的 chart+java
+  （命令行明明在 `rt-verify\current\runtime\windows\...` 下）被拒停，用户只能按 PID 手杀，
+  或用 `--force`（那把锤子连用户自己的桌面端一起砸）。
+  fix = 只允许**升级**：app 标记先记成兜底，让第 2 级（命令行含 runtime 根）/第 3 级（注册表活 pid）
+  先说话；**绝不降级为 foreign** —— 对面已自报星阙协议，判 foreign 会打掉「外部模式：用用户开着的
+  桌面端当后端」。实测修后同样两个进程判 `process.command_matches_runtime_root` / `started_by_us=True`，
+  `stop` 真正释放了两个端口。guard = 三条 hermetic 测试（命令行升级 / 注册表 pid 升级 / 陌生命令行
+  只停在弱 ours 不判 foreign）。
+  **法则**：分级证据里，**弱证据一律只能作兜底**，不许早退 —— 早退等于把强证据从判定里删掉。
+  副产品：那条既有测试 `test_app_marker_alone_is_usable_but_not_stoppable` 没 mock `listener_pids`，
+  会读真机端口；本机 9999 上跑着 runtime 时它才暴露出来（同 mac 侧 9fd0ff4「维护机环境替测试补了
+  它没声明的前提」一族）。
+
+- **观察（未修，属状态机的设计决定）**：分离启动后，持久状态**永久停在 `status: "starting"`**。
+  写 `"running"` 的只有启动调用内的那一行，而 `starting` 分支已提前返回，服务随后就绪时没有任何
+  收敛点。实测：两个端点都可达、`doctor issues: []`（doctor 的健康判定读的是活探针，所以是对的），
+  但状态文件与 `runtime status` 的文案仍说「正在启动」。消费方只有 `cli.py` 两处文案（不阻塞
+  start/stop），故影响限于「诊断说谎」——与本仓清过两轮的 9999 误诊同族。修点在 mac 侧正在建的
+  状态机里（谁负责收敛：doctor / status / 一个后台 reconciler），留给属主定。
+
+### v0.37.0 / 2026-09-09 — 「能被任意 AI 完美调用」：协议面只对着一个客户端调过、连通性从未验证过、端口安全只写在文档里
+
+**触发**：用户要求「全面检查是否还无法被任意 AI 完美调用，尤其是端口占用问题及其他一切因素」。
+四路只读审计 + 外部基准（Codex `startup_timeout_sec` 默认 10s / `tool_timeout_sec` 60s；Cursor
+全局约 40 工具静默丢弃；VS Code/OpenAI 128；Gemini CLI 工具名 ≤63 且严格 JSON Schema 2020-12；
+OpenAI 描述 ≤1024；MCP 2025-11-25；MCPB `manifest_version 0.4`/`type: uv`）。
+
+结论分六条，每条的共同点是：**在我们唯一常用的那个客户端上一切正常，所以从来没人看见。**
+
+#### ① 广告层只对 Claude Code 对过 —— 严格客户端会拒收整张工具表
+
+实测（116 个工具）：70 个属性广告成空对象 `{}`（gpsLat/gpsLon×26 …）、116/116 带**数组** type、
+108 个写 `additionalProperties: true`、106 个漏出私有键 `x-horosa-hidden-knobs`、8 个门面完全
+没被广告层重写。Gemini CLI / Vertex 的 FunctionDeclaration 与 OpenAI strict 见到这些是拒**整张表** ——
+症状不是「某个参数不好使」，而是「这个 server 在某某客户端里一个工具都没有」。
+根因三处：`_widen` 里一句表达式语句把唯一的类型信息 pop 掉却不补回去；`apply_advertised_schemas`
+豁免了 8 个门面（而精简面下门面**就是**全部工具）；`_normalize_mcp_request` 的两条裸 `ValueError`
+发生在每个工具的 try **之前**，被 lowlevel server 转成 `isError: true` + 原始字符串。
+**守卫**：`scripts/verify_mcp_client_compat.py` + `contracts/mcp_client_compat.json`。
+
+#### ② 仓自己的 `.mcp.json` 从未连通过
+
+仓根 `.mcp.json` 用的是**插件语法**（`${CLAUDE_PLUGIN_ROOT}` / `${user_config.*}`），而它被
+Claude Code 当作**项目**配置读 —— 目录不存在、env 值是字面量。本机 24/24 次连接日志（2026-08-21 起，
+含发现它的那一次会话）全部 `CONNECTION_CLOSED`。
+教训：**「我们自己的仓」不是被验证过的配置**，它只是没人注意到的那一个。
+**守卫**：`scripts/verify_client_configs.py`（项目配置不许有插件占位符；`--directory` 去占位符后
+必须指向真实的 `pyproject.toml`；插件占位符 ⊆ plugin.json 已声明的键）。
+
+#### ③ 端口与进程：静默采用、误杀、首调卡几分钟、多客户端竞态
+
+- `_service_status` 的全部判据是「HTTP 响应码 < 500」，于是 8899/9999 上**任何**应答者都算
+  「runtime 已在运行」：用户自己开着的星阙桌面端、另一个项目的 dev server、一个
+  `python -m http.server`。症状不是「连不上」，而是**排盘失败但 statusCode 200**。
+- 「能用它」与「能停它」被混为一谈：只有 app 标记的服务照样会被停脚本按端口关掉。
+- 启动器自己阻塞到就绪或 STARTUP_TIMEOUT（首次含解压 + CDS 训练，300–900 秒），而我们用
+  `subprocess.run` 等它 —— 全发生在**一次 MCP 请求内**。Codex 的 tool_timeout_sec 默认 60 秒。
+- `self._service_lock` 只是进程内锁：两个客户端同时冷启动会各起一个启动器，后到的看见
+  「pid files already exist」就先 stop 再 start，把先到的那个刚起好的服务停掉。
+- macOS 启动脚本的 `reclaim_stale_port` 按命令行子串 `kill -9`（stop 脚本与 Windows 脚本都有
+  ROOT 守卫，唯独 mac start 没有）。**注意**：已装的 v0.36.0 载荷里没有这段（它是 lsof 后拒绝），
+  危险构造只在更新的上游树里 —— 属于**潜伏**而非在线缺陷，补丁器因此设计成「有危险构造才打、
+  没有就一字不改」。
+**守卫**：`runtime/{identity,ports,procs,pidlock,registry}.py` + `tests/test_runtime_ports_identity.py`
++ `scripts/verify_runtime_scripts.py`（含 `--self-test` 负向对照）。
+
+#### ④ 回环探测走用户代理
+
+shell 层早就绕过了代理，Python 层没跟上。Clash / VPN 用户把 127.0.0.1 也塞进代理时，
+后端明明健康却报 `not_running`。同一台机器上 A/B 对拍 `doctor` 证实。
+**守卫**：`engine/client.py::loopback_httpx_client` + `tests/test_client_proxy_bypass.py`。
+
+#### ⑤ 杂目录的真根因不是「没修过」
+
+仓里三个 `${env:HOME:-${sys:user.home}}/.horosa-logs/…` 目录（仓根 / horosa-skill/ /
+vendor/runtime-source/）。已装 runtime **早就修好了**（安装时补丁 jar 内 log4j2.xml）；漏网的是
+dev 用的 `start_vendored_instance.sh` 直接跑**未补丁**的 vendored jar。
+`-Dbasedir=` 覆盖不了它 —— `<Property>` 在配置里已定义，系统属性只在未定义时兜底。
+**守卫**：`scripts/verify_no_stray_runtime_dirs.py`。
+
+#### ⑥ 假债务与真债务：四处工具计数互不相同
+
+marketplace 说 97、instructions 说 106、契约基线 115、实际 116。一致性守卫在「五处写成同一个
+假数字」时是绿的 —— 所以计数必须**派生**，不能各写各的。
+
+---
+
+### 本轮的横切教训（比上面任何一条都更值得记住）
+
+1. **「在我们的客户端上好用」不是「可用」的证据。** 上面六条里有五条在 Claude Code 上完全正常。
+   要证明跨客户端可用，必须按**别人的**约束去测：工具数上限、schema 严格度、描述长度、
+   超时默认值、Host 头、传输名拼写。
+
+2. **测试可以「因为错误的原因通过」。** 本轮抓到两例：
+   - `test_streamable_http_serve_stops_runtime_after_exit` 直接以 Python 函数调用 typer 命令，
+     未传的形参拿到的是 **OptionInfo 对象**（恒真），于是它断言的停机分支其实是被
+     `bool(OptionInfo)` 打开的，而不是被默认值打开的。→ 新 `cli._opt()` 从源头还原默认值，
+     并留一条测试把陷阱本身钉住。
+   - `test_start_runtime_recovers_partial_state_before_launch` 断言 `stop_calls == ["stop"]` ——
+     它把「部分可达就先停掉健康的那半边」这个 **bug 本身**写成了契约，所以永远不会为它变红。
+   **规则**：改一条既有 golden 之前，先回答「旧断言为什么不会为这个 bug 变红」，并把答案写进注释。
+
+3. **想当然的安全性要当场证伪。** 两例：
+   - 「stdio 握手成功就说明 stdout 干净」——**错**。Python SDK 的客户端遇到解析不了的行只记
+     一条日志就跳过，注入 `print('starting horosa...')` 后照样握手成功。改为逐行断言 stdout 是 JSON。
+   - 「旧的 trace 写法会撕行」——**没能复现**。8 进程 × 520 KB 行并发追加，250 行全部可解析；
+     它安全靠的是 CPython 的实现细节（TextIOWrapper 在 close 时把整行交给一次 raw.write）。
+     改动仍然保留（把「碰巧成立」变成 O_APPEND + 单次 write 的「显式成立」，成本为零），
+     但**如实改口**：真正能演示的旧缺陷是没有行长上限（一个 3 MB 事件整条写进去）。
+   **规则**：负向对照跑不红时，不许把「它本来就没问题」写成「我修好了它」。
+
+   ↳ **同一条 trace 断言又被现实纠正了第二次**：改成 O_APPEND + 单次写之后，我写下「这下各平台
+   都显式成立了」。CI 的 Windows job 当场打脸 —— 4 进程 × 60 次写只剩 191/213 行（每次跑还不一样）。
+   Windows 的 `O_APPEND` 由 CRT 模拟，「定位到末尾 + 写」不是一个原子操作。
+   ↳ **第三次**：改完之后我又假设「那至少同进程的线程之间是安全的吧」。CI 再次打脸 ——
+   Windows 上 6 线程 × 40 次写只剩 190 行。因为每次 `_write_event` 各开一个 fd，
+   Windows 的 append 由 CRT 模拟，两个 fd 各按自己的偏移写就互相盖，**与是不是同一个进程无关**。
+   最终形态：一把模块级 `threading.Lock` 串行化同进程写（各平台都对、成本可忽略）+
+   `os.write` 短写循环补齐 + 跨进程完整性只在 POSIX 断言。
+   **规则加一句**：「我改对了」也要被负向对照或 CI 证一次；一个平台上成立不等于所有平台上成立，
+   而「同进程总该没事」也是一个需要被证的假设，不是前提。
+
+7. **维护机的环境会替测试补上它没声明的前提。** CI 上四条 `test_runtime_manager` 红在
+   `runtime.port_conflict_unknown_holder`，而维护机全绿 —— 因为本机 9999/8899 上正跑着真 runtime，
+   归属判定回 `ours`。只 stub `_service_status`（返回 `reachable=True`）的用例，会拿那个 URL 去**真的**
+   跑一遍归属判定。**规则**：新增「探真环境」的代码路径时，同批检查既有测试是不是在靠你的机器过关；
+   复现 CI 形状的 recipe 要跟着扩（AGENTS §8 已补第三条）。
+
+8. **Windows 的默认编码不是 UTF-8，这条每隔几个版本咬一次。** 新写的 `repack_release_assets.py`
+   在最后一步打印 `→`（U+2192），cp1252 控制台上直接 `UnicodeEncodeError` 并让脚本 exit 1 ——
+   一个**发布脚本**在「打印成功信息」时失败。与 v0.25.1 的 `.ps1` 丢 BOM 是同一族。
+   同批还有一条反向的：`subprocess.run(..., text=True)` 按 locale 解码**子进程**输出，
+   Windows 上就是 cp1252，而我们的 initialize instructions 全是中文 → 读回来是 None/乱码。
+   **规则**：脚本自己的输出保持 ASCII（或开头 reconfigure 成 UTF-8）；读子进程输出一律收字节、
+   自己按 UTF-8 解，别用 `text=True`。
+
+4. **gitignore 语义在三个地方咬人，形状一模一样**：父目录被整体忽略时反选无效
+   （`.vscode/` → 必须写 `.vscode/*` + `!.vscode/mcp.json`）；`.mcpbignore` 里不带前导 `/` 的
+   `vendor/` 在**任意层级**匹配（把运行时真正需要的 `src/**/vendor/` 一起排掉）；
+   排掉 `scripts/` 让 wheel 的 `force-include` 在宿主机上找不到源。三者的共同症状是
+   **「打得出来、装得上、一跑就炸」**，而 schema 校验器一概看不见。
+
+5. **`str.lstrip("./")` 剥的是字符集合不是前缀。** 本轮我自己新写的守卫踩了一次：
+   它吃掉了 `.claude-plugin` 的前导点，于是守卫误报插件配置缺失。用 `removeprefix`。
+
+6. **`pathlib.Path` 的类型由 `os.name` 决定。** 把 `os.name` 打成 `"nt"` 的跨平台模拟测试里，
+   `Path(tmp_name)` 会造出 `WindowsPath`，`str()` 出来是反斜杠 —— macOS 上 `os.replace` 直接
+   `FileNotFoundError`。路径全程用 `str` 传递，别 str→Path→str 转一圈。
+
+
+### v0.36.0 收尾 / 2026-09-04 — 「Java 族 live 需要 Mongo」记了十个版本，真因是 vendored 实例脚本裸 `-jar`；顺手抓出一个假闸门
+
+- **症状**：v0.25.1 起台账一路写「本机无 Mongo → Java 聚合层 app 注册读不到 → nongli/bazi/ziwei/liureng 恒 9999，
+  live 0-skip 留给带 Mongo 的发布机」。本轮为验 C2（`/common/inversebazi`）和 B3 神数翻转，起 `--with-java` 实例，
+  `bazi_birth`/`nongli_time`/`bazi_inverse` 全 500，而同一实例上 `/qizheng/moira`（C1）却成功。
+- **排查**：读 `Result` 原文（§8.5 的规矩）——不是 `no.register.app`，是
+  `Timed out after 30000 ms while waiting to connect … address=mongodb.host:27017 … UnknownHostException: mongodb.host`。
+  ① `unzip -p astrostudyboot.jar BOOT-INF/classes/conf/properties/cache/*.properties`：Mongo 主机写死 `mongodb.host`
+  （nongli/bazi/translog/…共 10 份），Redis 写 127.0.0.1；② `strings RequestHeaderInterceptor.class`：app 注册读 classpath
+  `data/rsakey.json`（`checksig` + `ClientApp` + `checkSha256Signature`），**没有任何 Mongo 访问**；本机 brew mongod 里
+  只有 astrochart.nongli / astrolog / astrouser / bazidb（缓存与日志），没有注册表；③ 上游桌面启动器
+  `Horosa-Web/start_horosa_local.sh` 起 jar 时带 `--mongodb.ip=127.0.0.1 --redis.ip=127.0.0.1` + 环境
+  `HOROSA_DESKTOP_MONGO_OPTIONAL=1 HOROSA_MONGO_FALLBACK_DIR=… needtranslog=false`——本仓 runtime manager 走的正是它，
+  所以**终端用户从来没受过这个影响**；只有本仓的 `start_vendored_instance.sh` 是裸 `java -jar`。
+- **实锤**：照桌面方式起、且故意把 `--mongodb.port` 指到空端口 27099（= 模拟干净机器）：nongli/bazi/inversebazi 全部
+  真数据，回退目录出现 `nongli.json`/`bazi.json`。本 Mac **首次 0-skip 全量 live：678 passed**（v0.25.1 以来所有
+  「4 条/7 条 live 红属环境」的定性，其实都是这个脚本）。
+- **顺手抓出的假闸门**：全量 live 唯一一条红是本轮 B3 自己加的 `test_shenshu_place_changes_the_reading[xianqin]`——演禽
+  输出没有时区/经纬度行，上海↔乌鲁木齐、`timeAlg` 翻转逐字节相同。B3 当时按「`_run_shenshu_tool` 转发了 lat/lon」
+  给它挂了地点问题，而 guard 行里明明写着「合并前按 §5.12 live 验改参数结果必变」——Java 起不来就跳过了那一步。
+- **guard**：① `start_vendored_instance.sh --with-java` 改为桌面模式四件（`test_guard_wiring` 断言非注释行含
+  `HOROSA_DESKTOP_MONGO_OPTIONAL=1`/`HOROSA_MONGO_FALLBACK_DIR=`/`needtranslog=false`/`--mongodb.ip=` 且不含
+  `mongodb.host`），并等 Java 端口真开；`MONGO_PORT=<空端口>` 模拟干净机器。② `_java_result_code_hint` 三分：
+  `no.register.app` → 指回请求头与 jar 内 `rsakey.json`（不再说「在 MongoDB 里」）；Mongo 超时/`mongodb.host` →
+  指回起法；其余中性（`test_mongo_unreachable_9999_points_back_to_the_launch_mode` 含两条负向对照）。③ xianqin 归
+  `SHENSHU_GENDER_POLICY`，live 加反向断言 `test_xianqin_ignores_place_so_its_gate_must_not_ask_for_it`；
+  `test_gate_policies` 断言 xianqin 不问 location。④ 台账 v0.25.1「live 0-skip 需 Mongo」条目加 🔴 推翻批注（原文保留）。
+- **法则**：**「环境限制」是最容易写进台账、最难被推翻的定性——每次给失败贴「环境」标签前，先读原文、再用上游自己的
+  起法起一遍。** 判据永远是「上游桌面模式下能不能跑」，不是「我这台机器有没有装 X」。闸门问项同理：以翻转为准。
+
+### v0.36.0 / 2026-09-04 — [主宰星链] 段在、段内「◆ 宫神星(houseRows)」子块缺了两个版本：段级棘轮看不见段内缺项
+
+- **症状**：上游 v56 的 [主宰星链] 段末带一张宫神星 12 宫表（宫|宫头座|宫主|宫主落宫|宫主落座，FIX-1 并入段内、
+  不 bump 版本）；skill 的同名段只有主宰链行。`export_section_debt` 按**段名**记账——段在就是绿。同时
+  `_attach_natal_extras` 的富化失败是裸 `except: pass`，连日志都没有。
+- **根因**：镜像守卫的粒度是段；上游「并入段内、无需 bump 版本」的改动天然从粒度缝里漏过。
+- **guard**：`astro_rulers.py`（上游 `wholeSignRulers.js` 移植，夹具 = 上游 jest 基线盘，断言逐字照抄）产
+  整宫宫主表 / 分宫宫神星表 / v56 子块；`_attach_natal_extras` 追加子块并改 `_degrade`；`test_astro_rulers`
+  五条（含 `ruleHouses` 与后端逐宫对拍）。上游已切 v57（#79：整宫表进段、宫神星表独立成段）——本版镜像仍 56，
+  切换时四件同动（CHANGELOG 上游观察）。
+- **法则**：**段级镜像只能保证「段在」，段内结构要靠逐字夹具**；上游写「无需 bump 版本」的改动要单独盯。
+
+### v0.36.0 / 2026-09-04 — 忠实性校验器 8 族只盖 6 类技法：调用量第一的奇门、10 择日、23 推运零覆盖
+
+- **症状**：faithfulness v2 的族（四柱/落座/身宫/三传/紫微主星/卦名动爻/塔罗）全是「本命/占卜」类；奇门（值符值使
+  说错宫、门星张冠李戴）、择日（推荐一个不在命中区间的日子、有命中却说无命中）、推运（把土星期说成 2005 年
+  起）这三类最常见的编造完全不判，`ok=True` 照发。HorosaBench 也没有 faithfulness 类 case，评测器只在 pytest 里活。
+- **根因**：族按「已有机读真值最好抽的技法」长出来，不按「agent 最常调、最容易编」排；bench case 类型只有
+  tool/dispatch/knowledge，评测器没有进 bench 的入口。
+- **guard**：v3 三族——`qimen_zhifu/zhishi/palace`（快照 `值符：/值使：` 行 + 九宫行）、`hit_window`
+  （`data.intervals` 命中区间；推荐日期必须落在区间内、有命中说无命中判红）、`period_boundary`（推运表行的
+  行星↔年月配对，EN 行星 id 归一到中文正名）；每族三条对抗测试（supported / contradicted / gated+invented）；
+  bench 新 case 类型 `faithfulness`（跑工具→抽真值→判给定答案，`expect_ok` + `expect_min_flagged`），塔罗两条
+  离线可跑、六爻两条随 runtime；精选 case 4→10。值金标补 huangli（万年历公开事实）/ liuyao（京房纳甲 +
+  六亲生克 + 六神起例）/ tarot（种子确定性），`value_golden_debt` 21→18；qimen/taiyi/jinkou 三个 ken 格式器
+  没有离线 pan 夹具，仍在债务表（如实）。
+- **法则**：**校验族按「最常调 × 最易编」排优先级，不按真值好不好抽**；评测器必须有 bench 入口，否则它只
+  是一段没人跑的代码。
+
+### v0.36.0 / 2026-09-04 — `/qizheng/moira` 被误判「不存在」：测错了服务，6/14 段债务是一条写错的台账
+
+- **症状**：guolao 导出段债务 14 条里 6 条（guolao + qizhengzeri 各 [虚实]/[本命化曜]/[流年流曜]）被标为
+  「开源 astropy 无该路由，永久不可得」。上游 `services/qizheng.js` 明明白白 POST `${ServerRoot}/qizheng/moira`
+  ——ServerRoot 是 **Java** 聚合层（astrostudycn `QizhengMoiraController`），当年拿 Python chart 服务实测
+  500 就下了结论。
+- **根因**：把「某个服务返回 500」当成「路由不存在」，没有回到上游源码确认路由挂在哪一层；台账条目一旦写成
+  「维持排除」就再没人质疑。
+- **guard**：C1 接活——`tools/guolaoMoira.js` 加 `rules_sections` 入口，逐字移植上游三段 builder（selfcheck 金标
+  = 上游 jest 夹具 `guolaoWeakSolidBirthStars.test.js`）；`_run_guolao_chart_tool` 二次铸流年盘 → Java
+  `/qizheng/moira`（`{params, chartObj, transitParams, transitChartObj}`）→ 三段插在 [大限] 与 [政余格局]
+  之间；新 `GuoLaoInput`（guolaoLifeMode/guolaoBodyMode/moiraTransitDate/Time/moiraRules）；preset+optional
+  双登记，qizhengzeri 经 `ZERI_DERIVED_KEYS` 自动继承 → 段债务 14→8；Java 不可用走 A5 冷却快速失败 →
+  `_degrade` 进 warnings；provenance guolao→composite。旧台账两处**原文保留 + 加更正标注**。
+- **法则**：**排除一个上游能力前，先在上游源码里确认它挂在哪一层**；「某服务 500」只证明那台服务没有，
+  不证明路由不存在。台账里的「维持排除」要写清判据，便于日后推翻。
+
+### v0.36.0 / 2026-09-04 — 108 个错误码只有 4 类带恢复说明，112/151 条错误文案单语
+
+- **症状**：`_with_operational_recovery` 只认 runtime./transport./js_engine./backend_param，其余 ~100 个码
+  （`tool.qimenzeri_missing_window`、`report.technique.no_cards`、`knowledge.*`……）返回给 agent 的只有
+  code + message：该问用户、该修入参、该重试还是该让用户跑 doctor，agent 只能猜；MCP 面的错误信封连那
+  4 类都不带（`_mcp_error_envelope` 直接透传 details）。新守卫第一次跑就抓出一个三层规则都落不到的码。
+- **根因**：错误码被当成日志标签而不是接口——没有「每个码必须可分类」的约束，也没有文案语言要求。
+- **guard**：`errors.py`：`bilingual(zh, en)`；`RECOVERY_KINDS`（input / retry_or_doctor / runtime / transport /
+  js_engine / environment，各带双语 prompt + next_action[+commands]）+ `RECOVERY_TABLE` 精确码表 +
+  `classify_code`（精确 → **前缀** → 后缀：基础设施前缀优先于通用后缀，否则 `js_engine.node_unavailable`
+  会被 `unavailable` 抢成泛泛「重试」）+ `recovery_for`（补 agent_recovery/hint/next_action，已带者不覆盖）；
+  service 与 MCP 两条错误路径同一码表；`scripts/verify_error_recovery.py`：包内每个 `code="…"` 必须可
+  分类（硬规则），非双语文案计数 `contracts/error_recovery_debt.json` 只降不升（现 112）。
+- **法则**：**错误码是接口**——新码要么进精确表要么用可分类后缀（`*_missing_*`/`*invalid*`/`*_failed`/
+  `*_unavailable`），文案用 `bilingual()`；恢复语义按「谁能修」分层（用户/入参/重试/环境），不按模块分。
+
+### v0.36.0 / 2026-09-04 — 闸门半盲：推运五支从不问目标/弧源，神数五支从不问性别，163/326 问题没选项
+
+- **症状**：`planetaryarc` 用本命盘策略——问宫制、不问 `arcSource`（月亮弧/太阳弧结果完全不同）也不问目标
+  时刻；vedicprog/jaynesprog/planetaryages/extrareturns 同病；铁板/邵子按性别分条文、演禽/策天/张果按地点
+  起盘，五支共用「只要日期」的神数策略，性别地点从不问；163 个闸问题没有选项，MCP 原生表单只有一个三选一，
+  用户在表单里答不了任何具体设置。
+- **根因**：策略按「族」复用（ASTRO_BIRTH/SHENSHU），没有「该工具自有的结果敏感项必须出现在问题里」的
+  约束；问题与 schema 值之间没有映射，表单答案只能当备注。
+- **guard**：`_progression_target_policy` 工厂给五个推运工具各自的目标问题（arcSource 带 options+values）；
+  `SHENSHU_GENDER_POLICY`（tieban/shaozi）与 `SHENSHU_PLACE_POLICY`（xianqin/cetian/qizhengkin：性别+地点+时区，
+  与 `_run_shenshu_tool` 实际转发一致）
+  > 🔴 **收尾更正（同日，首次带 Java 的全量 live）**：演禽（xianqin）对地点/时区/timeAlg **完全不敏感**——输出无
+  > 时区/经纬度行，上海↔乌鲁木齐逐字节相同；「转发了就问」是假闸门。xianqin 改归 `SHENSHU_GENDER_POLICY`，
+  > live 测试改成**反向断言**（地点必不变）钉住引擎事实。教训：闸门问什么以 live「改参数结果必变」为准，
+  > 不以代码转发了什么为准——本条 guard 行原本就写着这个判据，却在 Java 起不来时跳过了它。
+  ；可枚举问题配 `options` + 并行 `values`（hsys 带上游索引、zodiacal、
+  岁差制、晚子时双开关、diFen 十二支、gender、arcSource），自由文本项进 `FREE_TEXT_GATE_FIELDS` 白名单
+  （`test_gate_policies`：新问题要么带选项要么显式入白名单）；elicitation 表单从 `ask_if_missing` 生成
+  （每个带选项的问题一个枚举字段，≤6），答案只写回策略声明过的 `values`，逐题作答即视为确认
+  （`agent_confirmed_settings=true` + 记录）；`sensitive_settings.json` 加 planetaryarc/tieban 裸调用自测；
+  live 翻转测试（tieban/shaozi 性别、xianqin/qizhengkin 地点）随 runtime 跑。
+- **法则**：**一个工具自有的结果敏感项，闸门必须点名问到**，族策略只能是底座不能是全部；问题要能落回
+  schema 值（options↔values），否则表单只是装饰。
+
+### v0.36.0 / 2026-09-04 — 找不到：25 个技法无路由规则、英文触发 67% 零命中、`HOROSA_TOOLSETS` 拼错＝零技法
+
+- **症状**：8 个择日搜索工具、tarot/地占/一掌经/龙盘/重置盘/占星地图/多重回归……25 个技法在 `horosa_dispatch`
+  里没有任何规则（5 个只在未命中候选池），用户说「八字择日开业」拿到的是八字命盘 + 通用择日两张盘；
+  58 个常见英文触发词 67% 零命中，`vedic chart` 路由到**推运**工具；`HOROSA_TOOLSETS=astr`（拼错）注册零个
+  技法且没有 `horosa_tool_run`，客户端只剩门面、任何技法都到不了。
+- **根因**：路由规则是逐个手写的 `if _contains_any(...)`，新工具接线九件套里没有「加路由」这一步；同义词
+  没有单一来源（描述里一句、候选池里一份、路由里再一份）；`_selected_toolsets` 把任何 token 都当域名。
+- **guard**：`engine/synonyms.py`（105 工具全覆盖，中文口语 + 拼音 + 英文；键集与 TOOL_DEFINITIONS 锁步）
+  三处消费：MCP 描述 `aka:` 一行、路由候选打分、语料；路由补 25 条规则 + 择日族互斥表 `_ZERI_PHRASES`
+  （基底技法规则一律 `and not is_zeri`）+ 英文触发 + `vedic` 修正；`contracts/router_corpus.json`
+  100 条 zh/en 语料 + `verify_router_corpus.py`（`min_pass` 只升不降，现 100/100）；`test_router_corpus`
+  「每个技法必须有规则或在豁免表」；`HOROSA_TOOLSETS` 合法域表 + 别名 western/chinese/all/none，未知
+  token 告警丢弃、全空回落全量，只要有过滤生效就注册 `horosa_tool_run`；`server_profile` 经
+  `horosa_agent_guidance` 可查。
+- **法则**：**一个技法「能算」不等于「能被找到」**——接线清单必须含路由规则 + 同义词 + 语料各一条；
+  配置解析对拼错要告警回落，不能静默变成「什么都没有」。
+
+### v0.36.0 / 2026-09-04 — tools/list 1186 KB（≈318k token）：agent 开口前先付一本字典的钱
+
+- **症状**：默认 MCP 面 115 工具的 `tools/list` 1186 KB；57 个工具各继承 BirthInput 全部 95 字段（每工具 17 KB、
+  112 个属性），dispatch/hecan 把 5 路 union 内联两次（各 24 KB），每个工具描述重复一段 322 B 的澄清闸说明；
+  精简面也有 93 KB（技法目录在 dispatch 与 tool_run 各放一份）。schema 零 enum，`hsys` 描述还写错（A7）。
+- **根因**：广告层与校验层是同一份东西——`_signature_for_input_model` 为了「未声明键不被丢」（A6 那类病）
+  把全模型字段都放进签名，FastMCP 又照签名原样广告。想瘦就得砍签名，砍签名就静默丢键：两难被当成没得选。
+- **guard**：两层 schema（`surfaces/mcp_schema.py`）：签名不动（校验层，隐藏旋钮顶层照收），注册后重写
+  `Tool.parameters`（广告层 = 域核心 + 推运目标字段 + 工具自有字段 + 闸门三键 + `request` 逃生舱，注明还有
+  N 个高级旋钮按名可传，`additionalProperties: true`）；enum 只进广告层（hsys 按西占/印占两表、zodiacal/ad/
+  response_view；47 岁差制只给常用键——全表 enum 每工具 600 B 超预算）；dispatch/hecan 换单一宽松对象；
+  描述去闸门段、指向 guidance；目录只放 tool_run 一份且标签截 28 字。结果 **1186 KB → 253 KB、93 KB → 30 KB**。
+  棘轮 `scripts/verify_mcp_list_budget.py`（进程内量两档，硬上限 256/30 KB + 只降不升 2%）；
+  `tests/test_mcp_list_budget.py`：隐藏旋钮顶层照收、无 `$ref`、enum 与表锁步、dispatch birth 为单对象。
+- **法则**：**广告什么和接受什么是两件事**——校验层求全，广告层求准；任何「瘦 schema」的改法先证明未声明键
+  仍然到达 `run_tool`，再看字节。
+
+### v0.36.0 / 2026-09-04 — MCP 扁平面静默丢未声明键：PR #17「性别恒为未知」只是 63 个工具同一类病的一例
+
+- **症状**：外部 PR #17（@xipfs）报 `bazi_birth` 传「男」快照仍「性别：未知」、大运顺逆无法判定。复现只在 MCP
+  面：CLI / `horosa_tool_run` / dispatch 都正常。
+- **根因**：不是 pydantic 丢字段（`FlexibleModel` 是 `extra="allow"`），是 MCP 扁平面——`_signature_for_input_model`
+  只广告模型声明的字段，FastMCP 按广告签名生成的 arg model 把未声明的顶层键丢掉，之后才 normalize/validate。
+  `BaZiBirthInput` 没声明 `gender`，于是丢。用「每个样例载荷键必须在模型上」一扫：**63 个工具**中招——西占/推运
+  /择日全族的 `name`/`pos`（透传盘头）、八字/紫微/正传的 `gpsLat/gpsLon`（后端载荷候选回退键）、
+  **神数五支的 `gender` 与 `zone/lat/lon`**（`_run_shenshu_tool` 原样转发，MCP 上全丢）、`pdchart.showPdBounds`
+  （服务在读、指南在写、schema 没有）。样例载荷、文档、服务消费点三处都有这些键，唯独 schema 没有。
+- **guard**：`tests/test_mcp_flat_surface_keys.py`——每个技法工具的样例载荷（离线套件/Bench/烟测共用的那份）
+  的每个**原始**键都必须出现在广告签名里，否则列出「哪个工具丢哪个键」；配套 `tests/test_bazi_gender.py`
+  （PR #17 的用例收编，bool→1/0 归一 + `_gender_label`）。修法一律「声明字段」，不是改样例：样例就是文档。
+- **法则**：**一个键要么在 schema 上，要么它不存在**——服务读它、文档写它、样例带它而 schema 没声明，就是
+  MCP 用户静默拿到另一张盘。新增消费点先加字段（`verify_schema_knob_wiring` 管反向：字段必须有消费点）。
+
+### v0.36.0 / 2026-09-04 — `hsys` 描述写「1=Placidus」：上游索引表 1 是 Alcabitus、3 才是 Placidus
+
+- **症状**：`BirthInput.hsys` 描述「0=整宫、1=Placidus 等」；服务自己的 `ASTRO_HOUSE_SYSTEM_TEXT` 与上游
+  perchart 表都是 1=Alcabitus / 2=Regiomontanus / 3=Placidus / 4=Koch…。按描述传 1 想要 Placidus 的 agent
+  拿到 Alcabitus 盘，且无任何告警（宫制合法值，闸门不拦）。
+- **根因**：描述是手写的，和表没有锁步；印度盘另有一套索引（8=Alcabitus），两套表并存更容易记串。
+- **guard**：描述改为逐项列全表并明示「1 不是 Placidus」；`tests/test_house_system_docs.py` 锁步描述 ⊇
+  `ASTRO_HOUSE_SYSTEM_TEXT` 每一项且不含「1=Placidus」；B1 出 enum 时以该表为唯一源。
+- **法则**：**枚举类参数的文档必须从表生成或被表锁步**，手写一次就是一次抄错的机会。
+
+### v0.36.0 / 2026-09-04 — Java 起不来时，每个碰 Java 的调用都先杀掉健康的 chart 服务再全量重启
+
+- **症状**：Java 后端（:9999）挂着、chart 服务（:8899）健康时，任何 Java 端点调用（含 qimen/taiyi 等前置
+  `/nongli/time` 的技法）都要等 ~90s 才失败，期间 chart 族技法也跟着断——用户存档里「起盘慢/时好时坏」的
+  一类主诉。issue 里的 Windows「后端起不来」多属此型。
+- **根因**：`_call_remote` 探针失败 → `start_local_services()`；管理器见「任一服务在」就 `stop_local_services()`
+  先杀健康的 chart 再全量重启，等满 45s 超时才判 degraded 返回；随后调用连不上 → `connection_retry` 再
+  `start_local_services()` 一次——同样的 stop+restart 又来一遍。「降级」只在管理器一头有（degraded_chart_only
+  状态写进文件），调用侧完全不看它，每次都当冷启动处理。
+- **guard**：`runtime_java_retry_cooldown_seconds`（env `HOROSA_RUNTIME_JAVA_RETRY_COOLDOWN_SECONDS`，默认 120）；
+  管理器记住上次 degraded 启动时刻（进程内 + state 文件回读），冷却期内 `start_local_services` 直接返回
+  `{degraded, skipped_restart}` 不 stop 任何服务；`_call_remote` 对 Java 端点冷却期内快速失败
+  `runtime.java_backend_unavailable`（带 retry_after/hint），start 回来 degraded 也立即失败而不是等连接错误再
+  重启；chart 端点全程不受影响；可选 Java 富化经 A2 `_degrade` 落 warnings。测试：冷却期内 Java 工具失败、
+  `started==0`、chart 工具照常；start 回 degraded 只起一次。
+- **法则**：**就绪是分后端的**——一个后端挂了不能连累另一个；重启是昂贵且有副作用的恢复动作，要有冷却，
+  且调用侧必须读管理器的降级状态而不是把每次失败当冷启动。
+
+### v0.36.0 / 2026-09-04 — 河洛流年法旋钮发成死键 `step2`：边界契约看不见，issue #15 同型再现
+
+- **症状**：`tools/heluo.js` 把 `liunianStep2` 装进 `opts.step2`，而引擎 `buildSnapshotText` 读的是
+  `snapOpts.liunianStep2`（再转成 `liuNian` 的 `step2`）——`liunianStep2:'sequential'` 传了等于没传，
+  流年永远应爻法。半成品里同批的 yizhangjing `leapRule/gradeSet`、tongshefa 纳甲逐爻也都是「引擎接好、
+  schema 没声明、金标没有」。
+- **根因**：两层盲区叠加。① 边界契约生成器的 import 正则只认 `import { a } from`，`import calc, { … } from`
+  的**默认导入**整个不进契约，`calc(...)`/`buildSnapshotText(...)` 两处边界根本没被记录；② 就算记录了，
+  verifier 的 oracle 是「键名出现在被调模块源码里」——同模块另一函数 `liuNian` 恰有参数 `step2`，子串命中，
+  死键照样绿。契约能抓的是「模块里根本没有这个词」的死键，抓不住「词在、但不是这个函数读」的死键。
+- **guard**：生成器补默认导入 + `opts: localLiteral` 嵌套展开（`nested_under`）+ 成员访问 `x.year` 不当整对象
+  （否则误报）；真正的守卫是 **能翻转的值金标**：selfcheck 三条——heluo `liunianStep2`（2 岁流年 雷風恆·上六 →
+  山風蠱·六四，且写错键名 `step2` 必须**不**翻）、`ziShuMode`、立春前干支年基准；yizhangjing `gradeSet`
+  （天驛 中品→下品）、`leapRule`（闰二月十五 00:xx 作下月，23:xx 不作）；tongshefa 纳甲六爻/世应/爻变。
+  Python 面同型三条；`value_golden_debt` 24→21。
+- **法则**：**声明一个旋钮 = 交付一条「改它结果必变」的金标 + 一条「写错名结果不变」的负向对照**；子串式
+  静态契约只能当第一道网，不能替代翻转测试。
+
+### v0.36.0 / 2026-09-04 — 六壬工具手抄了 24 张 LRConst 表：vendor 修了、金标绿了、消费点还是旧值
+
+- **症状**：v0.35.0 修正 vendored `LRConst.ZiLiuQin` 乙日巳/午→子孙并加了 120 格逐格金标，CI 全绿；但
+  `tools/liureng.js` 顶部自带一份 `ZI_LIU_QIN`（连同 ZI_LIST/GAN_LIST/贵人六表/刑冲害合/干支相克……共 **24 张**
+  与 vendor 逐字相同的表），三传六亲仍按旧表出——金标只看 vendor 导出，对手抄消费点结构性失明。
+- **根因**：早期为省 import 把 vendor 常量抄进工具文件，形成第二真值源；此后所有 vendor 同步/修正都绕过它。
+  「vendor 金标」验证的是「表对不对」，不是「工具用的是不是这张表」。
+- **guard**：24 张表改为 `const { ZiList: ZI_LIST, … } = LRConst` 解构（`SIGN_TO_YUE` 无 vendor 对应保留）；
+  `test/handcopy.mjs` 入 `npm test`：`tools/*.js` 顶层字面量 vs 文件所 import 的 vendor 模块导出，按规范化
+  名（`ZI_LIU_QIN`~`ZiLiuQin`）或深比对相等即红，内置负向对照（种一份抄表必须被抓、解构与无对应表不许误报）；
+  selfcheck 加**消费点**金标：`runLiureng` 输出的三传六亲逐项 == `ZiLiuQin[支][日干]`。
+- **法则**：**常量只准有一个源，工具文件只准引用不准抄**；改 vendor 真值时，金标必须打在消费点（工具输出），
+  不是打在被修的那张表上。
+
+### v0.36.0 / 2026-09-04 — 35 处「优雅降级」只写日志：ok=True、warnings=[]、少 10 段
+
+- **症状**：真实奇门存档 `missing_selected_sections` 10/17 而 `warnings: []`；agent 把「少了十段」当完整结果
+  写报告。`service.py` 35 处 `logger.warning("X failed: %s", exc)` 只有 2 处把说明推进 `_warnings`
+  （v0.33.1 修 issue #15 时只补了八字格局/多运限两处），其余 33 处——奇门年干、七政庙旺、天王附注、
+  世运子盘、印度分盘、月历附注……——失败即消失。MCP elicitation 更彻底：`except Exception: return None`，
+  表单崩了和「客户端不支持表单」在 agent 眼里一模一样。
+- **根因**：降级点各自为政——每处 except 里的返回值形状不同（dict/文本/None/continue），把说明「带回」
+  信封要改每一处的返回路径，于是都只写了日志；同一层的 `_warnings` 出信封管道只有直接持有
+  `response_data` 的两处能用。「优雅降级」被当成了「不炸就行」。
+- **guard**：`_degrade(fmt, *args[, note=])` + `contextvars` 收集器（`_degrade_collector`，`run_tool` 作用域，
+  嵌套调用冒泡到外层）——不管 except 里返回什么，说明都进 `envelope.warnings`；预设段缺席自动生成
+  「结果不完整：预设 N 段中 M 段未产出（…）」进 warnings + summary，dispatch 汇总一行；
+  `scripts/verify_silent_degrades.py` 棘轮包内裸 `logger.warning(` 计数（基线 **0**；启动期通知改
+  `logger.log(WARNING)` 并注明「无调用方可告知」）；elicitation 拆纯函数
+  `_apply_gate_decision`，七种出口各写 `details.elicitation.status`，首批 9 条离线测试。
+- **法则**：**降级的定义是「调用方知道少了什么」，不是「没报错」**；降级说明的出口要和返回值解耦（收集器），
+  否则每加一处富化就多一处静默。
+
+### v0.36.0 / 2026-09-04 — 导出段 `data` 逐段整份复制：qimen 5 MB / india_chart 101 MB（正文仅几 KB）
+
+- **症状**：用户存档里一次奇门调用返回 5.07 MB，其中 `export_snapshot.sections` 1.55 MB、段正文合计
+  2.8 KB——**550:1**；印度盘存档最大 101 MB。agent 一次调用就把上下文撑爆。合成复现：23.8 KB 后端响应
+  → 917 KB 导出快照（38×），且 303 KB 原始 dump 直接落进 `export_text`（agent 被要求当真值读的那个字段）。
+- **根因**：三处叠加。① `_pick_section_data` 兜底 `return response_data` / `X or response_data`——任何未识别
+  段拿到整份引擎对象，qimen 18 段里 11 段各带一份 137 KB 的 `pan`；② `_build_generated_export_snapshot`
+  对**每个**段都算 `section_data` 并塞进 `section["data"]`（仓内零消费者：parser/reports/technique_card/
+  faithfulness 都不读它）；③ 兜底正文守卫只数行不数字节，单行 JSON dump 穿过。唯一的反膨胀测试只数一个
+  24 字符文本探针出现次数，对 `data` 键一字不提。
+- **guard**：段形状固定 `{index, raw_title, title, included, body}`（envelope schema 0.7.0→0.8.0，
+  `docs/DATA_CONTRACTS.md` 与常量由 `verify_docs_sync::check_envelope_schema_version` 锁步——common.py
+  的注释多年宣称有此检查，实际文档停在 0.6.3 无人察觉）；`tests/test_response_budget.py`：段不带 data、
+  引擎对象在响应体里**恰出现一次**、全工具循环「信封字节 ≤ data 基线 + 3×正文 + 16 KB」；兜底正文按
+  字节+行数双守卫，空正文一律占位（faithfulness/报告/「不得臆造依赖」检查都以非空正文为前提）。
+- **法则**：**引擎对象只在 `data.<key>` 存一份，段只存 body**；「有没有膨胀」要量字节、按内容封顶，
+  数文本探针的守卫只能证明「没多印那一句」。
+
+### v0.35.0+ / 2026-09-03 — 手工件 sha 戳按裸字节算：CRLF 平台上守卫恒红（windows-smoke 连红两次）
+
+- **症状**：v0.35.0 发布 commit 在 main 上 `CI` 红——`windows-smoke` 里
+  `tests/test_vendor_manifest_watch.py` 两条（curated 戳相符应安静 / bespoke derived_from 同理）
+  报「source changed upstream since the last audit (sha 13514c5a → 212ca9da)」；Linux `test` job 恒绿。
+  本机（`core.autocrlf=true`）一跑即复现。
+- **根因**：`revendor_core_js._sha256_file` 对**裸字节**取 sha256，而戳是 mac 侧对 LF 源算的。
+  Windows 上同一份文件到手就是 CRLF（autocrlf 检出、`Path.write_text` 文本模式写入都会），
+  裸字节摘要永远对不上戳 → 每个 curated/bespoke 条目都被判「上游改了」——**守卫在它最该保护的平台上
+  恒红**（恒红 = 没有守卫，人会学会略过它；v0.26.0 台账「永远红的检查等于没有检查」的同族）。
+  测试红只是表象：真正的手工件漂移守卫（`--from-manifest --check`）在任何 Windows 检出上也会全体误报。
+- **guard**：`_sha256_file` 改为对 **CRLF→LF 归一化后的 UTF-8 文本**取摘要（非 UTF-8 才退回裸字节）。
+  LF 源的摘要逐字节不变 → 既有 `upstream_sha256` / `derived_sha256` 戳**无需 restamp**；CRLF 检出
+  从此也能对上。新增 `test_stamp_is_line_ending_independent`：**显式**以 `newline="
+"` 写源再断言
+  戳相符——只靠 `write_text` 的平台换行差异，这条在 mac/Linux 上永远测不到。
+- **法则**：**凡跨平台比对文本文件的摘要，先归一化换行再算**；同时记住 Windows 上 `Path.write_text`
+  默认会把 `
+` 写成 `
+`，写 LF 源文件要 `newline="
+"`（本轮自己就在改脚本时把整个文件
+  写成了 CRLF 一次）。
+
+### v0.35.0 / 2026-09-03 — 手工件零信号 + 两棵整拷树不比对：六壬六亲两格错值静默滞留四轮同步
+
+- **症状**：上游 v3.9.4（08-20）真值校准改了六壬六亲表 `ZiLiuQin` 乙日巳/午两格（父母→子孙，乙木生
+  巳午火＝我生者），本仓 v0.31~v0.34 四轮同步、每轮 `verify_upstream_sync` 全绿，vendored
+  `liureng/LRConst.js` 仍是旧值——三传/毕法两条链（`ChuangChart.js:176`、`LRBiFaDoc.js:149`）都从它取
+  六亲，用户拿到错答案。同批的紫微年基准（`ziwei/zwLuckItems.js`，bespoke）是人读 release note 才补的；
+  flatlib 在 v3.9.3 漂过三个文件（aspects / chart / ephem/swe），守卫同样零信号。
+- **根因**：三处结构性盲区。① `revendor_core_js.py` 对 `curated` 只断言 extracts 名字仍导出、对 `bespoke`
+  只断言上游无同名文件，`manifest_drift()` 对非 verbatim 直接 `continue`——手工件的**内容**从不与上游比；
+  ② `SENTINEL_TREES` 只收 astropy 的两个子树，`tests/`（上游 v3.9.3 起 11 个校准套件）、`resources/`、根级
+  文件与整棵 flatlib 都不在集合里，而 sync 脚本对这两棵是整棵 rsync——**同步口径 ≠ 比对口径**，正是
+  v0.26.0 jieqi.py 事故换了一个层级再犯；③ 六亲表没有值级金标。
+- **guard**：手工件记源 sha（curated `upstream_sha256` / bespoke `derived_from` + `derived_sha256`，13 条全部
+  打戳），`--from-manifest` 与 `manifest_drift()`（`verify_upstream_sync` check 3）源一动即红、复核后
+  `--restamp <条目>` 才灭；`SENTINEL_TREES` = sync 脚本整棵 rsync 的每一棵（astropy 整棵 + flatlib 整棵），
+  `tests/test_verify_upstream_sync.py` 用正则从 sync 脚本抓整拷树集合与守卫锁步；`selfcheck.mjs` 六亲表 ≡
+  五行生克公式 120 格逐格对拍（负向对照：把任一格改回去即红，验过）；`tests/test_vendor_manifest_watch.py`。
+- **法则**：**凡不经流水线的文件都要有一条「源变了就叫人」的边**——名字/basename 检查只证明「还叫这个名」，
+  不证明「还是这个值」。**守卫树集合 == sync 脚本整棵 rsync 的集合**，加一条 rsync 就加一棵树。
+
+### v0.35.0 / 2026-09-03 — SQLite 日志侧车被当成源文件：镜像与首版发布包里混进 `editorial.sqlite-wal/-shm`
+
+- **症状**：preflight 对着上游 HEAD 的干净 clone 跑，`verify_upstream_sync` 报
+  `astrostudy/xuanshi/data/editorial.sqlite-shm/-wal`「not in upstream」；对着上游脏工作树却恒绿——这两个
+  文件在上游磁盘上（进程打开过库就会留下），git 不跟踪。v0.35.0 首次构建的 darwin 包也带着它们
+  （wal 0 字节、shm 32KB，这次无害，但形状是错的）。
+- **根因**：sync 脚本、守卫与三个 builder 的排除集都没有 SQLite 运行期侧车——「同步口径 == 比对口径」在这类
+  文件上**一致地错**，所以只有换一棵干净树才现形。非空 WAL 打进包 = runtime 打开库时回放上游未 checkpoint
+  的写入，库内容偏离 git 里那份 `.sqlite`。
+- **guard**：`sync_vendored_runtime_sources.sh` RSYNC_FILTERS、`verify_upstream_sync.py` TREE_EXCLUDE_SUFFIXES、
+  `package_runtime_payload.sh` 与 windows/linux builder 的排除集同加 `*.sqlite-wal/-shm/-journal`；
+  `test_tree_file_walk_honours_the_sync_scripts_exclusions` 覆盖三种后缀；本地 vendored 树已删侧车、包已重打。
+- **法则**：排除集加一项要在**四处**同加（sync / 守卫 / 三 builder）；跨树比对的输入用上游 **HEAD 的干净
+  checkout**（浅 clone 即可），脏工作树会把「两边一致地错」洗成绿。
+
+### v0.35.0 / 2026-09-03 — 手册知识包白名单与已上架技法脱钩，且生成器读的是脏工作区
+
+- **症状**：`helpdocs/` 21 域全部停在 08-17（上游 v3.9.3 预发），之后上游三个版本改了 AstroHelpDoc（古典
+  设置九子组一览）/ AuxchartHelpDoc / ZeriHelpDoc（+113 行择日十技法）；而 `HELPDOC_DOMAINS` 根本没有
+  Zeri/Taiyi/Sanshi/Yanqin/Yizhangjing/Xuanshi 六册——对应工具（十个 `*zeri`、`taiyi`、`sanshiunited`、
+  `yanqin_yanfa`、`yizhangjing`、`xuanshi`）早在 v0.32~v0.34 上架。技法有了、口径知识没有，AI 客户端引不到教义。
+- **根因**：① 白名单是手写常量，与「上游有哪些手册」「skill 上架了哪些技法」都没有机器边；② 生成器从磁盘
+  读手册、出处却记 `git rev-parse HEAD`——上游维护机常年带 WIP（本轮 AstroHelpDoc.js 就是脏的），按磁盘
+  收割等于把未提交改动记成某个 commit 的内容。
+- **guard**：生成器默认读 HEAD blob（`git show HEAD:…`；`--worktree` 只给非 git 快照），脏手册报 notice；
+  `*HelpDoc.js` 既未收割也未进 `EXCLUDED_HELPDOCS`（仅 fengshui，政策性排除）即 FAIL；
+  `tests/test_knowledge_helpdocs.py` 断言白名单域 == 磁盘包集合 + 六个新域在场。
+- **法则**：**上游每一册手册要么收割、要么明文排除，没有第三种状态**；出处与正文必须同源于同一个 commit。
+  同步上游新技法时（§5 布线清单第 14 步）把「它的手册进白名单并重跑生成器」算进同一个 change。
+
+### v0.34.0+ / 2026-09-01 — 择日派生键继承了基底段表、没继承基底 optional 集：5/10 新技法 live 导出「缺段」
+
+- **症状**：v0.34.0 Windows 半边原生验证，十个择日技法 live 全部 `ok`，但 5 个的
+  `missing_selected_sections` 非空——bazizeri 缺 大运/多运限、taiyizeri 缺 博弈/命法/命宫行限、
+  ziweizeri 缺 运限/流派叠层、liurengzeri 缺 年命上神/占断向导/取象、sanshizeri 缺 奇门遁甲/紫微四化。
+  离线契约测试全绿（FakeJsClient 发全集），无 live 测试断言择日键的导出洁净——**只有真 runtime 能抓**
+  （v0.34.0 上一条台账「离线绿 ≠ 参数对」的同族）。
+- **根因**：`AI_EXPORT_PRESET_SECTIONS[<x>zeri] = [*基底段表, 择时三段]` 按 spread 继承了段表，
+  `AI_EXPORT_OPTIONAL_SECTIONS` 没有跟着继承——基底里「有条件才出」的 11 段对派生键成了必出段。
+  静态证据：12 个缺段全在基底段表内，11 个在基底 optional 内，且 `vendor/divination/zeri/*Snapshot.js`
+  对这 12 段**零发射点**（择时盘是时刻盘、无出生信息）——结构性缺席，不是接线错。
+  唯一例外 `取象`（liureng 基底必出、zeri builder 不发射）= 派生键的死条目。
+- **guard**：`ZERI_DERIVED_KEYS` 提为常量，段表与 optional 集**都**从基底继承（`取象` 单列进
+  `_ZERI_MOMENT_CHART_DEAD`）；`tests/test_zeri_optional_inheritance.py` 断言 派生 optional ⊇ 基底
+  optional 且 optional ⊆ preset。修后 live 重探：十个键 `missing=[] unknown=[]`。
+- **法则**：**凡按 spread 派生的导出键，optional 集必须与段表一起继承**——段表继承、条件集不继承
+  = 把基底的条件段升格成必出段，这种「多出来的严格」只在 live 才现形。派生新键时把这条写进 §5.5。
+
+### v0.34.0+ / 2026-09-01 — 补 Windows 半边时：择日十技法的 Python 引擎在三把验证器里没有新鲜度标记
+
+- **症状**：v0.34.0 补 Windows 半边前，本机 `vendor/runtime-source` 停在 08-24（v3.7.x 时代的 astropy），
+  而发布已对齐上游 v3.10.0（新增 `qizheng_election_scan.py` / `india_election_scan.py` 与
+  `/qizhengelectionscan/*` `/indiaelectionscan/*` 两族路由）。`verify_vendor_runtime_sources.py`
+  在这棵陈旧树上**照样全绿**——它的内容断言只有 `AI_EXPORT_SETTINGS_VERSION == 56`，而上游按「只加键
+  纪律」把 8 个新技法键加进 aiExport 时**没有 bump 56**。唯一判红的是 mirror 守卫（逐键覆盖）。
+  若 mirror 也漏了（或有人为过关加 alias），构建会打出**没有择日后端路由**的 Windows 包，而
+  `verify_runtime_release.py` 只查文件在不在、照样放行。
+- **根因**：三把验证器（vendor 源 / 发布归档 / builder parity）的「真文件标记」停在 v3.5.1
+  （`ifa_odu.json`）与 v0.32.0（xuanshi sqlite），v3.10.0 这一整个新子树没有任何一个文件被点名。
+  **标记文件是版本恒等之外唯一能证明「树是当前的」的东西**，每次上游加子树都要同步加一个。
+- **guard**：`astrostudy/qizheng_election_scan.py` + `india_election_scan.py` 进
+  `verify_vendor_runtime_sources.py::REQUIRED_PATHS`、`verify_runtime_release.py::REQUIRED_ENTRIES`
+  （三平台块）与 `verify_builder_parity.py::REQUIRED_ON_BOTH`；fixture 同步。加完对**真归档**跑过：
+  mac 打的 darwin tar 与本机打的 win zip 都含这两个文件（顺带证明两平台 payload 同源 v3.10.0）。
+- **法则**：上游每新增一个会被 skill 调到的后端子树，同一 change 里给三把验证器加一个**该子树独有
+  的真文件**作标记（照 `ifa_odu.json` 先例）。版本号恒等在「只加键纪律」下不是证据。
+
+### v0.34.0 / 2026-09-01 — 同步上游 v3.10.0 择日十技法：抽壳、解析器盲区、与「假债务」
+
+上游一次发了 182 文件 / +25k 行的择日大版本（8 个新技法键）。同步过程本身踩出四条。
+
+- 🔴 **依赖闭包要按「已 vendored 即停止节点」算，否则数字会吓人。** 天真闭包把整个 React 壳
+  （amap 地图 / D3 / xq-ui / request.js）都拉进来，六壬那支报 69 个新文件；把已 vendored 的文件
+  当停止节点重算后是 5 个。**先算对再决策** —— 按 69 那个数字很容易误判成「这支做不了」。
+
+- 🔴 **上游把纯逻辑和 React 放同一个文件时，剥壳要机械化，不要手抄。** `LiuRengMain.js` 6436 行，
+  1–4553 纯逻辑、4554 起 `class … extends Component`，20 个纯 export 全在前半。仓里此前手抄过
+  其中三个函数进 `liurengRefContext.js` —— 而上游的 `buildSanChuanData` 早已多出第 4 个参数
+  `castOverride`，手抄那份还是三参。**手抄件会静默落后于上游**。改为 `truncate_before` 按正则
+  锚点整头 vendored（锚点而非行号：行号随上游编辑漂移，锚点找不到会报错而不是悄悄剪错）。
+
+- 🔴 **截断必须跑在孤儿 import 清理之前。** 孤儿判据是「符号在正文里还用不用」，而截断正是改变
+  正文的那一步。放后面的话，React 尾部专用的 16 个 import 在判定时还“在用”，于是全部留下 ——
+  模块引用了 vendor 树里根本不存在的路径，加载即炸，**而 re-vendor 那一步看起来是成功的**。
+  同族：`_IMPORT_STMT` 不吃行尾注释（`import {...} from '…'; // [观象P1]`）时，stub 报 not found、
+  import 原样留下，症状一模一样。
+
+- 🔴 **解析器盲区会造出「假债务」，比漏检更坏。** 上游同一个文件里 spread 有两种写法：
+  `...AI_EXPORT_PRESET_SECTIONS.qimen`（v3.7.1）与 `...(AI_EXPORT_PRESET_SECTIONS.bazi || [])`
+  （v3.10.0）。只认第一种时，八个新键的基底段全被 export-section 守卫报成「skill 多出来的段」
+  （bazizeri +11、sanshizeri +50…）。**这种噪声会诱使人去 `--update-baseline`**，把一条本该常绿的
+  检查一次性腌成永久噪声。判据：报出来的债务，要先问「它和某个已入账的基底债务是不是同一笔」——
+  本轮七键是解析器的错，第八键（qizhengzeri 缺 3 段）才是 `guolao` 既有债务的真继承。
+
+- 🔴 **execution 标错会让整个 runner 被绕过。** 给 `qizhengzeri`/`indiazeri` 在 registry 上挂了
+  endpoint + `execution="remote"`，通用远端路径抢先接管 → 自写的按月分段与快照合成一次都没跑，
+  而工具**返回 ok=true**、只是 hit_count 恒 None。tianxing 一直是 `execution="local"` + runner 自己
+  打端点，照抄它即可。同一形状：`export_snapshot` 恒 None 是因为忘了把新键加进
+  `AI_EXPORT_TECHNIQUES`（有 preset 却不在这张表 → parse 抛 Unknown technique，而调用方 `except
+  ValueError: return None` 把它吞成 None）。
+
+- 🔴 **live 一跑，离线全绿的四处接线错同时现形 —— 每一处离线都抓不到。** 本轮八个新技法离线契约
+  全绿之后打真 runtime，四类问题一次浮出：① `_PYTHON_CHART_ENDPOINTS` 漏登记 → 请求被路由去
+  **Java 聚合层**（那边没这条路由）→ HTTP 500，而同样的请求体直接打 chart 服务是好的，症状像
+  「后端坏了」；② 后端吃的是**编译树**不是 UI 树，发 UI 树得到 `unknown condition type: None`
+  （与 zeriScan.js 里那条注释同一个坑，只是搬到了 HTTP 边界）；③ 样例 payload 的条件参数我写成
+  `{}`，离线桩根本不 compile 所以照绿，live 一次报出四个「至少选择一项」；④ 印度的 `vara`
+  要**整数序**不是英文名。**「离线绿 ≠ 参数对」——参数正确性只有真引擎能判。**
+
+- 🔴 **报「铸盘失败」时要把基底工具的原文带出来。** 无 Mongo 机器上 Java 族回 9999，与真正的接线
+  错误长得一模一样。本轮为区分这两者做了整轮排查（决定性实验：**单独**调基底工具同刻复现——
+  它也红就是环境/基底问题，只有择日这条红才是接线问题），而那轮排查本可以由一行错误信息省掉。
+
+- 🔴 **算源分类落到兜底 = 不诚实的披露。** provenance 生成器按显式名单分类，新工具落到兜底
+  `local_data`（「不起盘：读本地离线库」）—— 而它们确实铸盘，只是盘不是搜索算的。正确类是
+  `composite`（两条腿算权不同，`compute_sources` 逐项写明）。**兜底类别永远要当成「待人工确认」，
+  不是「默认正确」。**
+
+### v0.33.1 / 2026-09-01 — issue #15 不是一个 bug，是一个**家族**：边界改键 + presence 级绿灯
+
+外部贡献者 [zeno17z](https://github.com/Horace-Maxwell/horosa-skill/pull/16) 报了一个具体错误：八字格局段
+把 正财格 判成 正官格。根因是 `baziGeju.js` 写 `hour:` 而三个引擎一律读 `time` —— 时柱静默缺席，
+取格/五行力量/盲派整批错，而输出照常自信。顺着这个形状全树对抗性扫描（43 个 JS tool、44 个
+`js_client.run` 调用点、78 个 Input class）之后，同族活体 **4 个 P0 + 10 个 P1**，外加 36 处无错误码的
+静默空返回与 15 个 schema 撒谎的死旋钮。
+
+- 🔴 **presence 级断言对值回归结构性失明。** 「段在 `section_titles_detected` 里」≠「段里的值是对的」。
+  六层防线全绿而 bug 照样出货：loadcheck 只扫 `src/vendor/` 不扫 `src/tools/`；selfcheck 对
+  baziGeju 零覆盖；vendor manifest 只管引擎不管调用方；离线 fake **手编答案**（引擎从不运行）；
+  live 测试 presence-only 且 `@requires_runtime` 在 CI 里 skip；golden fixture 里压根没这三个段。
+  `src/tools/` 是整棵 JS 树里**唯一没有任何静态守卫**的部分 —— 而所有改键都发生在那里。
+  守卫 = `verify_js_boundary_contracts.py`（死键向 + 锚定向）+ `verify_value_goldens.py`（值级金标棘轮，
+  AGENTS §5 第 12 步）。接上一条 :1139 的下一阶：那条讲「桩比真实响应更简单」，这条讲「断言比真实
+  结论更浅」。
+
+- 🔴 **跨边界不改键。** 上游原样透传是唯一被证明安全的形状。本轮五例全是同一句话的反例：
+  `hour`↔`time`（#15）、`minute`↔`ke`（铁板，96 局塌成 12）、`lunarMonth`/`lunarDay` 在手却不转发
+  （参评，起运岁恒 1、九个大运整体平移）、`params: response` 指向 /chart 信封而非起盘时刻（果老
+  moira，`isDay` 恒真 → 夜生盘拿天贵而非玉贵）、裸 `gender` 经 `Number('女')`=NaN 判男（神数正传，
+  女命大定死限年错）。**判据统一为一句**：「改这个参数，结果必须变」—— 每条修复都配了这样的
+  值级金标 + 负向对照（把 bug 改回去，金标必须红）。
+
+- 🔴 **静默降级会沿调用链上移。** #15 的修复给 JS 侧加了结构化错误，而 Python 侧
+  `_attach_bazi_geju` 只读 `snapshot_text` —— `data.error` 无人看，四段消失依旧零信号。
+  **修一层不等于修一条链**：错误信号每上一层都要有人接。守卫 = `verify_silent_returns.py` 棘轮。
+
+- 🔴 **selfcheck 的 harness 自己也犯同一个病。** `check()` 只 `fn()` 不看返回值 → async 断言体的失败
+  变成 unhandled rejection，打印 `ok`、退出码 0、CI 全绿，断言其实根本没验。写这一条时它正好吃掉了
+  我自己刚写的 canping 金标里的一处笔误。**给 harness 也要做负向对照。**
+
+- 🔴 **schema 描述不是愿望清单。** `ElectionInput` 的注释一边引着正确出处（"上游 electionParams.js 的
+  13 键"），一边列着 11 个与那 13 键**零重合**的发明名字；`HoraryInput` 的 `receptionMode`/
+  `almutenScheme` 在任何引擎词表里都不存在。它们被描述、被文档化、三个版本一次都没生效 ——
+  agent 照描述传参、读到自信输出，永远学不到那个旋钮被忽略了。
+  修法不是一删了事：`lotsSet`/`considerationsMode` 是**真词表**里的名字，真正的病是
+  `horaryJudgeOpts(school)` 只喂了四层口径链的第 1 层、`runElection(chart, topicId)` 干脆把 `opts`
+  整个丢了 —— 46 + 13 个真参数结构上不可达。**接线时把白名单锚到引擎自带的词表**
+  （`HORARY_PARAM_BY_KEY` / `ELECTION_PARAM_BY_KEY` / `BABYLON_SCHEMES`），不手抄会漂移的清单；
+  认不出的键回执在 `data.params_ignored`，不静默吞。发明的名字整批删。
+  守卫 = `verify_schema_knob_wiring.py`。
+
+- 🔴 **新守卫也要做负向对照，否则它只是更贵的装饰。** `verify_js_boundary_contracts.py` 第一版能抓
+  铁板的 `minute`，却抓不到 #15 自己的 `hour` —— 因为 #15 的字面量不在调用处，而在上一行的
+  `const four = {…}`，采集器只扫内联实参。**「守卫跑绿了」和「守卫能抓到它声称防的那个 bug」是两件事**；
+  后者必须用真 bug 注回去验证。同理，第一版生成器每次 regen 都会把手写豁免块冲掉，而 regen 恰恰是
+  修完调用点后的常规动作 —— 等于豁免永远活不过一次修复。
+
+- 🔴 **上游删掉的东西，下游也要跟着删。** `zuoShan` 上游已判定是「双重幽灵」（无流派声明 needs、
+  快照 builder 全文不消费）并删除，skill 侧还在 schema/service/JS 三处带着它，白白打散 memo 缓存。
+  同理 babylon 的 `era`/`scheme`：流派只当**标签**传，judge 层的 `dodecaVariant`/`cubitDeg` 一个没传，
+  于是无论选哪档十二分恒 B，而 [起盘信息] 行照常打出所选档名。
+
+- 🔴 **fork 首次贡献者的 PR，workflow 需维护者手动批准**（`action_required`），否则 CI 永远 pending，
+  看起来像「贡献者的代码跑不过」。另：本仓 Dependency graph 未开启，`dependency-review` 在**每个** PR
+  上都红，与 PR 内容无关 —— 判断 CI 时要先分清「这条红是不是每个 PR 都红」。
+
+### v0.33.0+ / 2026-08-29 — codex TOML 裸插值：Windows 路径的反斜杠打穿整个 config（main 连红两次）
+
+- **症状**：v0.33.0 发布 commit 起 main 上 `CI` 连红两次——`windows-smoke` 里
+  `tests/test_client_config.py` 三条全炸：`tomllib.TOMLDecodeError: Unescaped '\' in a string`
+  + 两条 `--write` exit 1；Linux `test` job 与 CodeQL 恒绿。不只是测试红：Windows 用户跑
+  `client config --format codex` 拿到的 `toml_stdio` 就是**非法 TOML**，`--write` 也因 tomlkit
+  解析失败而拒绝写入——新功能在 Windows 上整个不可用。
+- **根因**：`cli.py` 的 codex 片段里 `command = \"{stdio_command[0]}\"` 是**裸 f-string 插值**进
+  TOML 基本字符串；Windows 的 `C:\Users\…` 反斜杠在 TOML 里是转义引导符 → 整文件不可解析。
+  同块的 `args`/`cwd` 都走了 `json.dumps`（JSON 转义 ⊂ TOML 基本字符串转义，天然兼容），
+  唯独 `command` 手写引号。mac/Linux 路径无反斜杠 → 维护机与 Linux CI 恒绿，windows-smoke
+  是唯一能红的地方（v0.25.0「维护机形状 ≠ CI 形状”教训的路径分隔符变体）。
+- **修复**：`command` 改走 `json.dumps`，与 args/cwd 同惯用法（一行 + 注释）。全仓 sweep 确认
+  无兄弟病灶（其余 client 格式全是 dict→`json.dumps`）。真机抽验：本机 `C:\Users\…` 路径下
+  `toml_stdio`/`toml_http` 均可被 tomllib round-trip。
+- **守卫**：既有 `tests/test_client_config.py`（v0.33.0 III-6 新增）就是逮住它的那把——CI 红得
+  完全正确，说明"五格式零测试"补的这层真在工作；无需新守卫，修代码即可。
+- **法则（蒸馏进 AGENTS §9）**：凡把路径/用户值序列化进配置文本（TOML/JSON/YAML/deep-link），
+  一律走该格式的序列化器（`json.dumps` / tomlkit / `quote`），**禁裸 f-string 插值**——
+  「本地能解析」不算证据，Windows 反斜杠路径才是判据。
+
+### v0.33.0 / 2026-08 — 功能大扩容（93→97）+ 成熟度升级：四个现场踩坑 + 一批排除判定
+
+本轮双主线（收割未接入端点 + Codex 标尺工程成熟度）落地：tianxing explainAt、qizhengelection、
+india_rectify、planet_cycles、jieqi_birth、persiandirected 指定日期盘、extrareturns 年表、acg 落点/
+事件、cetian 判词库、wangji 心易三法、geomancy 十六卦目录、古典参数 30 键 typed 化、/healthz 探针、
+SQLite 分类恢复、env 旗标 warn-and-ignore、澄清闸策略即数据、记忆点用记账/prune、hermetic 评测、
+codex --write 拆雷、.agents/skills 镜像。现场教训四条：
+
+1. 🔴 **`TOOL_EXPORT_TECHNIQUE_MAP` 漏登记 = bench 静默不覆盖。** 症状：批 I 四个新工具功能全绿
+   （契约 missing/unknown 空、live 实产），bench 生成 case 却只 +1。根因：README 承诺的「新增技法
+   自动获得用例」由 `generate_tool_cases()` 兑现，它遍历的是 `TOOL_EXPORT_TECHNIQUE_MAP`——而新
+   runner 都自己调 `_augment_export_payload`，不经过这张表也一切正常，于是没有任何信号提示入表。
+   守卫：`test_every_business_tool_is_in_export_technique_map`（工具 − 表 = 显式非业务四件）；
+   §5 布线清单 +第 12 步。
+2. **exports registry 同字典重复键第二次踩**（v13 首踩 cetian/astrochart_like，本轮 extrareturns 条件
+   段被后写键静默覆盖）。两个新事实：①旧守卫只扫**顶层 `ast.Assign`**，本可抓到却因我用 `-k` 分批跑
+   测试而没被触发——守卫只在全量套件里兜底，**每批提交前必须全量跑 offline**（本轮全批照做后再未漏）；
+   ②守卫本体已扩 `ast.walk` 全量（嵌套 dict/AnnAssign 位置同防）。另附带：用 regex 从「提及目标字典名
+   的注释」处起段做文本编辑，会把条目插进后面**任意**同名键的字典——锚定真赋值行，改完必跑
+   `test_export_tools` 全量。
+3. **`_unwrap_result` 连剥小写 `result` 键。** `/wangji/xinyi` 返回 `{method, result:{卦面}, sections}`，
+   经 `_call_remote` 后 `sections` 整个消失——unwrap 循环对 `Result`/`result` 都剥（至多 4 层）。新端点
+   接入时凡响应含这两个键名，先想清剥壳后拿到的是什么；runner 按剥后形状消费（离线桩发全信封，
+   两侧形状一致）。
+4. **测试期望值不等于真值。** selfcheck 金标里我手写的 `08未51`（处女镜像地支）与 `摩羯`（2020 木土
+   大合相落宫）都是错的，渲染器是对的（处女↔巳；合相在宝瓶 0°29′）——金标的期望值必须从权威来源
+   （上游表/天文事实）核过再写，测试红先怀疑期望值。
+
+**排除判定入册**（主线 I 收割时逐端点核）：`/predict/pd3d`、`/chart3d/state`、`/planetarium/*` ——
+3D/实景渲染场景数据（three.js 场景态/贴图坐标），无文本语义，UI-only 排除，与 fengshui 同性质；
+`/jdn/*`、`/calc/*` —— 儒略日/角度换算器，价值低，defer（不计缺口，将来要做随手可加）。
+`/qizheng/moira` 排除维持（qizhengelection 的升殿失垣列因此如实不产，见工具 guidance）。【v0.36.0 更正：`/qizheng/moira` 是 Java 聚合层路由，当年拿 Python chart 服务测的 500——C1 已接活，三段落地，见本轮台账。】
+
+### v0.32.0 玄史知识库接入 —— runtime 里躺了 66MB 只读库，skill 层零调用
+
+- **上游能力不只在导出面。** `/xuanshi/*` 26 个只读端点（7900+ 玄学事件 / 27000+ 史书天象 / 人物图 /
+  编辑层）随 runtime 分发已久（editorial.sqlite 66MB 就在 astropy/astrostudy/xuanshi/data/、服务挂载表
+  里一直有 /xuanshi），但它不在 aiExport 导出面上，所以段级/镜像守卫**永远不会报它**——「上游有什么
+  我们没接」的普查必须包含 websrv 端点清单 vs `_PYTHON_CHART_ENDPOINTS` 的差集，不能只看导出键。
+- **jsonpickle 直吐的端点可能返回裸数组**（/xuanshi/search、timeline 下钻等）。`_call_remote` 的
+  dict 硬约束会把它判成 `transport.invalid_result_shape`——放行必须**按端点前缀圈死**（仅 /xuanshi/*
+  包成 {items: […]}），其余端点维持硬约束，形状漂移要炸出来。
+- **端点登记守卫只认 `_call_remote("字面量")`。** 分发表形态（action → 端点全路径存表、调用处传变量）
+  的字面量在表里不在调用点——守卫要加一条对应的采集规则（本轮给 test_endpoint_registry 加了
+  `/xuanshi/[a-z_]+` 字面量扫描），否则 26 个端点全被判成死项。
+- 新工具布线在本仓已是**九件套**：schema + ToolDefinition + runner/分派 + 端点白名单 + 导出注册
+  （skill-only 键还要进 mirror 白名单）+ guidance（含 PREFLIGHT_EXEMPT，检索类工具无出生盘闸）+
+  router 关键词 + technique_provenance 条目 + 样例载荷/FakeClient 桩。bench case 与 server
+  instructions 计数由锁步守卫自动拦，文档计数由 docs-sync 拦（本轮它逐处点名了 banner.svg /
+  CLAUDE.md / AGENTS.md / 徽章 / 自检行 / 导出技法数 / bench 数——共 12 处，一处不落）。
+
+### v0.31.0 重同步 v3.9.5 —— 版本常量锁步被证伪 + 三种 require 形态 + caller 旧于依赖
+
+- **🔴 `AI_EXPORT_SETTINGS_VERSION` 锁步不可信。** 上游 v3.9.5 给 `horary` 导出段 19 → 28（+9 段），
+  **版本常量原地不动仍是 56**。后果：`verify_export_contract_mirror.py`（只比版本号 + key 集合，且只读
+  vendored 镜像）全绿穿透；`verify_export_section_baseline.py` 默认 `--source vendored` 也绿——那是拿
+  自己的旧镜像对账，同义反复。**权威判据只有两个**：`verify_upstream_sync.py --require-upstream`
+  （sentinel sha256）与段级棘轮的 `--source upstream --require-upstream` 形态（`preflight_release.py`
+  在跑的就是它）。日常手跑判断同步健康，必须用后一形态，裸跑默认参数会在这类失败上恒绿。
+- **上游 require 有三种形态，逐形态踩齐才算修完**：①语句形 `const {X} = require('…')`（v0.25 已处理）
+  ②**表达式形** `require('./x').prop`（ZiWeiHelper 的 `require('./ziweiOptions').ZWEngineOptions.kuiYue`，
+  语句正则抓不到，ESM 运行到即 ReferenceError；改写=hoist 成命名空间 import + 表达式处换别名。该规则
+  顺带抓出 dignities.js / hellenisticData.js 两处同病）③同符号 require **多次**（topicModule 的
+  DIR_BY_ELEMENT ×2）→ hoist 队列内也要去重，否则 `Identifier already declared`。另一坑同族：hoist 的
+  **插入点必须按完整语句匹配**——按单行匹配时多行 `import {…\n…} from` 块的首行也命中，「最后一条
+  import 之后」会落进块中间把它劈成两截（lifespanEngine 实测 SyntaxError）。
+- **「caller 旧于 vendored 依赖」是手工抽取件的专属漂移形态。** 本轮 `ZiWeiHelper.js`/`ziweiOptions.js`
+  机械重灌后已是新版（effLayerSihuaGan / xiaoxianClockwise / 各流派开关全在），但手工抽取的 caller
+  （zwLuckItems 4 函数 / ziweiExtras.formatLuckLayerLines / JinKouSnapshot.buildJinKouSnapshotText）
+  还是旧文本——能力在场但不可达，其中 `birthYearOf` 缺 `ganzhiYearBase` 是 v3.9.4 修的**真值错误**
+  （流年归属可能错年）。规矩：每轮重灌 vendor 树后，把 `contracts/vendor_manifest.json` 里 mode 为
+  bespoke/curated 的条目**逐一与上游现函数对文本**，机械 `--from-manifest` 不覆盖它们。
+- **上游后端的「param error」可能是本仓载荷的锅**：`/chart` 的 params 回显块无守卫读 `data['hsys']`
+  （上游前端恒发 hsys，从他们视角没毛病）。`HoraryInput` v0.24 typed 化时把 hsys 覆写成 None 默认
+  （「随流派档」），归一化剥掉 None → 缺键 KeyError。此前一直误判为「vendored 实例拒绝载荷、改前即
+  如此」并绕道 JS 层直验——**其实是真 bug，线上任何 python chart 后端上 horary 全挂**。修=调用侧补
+  PerChart 默认 0。教训：typed 化把父类有默认值的字段改成 None 默认时，要查每个直调后端的工具是否
+  依赖那个默认值。
+- **saturnExalt20 已删档**（上游 2026-08-18 拍板：degree 位全仓零消费者=真死开关，
+  `push_request_exalt_variants` 签名 2→1 参）。本仓 typed 字段同步删除；`nodeExaltation` 保留。
+
+### v0.28.0 / 2026-08-17 — v3.9.2/v3.9.3 同步轮的四条 + 首个「AI 层」批次的三条
+
+**同步侧（缺口小了，说明守卫在做功；坑换了形态）。**
+
+1. **上游在你同步时还在动。** v3.9.2 同步做到一半，上游又发 v3.9.3 + 两个 commit——`--write-state`
+   记录点必须追 HEAD 而不是停在「我开工时的版本」，否则 provenance 一写完就是陈旧的。
+2. **skill-only 键的 lost 检查会自锁。** 上游把 `generic` 从 preset 键降为运行时兜底后，check 1b 的
+   lost 方向红 → `--write-state` 拒写 → recorded 永含旧键 → 永远红。修：lost 集减去 mirror 守卫的
+   DIVERGENCE_WHITELIST（skill-only 键从来不镜像上游，撤它不构成 retirement），降为 notice。
+3. **「聚合导出子源标签」是新段形态。** calendar 的 农历/老黄历/日子馆 三段是整行【X】来源分界、
+   非内容段（上游 [E-6]）——必须进 preset（否则用户自定义段时标签行被过滤删除），但 body 为空是
+   正常形态。别按内容段的「空即缺」直觉处理。
+4. **评测器必须对任意信封形状稳健。** bench 评测器踩 `{"technique": None}` 的 `None.get` 连崩两轮
+   ——失败信封的 data 可以带 export_snapshot=None。评测器崩 = 整轮 bench 白跑，比单 case 红严重
+   得多；一律 `(x or {})` 边界。
+
+**AI 层批次（B1/B2/B3——「会算」之上的第一层）。**
+
+5. **HelpDoc 是被埋没的知识资产。** 上游 30+ 份方法论手册（每个设置的取值与差别、流派分歧、
+   算法口径）只活在桌面端帮助页里——正是 AI 解读最缺的口径知识。收割成知识包（21 域/177 条，
+   逐条带 组件文件+tab+上游版本 出处），`knowledge_read` 通用分支零代码扩域。
+   生成器幂等纪律：generated_at 取上游 commit 时间，不取 now()。
+6. **忠实性校验可以完全确定性。** 导出契约是机读真值 → 「AI 是否编造盘面」不需要 LLM 判官：
+   槽位断言（四柱/落座/身宫/三传）逐值比对，裸值断言对快照词元全集查存在性。词元切分要取
+   CJK 连续串的**全部 2-4 字子串**——贪婪切词会把「食神制杀」吃掉「食神」。
+7. **合参的护栏在模板里，不在提示里。** `horosa_hecan` 产模板不产终稿：结论槽必须留白
+   （预填即伪造）、证据是指针不是全文（响应不背 N 份快照）、「分歧必须披露不许平均」写进
+   synthesis_contract.instructions 而不是靠 SKILL.md 的自觉。
+
+### v0.27.0+ / 2026-08-13 — 发布后制度化批次：口头注意点不收进机器，下一轮还会原样再犯
+
+**背景。** v0.27.0 发布过程里暴露了五件「说过、但没有任何机制拦」的事，当场逐件收进机器。
+横切法则：**对话里的注意点 = 还没发生的复发**——能写成断言/脚本的，当场写；只能写成文档的，
+问一句「哪个 runner 会读到它」。
+
+1. **live 曾打到默认端口上的另一棵树。** 审计中途从默认 `:8899` 的服务读过段名，事后靠 lsof
+   才发现那个实例根本不是本仓的树（来源、版本全不可知），数据当场弃用重推。旧规则「live 必须打
+   vendored 实例」只是 §8 的文字。守卫：① live 门禁改为**只认显式 env**——
+   `HOROSA_CHART_SERVER_ROOT`/`HOROSA_SERVER_ROOT` 未设一律 skip，且短路在探针左侧，
+   **连 TCP 都不碰默认端口**；② 起法收进 `scripts/start_vendored_instance.sh`
+   （三段 PYTHONPATH + 内嵌解释器 + failed=0 判据 + 不达标自动回收），停法
+   `stop_vendored_instance.sh` 只按 pidfile PID。回归：`test_guard_wiring.py` 断言短路形状与两纪律。
+2. **git 身份没配，发布 commit 作者串成 `…@主机名.local`。** git 只在 commit 那一刻才猜，全程无
+   提示，GitHub 不归属任何账号，要 amend 才能救。守卫：`preflight_release.py::identity_problems`
+   （纯函数，直接测），name/email 未配或 email 以 `.local` 结尾 → 阻断。
+3. **main 滞留只有文档没有闸。** v0.27.0 写进了 §7 文字；本批把它变成 preflight 的
+   `git_gate_failures()`：fetch 后 `HEAD..origin/main` 非空 → 阻断（离线 fetch 失败只警告）。
+   **该闸首跑当天就抓到构建机补 Windows 半边时推的一个 commit** —— 不是假想敌。
+4. **SBOM 生成器一直在仓里，发布时却漏传了。** `generate_sbom.py` 不在任何发布脚本的调用链上，
+   v0.27.0 首发的资产列表少了它，靠人对比 v0.26.1 才发现（「守卫挂在什么都不跑的地方」的资产版）。
+   守卫：mac 半边发布收进 `scripts/publish_darwin_release.sh`（SBOM 是显式步骤；无 `--publish`
+   不上传）；`release-completeness.yml` 新增 SBOM 资产断言。发布步骤从此只允许以脚本形态存在。
+5. **算源生成器躺在 scratchpad（会随会话蒸发）。** 契约可再生 ⇒ 生成器必须入仓：
+   `scripts/gen_technique_provenance.py`（仓内相对路径，输出与在册契约逐字节幂等）。
+   §5 布线清单补第 11 步「算源声明」。
+6. **附带小坑：`json.dumps` 重写 package-lock 会把非 ASCII 转义成 `\uXXXX`**，下次 `npm install`
+   按 npm 规范写回真 UTF-8，凭空造一个与版本无关的噪音 diff。规则（§7）：lock 只许字符串替换
+   两处版本串，禁整文件 json 往返。
+
+### v0.27.0 / 2026-08-13 — 目录 mtime 判源树新旧会误判（Windows 侧补半）
+
+- **症状**：v0.27.0（上游 v3.9.1 全量同步，92 工具）以 **darwin-only** 发布，守卫自发布起连红三次。
+  Windows 侧补半时按当时 AGENTS 的规则「核 astropy / dist-file mtime 新于目标版」判源树新鲜度——
+  workspace 的 `astropy/` 顶层 mtime 停在 **07-03**，比 08-13 的目标版旧一个月，按该规则应判「源树陈旧、
+  不能构建」。
+- **根因**：目录 mtime 只在**直接子项增删**时更新，嵌套深处的文件更新不冒泡到顶层目录。该 astropy 树
+  实际已是上游 v3.9.1（`vendor/kin_year_domain.py`、`astropy/astrostudy/geomancy/data/ifa_odu.json` 俱在，
+  `electionscan`/`chart12`/`ephemeris`/`draconic` 四个新端点都 grep 得到）。**规则本身是错的**，
+  照做会白白拒掉一次可行的构建、或反过来给陈旧树发绿灯（mtime 可被无关操作 touch 新）。
+- **守卫/现行规则**：AGENTS §7 改为**按内容判**三条判据（本版新增的 `require_path`/`REQUIRED_ENTRIES`
+  目标文件是否存在 → 新端点名是否 grep 得到 `astropy/websrv` → 构建后 native-verify 这些端点是否回真数据），
+  明确「不看目录 mtime」。机器守卫侧本已覆盖大半：builder 的 `require_path` 拦缺文件、
+  `verify_runtime_release.py` 的 `REQUIRED_ENTRIES` 拦缺 payload 项（本版新增
+  `kin_year_domain.py` + `ifa_odu.json` 两项即由它把关）；端点级新鲜度无法静态断言，由 native-verify 兜底。
+- **本轮验证留痕**：BC −500 与 2400 年 qimen 均 `rc=0`（缺 `kin_year_domain.py` 会 500）；
+  geomancy 响应体从旧版 ~86KB 涨到 **210KB**（`ifa_odu.json` 生效，v3.5.1 地占大改版）；
+  `/astroextra/ephemeris`、`/astroextra/draconic` 回真数据；两个启动器带 UTF-8 BOM 通过新 zip 级 BOM 闸。
+- 注：协议第 3 件（CHANGELOG）仍不可执行——树内无 `CHANGELOG.md`（同前条）。
+
+### v0.27.0 / 2026-08-13 — 落后上游 4 个 release 而四把守卫全绿：盲区在「根级文件」和「单向键差」
+
+**症状。** 例行「还有什么没同步」审计，结果不是零星缺口：本仓 vendored 树停在上游 `f8275b3`(v3.7.3)，
+而上游 HEAD 是 `44a1c9b`(v3.9.1)，中间 381 文件 / +220,597 行；导出契约上游已 v55、本仓镜像基线写 50；
+多了一个**整技法** `lingqi`（灵棋经）和 **56 个新段**。CI 全绿，四把守卫也全绿。
+
+**根因（三个互相独立的盲区，任何一个单独存在都足以让这次同步继续隐形）。**
+
+1. 🔴 **`verify_upstream_sync` check 2b 静默丢掉所有「上游新增的根级文件」。**
+   `vendored_tops = {n.split("/",1)[0] for n in vendored_files}` 对根级文件 `foo.py` 求出的 top 就是
+   文件名自己，于是上游新增的根级文件永远匹配不上任何已 vendor 的顶层目录 → 整类丢弃；配套的
+   「新增顶层目录」检查又要求 `"/" in n`，两头都漏。实测让 **6 个引擎模块 / 5,512 行**
+   （`cetian_yiyu{,_data,_texts}.py`、`wuzhao_{classics,duanci,leizhan}.py`）对**所有**守卫隐形。
+   这正是 check 2b 当初要堵的那一类失效（v0.26.0 的 `kintaiyi/jieqi.py`），只是高了一个目录层级——
+   **堵漏时要问「同样的错还能在别的层级上犯一次吗」**。
+2. **`verify_export_contract_mirror` 是单向的。** 它只断言 `skill_keys ⊆ upstream_keys`，所以只能抓
+   改名/删除，**结构上抓不到新增技法**——哪怕 vendored 树是全新的，`lingqi` 也永远不会让它变红。
+3. **两条跨树闸在 CI 上是零断言。** `ci.yml` 调它们时不带 `--require-upstream` / `--source upstream`
+   （因为 GitHub runner 上既没有 gitignored 的 vendored 树也没有上游 checkout）。这本身是诚实的设计，
+   但意味着「PR 全绿」对跨树漂移**什么都没说**——真闸只在维护机的 `preflight_release.py` 里。
+
+**另外三条本轮现场踩到的。**
+
+- **`--require-upstream --write-state` 自锁**：provenance 陈旧时 check 4 先 raise，而写记录的代码块在
+  raise 之后 —— 那句「re-record with --write-state」在它自己的参数组合下永远做不到。而 preflight 用的
+  正是这个组合，也就是说「刚重同步到新上游」这个**最常见**的发布前状态必然卡住。
+- **无上游时那句 `state current`**：它只知道「常量自上次核对以来没动过」，却印成「当前」。落后 4 个
+  release 时它照样这么印。能断言什么就只说什么。
+- **`SKILL_ONLY_KEYS` 写错一个键 = 一个永久盲区**：`astrochart_like` 被列为 skill-only 而上游确有该
+  preset，于是它的 `占星地图` 缺失**从未被任何一版欠账计入**。
+- **Python 字典重复字面量键静默吞掉前一份**：给 v13 补段时在 `AI_EXPORT_OPTIONAL_SECTIONS` 里为
+  `cetian`/`astrochart_like` 各写了第二个同名键，解释器不报错，前一份 list 直接消失，症状是
+  「明明加了 optional 段，missing 里还在报」。
+
+**守卫。** ① check 2b 拆出 `missing_upstream_files()`，按每棵树的**同步口径**（`whole` 整棵 rsync /
+`per-dir` 逐目录+点名根级文件）分别判缺失，根级文件不再被丢；kinastro 专属排除也从全局收窄到单树。
+② mirror 守卫补 `upstream_keys − skill_keys` 反向检查 + `UPSTREAM_ONLY_LEDGER`（要跳过必须写理由）。
+③ 新增 `tests/test_guard_wiring.py`：**每个 `verify_*.py` 都必须被某个 runner 调用**——它当场抓到了
+本轮新写的 `verify_technique_provenance.py` 还没挂进 CI/preflight。④ staleness 在 `--write-state`
+在场时降级为 notice。⑤ FAIL 输出带总数 + `--full`，截断不再掩盖规模（56 条和 16 条曾长得一模一样）。
+⑥ registry 重复键守卫进 `tests/test_export_tools.py`。
+
+### v0.27.0 / 2026-08-13 — `execution` 不是算源：技法依据卡要是照它写，会系统性说错「谁算的」
+
+**症状。** 要给每次输出附一张「这盘怎么来的」卡片时，发现代码里唯一能机读的算源线索是
+`ToolDefinition.execution`（`local`/`remote`），而 AGENTS §4 的「工具算源普查」只是**散文**。
+
+**根因。** `execution` 说的是「runner 在哪跑」，不是「谁算的」：`qimen` 是 `execution="local"`，
+整盘却由 ken 后端算（JS 只格式化）。照它写卡片，会给 3 个 ken 技法、14 个神数技法**一致地印错**。
+
+**守卫。** `contracts/technique_provenance.json`（七分类逐工具声明）+ `verify_technique_provenance.py`：
+覆盖率（新增技法不声明算源即红，补上 §5 布线清单缺的一环）× ken 一致性（声明 ken 的必须真调过
+`_require_ken_pan`，反之亦然）× 算盘端点必须已登记 `_PYTHON_CHART_ENDPOINTS`。
+**运行期实测优先于声明**：卡片以 `pan.source`/`compute_sources` 为准，与声明不符时标
+`matches_declaration: false` —— ken 端点失败也回 HTTP 200，静默回退本地脚手架正是这个形状。
+
+### v0.27.0 / 2026-08-13 — 一台机器的修复可以无声滞留：`main` 没有 upstream tracking
+
+**症状。** 另一台机器把「9999 不是 no.register.app 的同义词」修复推到了 `origin/main`，本地 `main`
+落后一个 commit 一周多，无人察觉。
+
+**根因。** `git config branch.main.remote` / `.merge` 都是空的 —— 没有 upstream tracking，
+`git status` 永远不显示 `behind 1`，只显示一句干净的 `## main`。
+
+**守卫。** `git branch -u origin/main`；发布前检查加一条「`git log main..origin/main` 必须为空」。
+
+### v0.26.1+ / 2026-08-06 — 反误诊的提示自己成了误诊源：9999 不是 no.register.app 的同义词
+
+- **背景**：v0.26.1 为终结「HTTP 500 一句话看不出所以然」，给 `HorosaApiClient` 加了
+  `_JAVA_RESULT_CODE_HINTS`，把 `200001`→参数错误、`9999`→「app 注册没读到（在 MongoDB 里）」。
+  方向完全正确，**但 9999 的映射按码值硬贴**。
+- **症状（Windows 构建机实测取证）**：同一台机器上，缺 `lat` 触发的上游字符串越界回的是
+  `{"ResultCode": 9999, "Result": "begin 1, end 3, length 1"}`——**不是** mac 侧看到的 200001。
+  于是错误消息变成「ResultCode 9999 (no.register.app) = app 注册没读到（注册信息在 MongoDB 里）」，
+  一个**参数 bug 被指去查 Mongo**。这正是本仓连着两轮在清的那类误诊，只是这次躲在「反误诊工具」里。
+- **根因**：`9999` 是 Java 聚合层的**通用失败码**，`no.register.app` 只是它的其中一种 `Result`。
+  按码值建映射 = 把「一种成因」当成「该码的定义」。
+- **fix/guard**：`9999` 必须再读 `Result` 原文——含 `no.register.app` 才给注册/Mongo 提示，否则给
+  中性提示（显式否掉「9999 == 注册问题」这个等式 + 指向 `Result` 原文 + 提醒先核 lon/lat 齐全）。
+  回归 `test_generic_9999_is_not_labelled_a_mongo_problem`：断言中性分支不出现 MongoDB、显式含
+  「不等于」、并指向 Result 与 lat。
+- **法则**：**错误码→成因的映射，凡该码可承载多种成因，必须按消息二次判别，认不出就保持中性。**
+  替用户断案的诊断比没有诊断更贵——没有诊断只是不知道，错误诊断会把人送去错误的方向排查几小时。
+  （同源教训：上一条「4 条 live 红被误判成无 Mongo」；两轮都栽在「把一种成因当定义」。）
+
+### v0.26.1 / 2026-08-05 — 「守卫全绿 + 测试全绿」的 v0.26.0 里躺着 16 个 bug
+
+v0.26.0 发布时七把守卫全绿、320 测试全过。发布**之后**做了一轮三路对抗性复审，查出 16 个真 bug，
+其中 5 类会让用户直接拿到错答案。**发布前跑一遍全绿 ≠ 没 bug** —— 复审要当成发布流程的一环，
+而不是出事之后才做的事。
+
+- 🔴 **「时好时坏」几乎总是缓存，不是环境。** 五个占时工具（xiaoliuren/feigong/xiaochengtu/guice/
+  zhengchuan）用 `payload.get("lat")` 取值而 schema 把 `lat` 列为可选 → 把 `lat: null` 发给要求
+  lon+lat 均非空的 `/nongli/time` → `200001 param error`（表现为一句无信息量的 HTTP 500）。
+  对照 qimen/taiyi 用 `payload["lat"]`（必填），从来不犯。
+  **它之所以被误诊成「本机无 Mongo」整整一个版本**：Java 的农历按**年**缓存，任何一次带 lat 的请求
+  都会焐热该年，此后同年无 lat 请求全部成功。决定性实验 = 同一 commit 下先对 1998 年发一次带 lat 的
+  请求，两个原本红的测试立刻转绿。**诊断这类问题务必换冷年份**，否则你在测一个自己刚焐热的缓存。
+  守卫 = `service.py::_require_cast_geo`；另把 Java 的 200001/9999 翻译成人能读的诊断
+  （`engine/client.py::_java_result_code_hint`）——此前 `HorosaApiClient.call` 从不看 ResultCode。
+
+- 🔴 **schema 声明了却没接线的字段，比没有更糟。** `TianxingInput` 继承 `BirthInput`，12 个古典口径
+  字段是顶层带描述的（agent 照 schema 传完全正确），而 `_run_tianxing_tool` 只读 `payload["options"]`
+  → 顶层写法被**静默丢弃**，用默认口径跑出不同结果、零报错。`siderealAyanamsa` 更糟：它不进请求
+  （后端回落 Lahiri），却照样印在 `[起盘信息]` 里 —— **输出主动声称了一个没被使用的设置**。
+  `precision` 则是纯死旋钮。判据很简单：**改这个参数，结果必须变**。实测 combustOrb 3 vs 17 现在
+  给出明显不同的区间（修前完全一样）。
+
+- 🔴 **只读 `snapshot_text` 不看 `data.ok`，会把失败伪造成一份正常导出。** tianxing.js 失败时返回
+  `{data:{ok:false}, snapshot_text:''}`；Python 拿到 None → `_augment_export_payload` 回落
+  `format_source: "generated_template"` → 产出一份拿 payload YAML 填出来的四段假导出，而 SKILL.md
+  要求 agent **只依据 export_text 解读**。stitch 那侧的 `or []` 同理把失败变成「零命中」。
+  凡是 JS 侧带 `ok` 的返回，一律走统一的检查入口（`_tianxing_js`）。
+
+- 🔴 **`x is not None` 当守卫用 = 解析失败即放行。** `_day_span` 解析不出来就返回 None，而
+  `if span is not None and span > max` 让 `'2026-08-05T00:00'` 这类形状**跳过整个上限**——JS 侧
+  wallToMs 却能解析它们，于是超长窗口一路跑到超时。倒置窗口得负数，`负数 > max` 恒 False 同样溜过。
+  **解析失败必须报错**。另外 tianxing 此前压根没接窗口上限（真正按段发 HTTP 的是它），5 年窗口
+  = 60 次串行扫描，>66 年时 `splitByMonth` 的 800 段 guard 耗尽会**丢掉最后一段**却仍报成完整搜索。
+
+- 🔴 **materialize 一批 regex match 再拿旧偏移切新字符串 = 毁文件。** `revendor_core_js.py` 三处犯这个：
+  两个孤儿 namespace import 就能把整个模块体切没（实测 `export function f` 消失）；两条
+  `export {…};` 产出 `export {export { q };` 语法错误；第 2 个及以后的孤儿具名 import 静默残留
+  （实测 JinKouCalc/TaiYiCalc 里就留着两条）。**边扫边改必须每轮重新搜索**（`_rewrite_inline_requires`
+  一开始就是对的，另三处照抄它即可）。同处还有 `"default" in match.group(0)` 的子串误判——
+  名单里出现 `defaultRules` 就把具名导出清单翻成 `export default`，所有 `import { x }` 全崩。
+  **head 要由「匹配到哪个 pattern」决定，不是子串。** vendor 树是 git 跟踪的，这些会直接进仓。
+
+- **「几处一致」不等于「数字是真的」。** README 五处齐刷刷写 320/63，CI 实测 318/65 —— 一致性守卫
+  全绿。一致性只能抓「改了一处忘了另一处」。真值那一半要能**够到源头**：现在断言
+  offline + live-skipped == `pytest --collect-only` 的收集总数（静态可得，秒级）。
+  同族的还有 README 宣称「Linux / macOS 单测」而仓里**零 macOS runner**，以及公开 README 从不提
+  「CI 不覆盖跨树上游校验」（AGENTS 和 ci.yml 注释都诚实，只有面向用户的那份不是）。
+
+- **测试门只探 TCP = 半死的后端会让该跳的测试跑起来然后红。** `_server_up` 只 connect，Java
+  「在听但每条业务路由都 500」照样 `RUNTIME_UP=True`。且四个打 `/nongli/time`（走 Java）的测试
+  标成了 `@requires_chart`。现在 Java 侧改成功能探针，且探 `/nongli/time` 而不是 `/common/time`
+  —— 后者正是那条「其余全死它还绿」的路由。⚠️ 顺序要紧：先修 lat bug 再改门，否则功能探针本身
+  会焐热年缓存、把 bug 盖住。
+
+- **文档里一条起服务命令，能让人把真 bug 误判成环境问题一整轮。** `horosa-dev/SKILL.md` 的
+  PYTHONPATH 少了 `Horosa-Web/vendor`（ken 与神数引擎都在那儿）且用裸 `python`（缺 9 个只装在内嵌
+  解释器里的依赖）。照它起服务，taiyi/jinkou/sanshiunited/wangji/taixuan/chunzi 全挂不上，
+  症状看着就是「这些技法坏了」。**判据 = 启动日志 `kentang prewarm ready (loaded=18, failed=0)`。**
+  经验：**当「环境问题」开始解释越来越多的失败时，先怀疑自己的复现命令。**
+
+### v0.26.0+ / 2026-08-05 — 守卫都对，却一条都不在 Windows 构建路径上（vendor 陈旧可静默出货）
+
+- **症状**：v0.26.0 补 Windows 半边前例行跑守卫，`verify_export_contract_mirror.py` 报
+  `tianxing`/`qimenzeri` 不在 vendored 上游键表——本机 `vendor/runtime-source` 停在 08-01，
+  而 v0.26.0 的引擎树已对齐上游 v3.7.x（含**会改变既有输出**的六壬三传勘正）。
+  **若照常构建**：Windows 用户拿到的引擎落后一整轮同步，且 `verify_runtime_release.py` 只查
+  文件在不在、照样全绿放行。
+- **根因（两层）**：① `vendor/runtime-source` 是 **gitignored 本地构建输入**——`git pull` 到发布
+  commit 不会刷新它，仓库层面看不出陈旧；② 两把新鲜度守卫**只挂在 `release.yml`**，而 Windows 半边
+  恰恰是唯一**不走 CI**、在本机 off-CI 构建的产物——**守卫没长在会踩的那条路上等于没有守卫**。
+  连带确认上一条台账的「只加键纪律」在这里同样致命：`verify_vendor_runtime_sources.py` 的
+  `AI_EXPORT_SETTINGS_VERSION == 50` 恒等**在陈旧树上照样绿**（上游加键不 bump 版本），
+  唯一能判红的是 mirror 的**逐键覆盖**——所以两把必须都跑，缺一个就漏。
+- **guard**：`sync_windows_release.py` 新增 `preflight_vendor_sources()`，在**调用 builder 之前**
+  依次跑两把守卫，任一红即 `SystemExit` 并给出重灌指引（拒绝构建，而不是构建完再说）。
+  回归 `tests/test_sync_windows_release.py`：两把都被调用 / 任一红都拒绝 / **preflight 必须早于
+  builder**（顺序断言——闸开在 builder 之后等于没开）。
+- **法则**：新增任何「只在 CI 跑」的守卫时，问一句**这条路径 CI 走得到吗**；Windows/离线 runtime
+  这类 off-CI 产物必须在其**本机入口脚本**里复跑同一把守卫。
+
+- 🔴 **那 4 条 live 红被误判成「本机无 Mongo」整整几个版本——实测是另一回事。**
+  台账/交接口径一直说：本机 live 全套必有 4 红（`xiaoliuren` / `feigong` / `zhengchuan`×2），因为无
+  Mongo 时 Java 侧一律 `no.register.app.in.sys`，「环境限制而非代码问题」。**本轮逐一实测推翻**：
+  ① 经 skill 正规路径（`_call_remote`，带 app 注册归一化）打 Java **是通的**——`doctor issues: []`、
+  两端点 reachable、382 条 live 用例通过，其中大量走 Java；② 这 4 条报的是
+  `ResultCode 9999 / "begin 1, end 3, length 1"`（上游 `substring(1,3)` 打在长度 1 的串上），
+  **与 `no.register.app.in.sys` 是两个完全不同的错**；③ 实测矩阵定位触发条件是「**日期 × 缺 `lat`**」
+  的组合，不是单一因素：
+  | 载荷 | 结果 |
+  | --- | --- |
+  | `2028-04-06` + 仅 lon | ok |
+  | `2028-04-06` + lon&lat | ok |
+  | `2026-05-20` + 仅 lon | **500 / begin 1, end 3, length 1** |
+  | `2026-05-20` + lon&lat | ok |
+  给这 4 条测试的载荷补上 `lat` 即全绿。**结论**：这不是 Mongo/环境问题，是上游对某些
+  「日期+无纬度」组合的输入处理崩溃，skill 侧原样透传成不透明 HTTP 500。
+  **未决**：上游真因需在有上游源码的机器上定位（本仓对上游只读）；skill 侧该「先问 lat」还是
+  「转结构化错误」待定，故本轮**只纠正判据、不改代码**。
+  **法则**：「已知非回归」这类豁免必须挂在**可复现的判据**上（此处 = 错误串 + 复现矩阵），
+  不能挂在测试名单上——名单会把后来的真 bug 一起豁免掉。裸 HTTP 探针在本机不可用
+  （无 Mongo 注册，任何形状都回 `no.register.app.in.sys`），**判据一律取 skill 正规路径的结果**。
+
+- 🔴 **五个 stamper 可以「一致地错」——N 路互证够不到源头常量**（同轮补 Windows 半边时发现）。
+  **症状**：装完新构建的 v0.26.0 runtime，内嵌 manifest 写 `export_registry_version: 11`，而
+  v0.26.0 的择日提交已把 `AI_EXPORT_SETTINGS_VERSION` 11→12。**根因**：`verify_builder_parity.py`
+  的 `SHARED_MANIFEST_CONSTANTS` 只做 **stamper 之间**的 N 路交叉断言——五个 stamper 全停在 11 时
+  它们彼此完全一致，守卫必绿。这是 v0.16.1（mac 单边 6→7）那条教训的**镜像面**：当年怕的是「有人漏
+  bump 一个」，这次是「**没人 bump 任何一个**」，同一把守卫对后者天然失明。
+  **实证**：v0.22.0~v0.25.0 两数恒等（10=10、11=11×3），v0.26.0 首次分叉。
+  **guard**：`ANCHORED_CONSTANTS` —— `export_registry_version` 锚定到
+  `exports/registry.py::AI_EXPORT_SETTINGS_VERSION`（源码解析），五个 stamper 必须同时等于它。
+  加完先跑一遍**确认它对本次真漂移判红**（五个都报 lagging），再 bump 到 12 转绿；
+  `tests/test_verify_builder_parity.py` 用假 registry 常量钉死锚定生效。
+  **法则**：交叉断言只证明「彼此一致」；凡有**源码里的权威常量**，守卫必须锚到它，否则一致地错=绿。
+  **本次处置**：v0.26.0 的 darwin 半边已发布且 stamp 11，故 Windows 半边**照 11 出货**（同版内两平台
+  一致优先——该字段无运行时消费方，只是元数据）；stamper 已改 12，v0.27.0 起两边都对。
+
+### v0.26.0 / 2026-08-04 — 上游 v3.7.x 同步：三个**机制**缺口比内容缺口更贵
+
+本轮真正的发现不是「少了两个技法」，而是**四把守卫全绿的情况下少了两个技法**。内容一天补完，
+机制缺口不堵会以同样的形状再来一次。
+
+- 🔴 **上游会「只加技法键、不动版本闸」——版本恒等永远测不出新技法。**
+  上游 `aiExport.js:306` 把纪律写死了：「新技法键只加键、两把版本闸恒不动——老用户本无自定义走
+  preset 全量」。那是针对 localStorage **迁移闸**的正确纪律，但下游拿版本号当「上游有没有变」的
+  探针就此失效：`tianxing`(v3.7.0) 与 `qimenzeri`(v3.7.1) 都在 `AI_EXPORT_SETTINGS_VERSION = 50`
+  不变的情况下到货。
+  → 唯一可能的信号是**技法键集合差分**。`verify_upstream_sync.py` 新增 check 1b，把上游 preset 键集
+  与 `contracts/upstream_provenance.json` 记录的键集相比，报「upstream gained N technique key(s): …」。
+  两个方向的基线**不同**：gained 要并上「skill 已登记的键」（登记即已处理，让检查在登记后自愈），
+  lost 只能对着 recorded（skill 合法持有 `acg`/`astrodata`/`wangji` 这些上游无对应的键，并进去必误报）。
+
+- 🔴 **`_upstream_preset.py` 看不见对象字面量之外的 preset 条目 —— 20 段整键隐形。**
+  上游 `AI_EXPORT_PRESET_SECTIONS.qimenzeri = [...AI_EXPORT_PRESET_SECTIONS.qimen, …]`
+  写在字面量**闭合之后**（aiExport.js:735）。`_object_block` 只做花括号匹配，于是整个 `qimenzeri`
+  从未进入解析结果——段级欠账棘轮一边报「0 absent keys」，一边漏着一个 20 段的技法。
+  这是该 docstring 已记的两个陷阱（注释里引段名 / `...JIEQI_SETTING_PRESETS` spread）的**同族第三个**。
+  → 补一趟成员赋值扫描，且必须跑在字面量+spread 之后（它的 spread 要对着已解析的 `qimen` 求值），
+  token 按**源码顺序**走，spread 段与字面段才能正确交织。`tests/test_upstream_preset_parser.py` 钉死。
+
+- 🔴 **`revendor_core_js.py` 的落地路径靠猜，会分叉出重复树。**
+  它按上游父目录名推断 vendor 子目录，但本树是按技法分目录的：`utils/balbillus.js` 的真身在
+  `vendor/astroextra/`。实测不带 `--vendor-subdir` 驱动全树，会造出 `vendor/utils/balbillus.js`
+  与真身并存，且 relocate 还会把别的文件的 import 指回**新造的那棵**。
+  → `contracts/vendor_manifest.json`：显式 upstream↔vendor 路径对 + 声明式偏离（`stub_import` /
+  `import_redirect`），三种 mode（verbatim / curated / bespoke）各有可断言的判据。此后
+  `--from-manifest --check` 全树 `unchanged` 就是「已同步」的机械结论，不再靠考古。
+
+- 🔴 **`--write-state` 在守卫失败时照写 —— 把失败洗成一条持久的「已核对」声明。**
+  写入在 `:145`、失败 raise 在 `:162`。本轮实测复现：sync 脚本跑完守卫 FAIL，`vendor_sync_state.json`
+  仍被写成「最近一次核对过的上游状态」。**红着写比不写更糟**——没有记录只是不知道，错误记录是被骗。
+  → 写入移到 raise 之后，并由 `tests/test_verify_upstream_sync.py` 断言源码顺序。
+
+- **裸 sha256 对未变换的上游比对，注定永远红。** vendored 文件个个带 headless 变换，raw 比对报 133/257
+  漂移，其中大半是变换本身。**永远红的检查等于没有检查**——人会学会略过它。
+  → check 3 改用 manifest 作 oracle：按声明的偏离重渲染上游，再比对。可达到的绿才是有意义的绿。
+
+- **中文措辞躲过了英文正则。** `verify_docs_sync` 只认 `badge/tools-(\d+)-`；中文 README 用
+  `badge/技法-83-`，于是在注册表已到 89 时陈旧了整整一个版本，**同一行的 `alt="89 tools"` 就在旁边**。
+  同类漏网还有 `manifest.json`、`banner.svg`、以及**发给每个 MCP 客户端**的 `_SERVER_INSTRUCTIONS`
+  （两处 83，此前无任何守卫读它）。旧闸报 0 处，新闸一次报出 16 处。
+  → 教训不是「数字写错了」，而是**守卫的覆盖面被措辞的偶然决定**。计数检查一律做成语言无关，
+  并对「同一行 badge 与 alt 自相矛盾」单独设断言——那种自相矛盾任何时候都是 bug。
+
+- **上游工作树是活的。** 本轮进行中上游连提交两次（`afdac78` → `8fe5771` 二十八宿六处算法勘误
+  → `23aa38e`），中途还出现过未提交的 WIP。守卫按**磁盘文件**比对，于是别人的未提交编辑会读成
+  「上游漂移」，而照着 re-vendor 等于把**未评审的半成品**打进发布物；provenance 记的又是 commit，
+  脏树让那条记录自相矛盾。→ 新增 check 0：脏树在本地只提示，`--require-upstream`（发布链）判红。
+
+- **「已 vendored」≠「是当前的」。** `qimenzeri` 依赖的 `DunJiaCalc`/`DunJiaBaGongRules`/`baziLunarLocal`
+  三个文件都在树里，但都是旧版，缺的正是新模块要 import 的符号。查依赖要查**具体符号**，不是查文件在不在。
+
+- **`gua/liuyaoTianshi.js` 从未 vendor —— `liuyaoFacade.js` 一直 import 着一个不存在的模块。**
+  上游 v3.6.0「六爻天时占法五家」，本仓漏了整整一个文件。同类：`taiyi/core/taiyiSchool.js` 的
+  `../../../utils/dateStrSafe.js` 是死链，只因无人 import 才没炸。两者都是 `loadcheck.mjs`（新增，
+  `import()` 全部 264 个 vendored 模块）当场抓到的。**AGENTS §5 说得对：load 过 ≠ 真盘不崩——
+  但 load 不过一定崩，而这一层此前完全没有。**
+
+- **`selfcheck.mjs` 断言的是形状不是值 —— 三传重排能静默通过。** 六壬只断言
+  `sanChuanBranches.length === 3`。上游 v3.7.1 两处勘正（#46 八专/遥克判定序、#62 伏吟末传子卯互刑）
+  恰好改的就是三传。
+  → **穷举分桶把「是不是回归」从判断题变成计数题**：60 日干支 × 12 月将 × 12 时 = 8640 课全跑，
+  新旧差分 336 条，三传变 120 / 仅课名 216；伏吟桶恰为 **丁卯/己卯/辛卯** 三日（上游自述
+  「全域仅此 3/720 课变」），非伏吟桶恰为 **己未/庚申/甲寅** 三个八专日，上游点名的
+  「甲寅日戌将丑时/午时」2/2 命中，**桶外 0 条**。桶闭合即证明「改动恰好是上游那两处修复」。
+  ⚠️ 上游自述当年「并用金标锁死」了**错**答案——这个文件上「golden 变了」不构成回归证据。
+  → 两个具名课式已值级钉进 `selfcheck.mjs`。
+
+- **一次 re-vendor 抹掉两处蓄意偏离，都是被测试当场抓到的。**
+  ① `tarot/engine/shuffle.js` 上游 v3.7.x 把 sha256 从 `node:crypto` 换成 `node-forge`，整棵
+  `tarot/engine` 因缺包加载失败（loadcheck 抓到）→ 改用 `stub_import` 提供 forge 形状的 shim，
+  上游函数体保持逐字。② `zhengchuanTiebanLocal.js` 的**动态** `import('./x.json')` 也需要
+  `with { type: 'json' }`，而变换的正则只覆盖静态 import（selfcheck 抓到——loadcheck 抓不到，
+  因为那是懒加载路径）。后者是通用规则，已并入 `transform()`。
+  → 蓄意偏离必须**声明**（manifest）或**机械化**（transform），写在文件里的偏离下一次重 vendor 必被抹掉。
+
+- **`_reexport_required` 只认 `export function`，不认尾部 `export { … }` 清单。** 上游给
+  `baziLunarLocal` 的 `buildFlowDays/buildFlowHours` 补了尾部清单，于是自动补 export 变成
+  "Duplicate export"，模块整个加载不了。loadcheck 抓到。
+
+- **两个同名 `AstroConst.js` 是一个真陷阱。** `src/constants/`（151 行共享 shim，**有** `SignsProp`/
+  `LIST_SIGNS`）与 `src/vendor/constants/`（32 行 Uranian 子集，**没有**）。上游写
+  `'../constants/AstroConst'`，在 vendor 树里恰好解析到**后者**，relocate 因此认为无需重指——
+  `SignsProp` 静默变 `undefined`，`buildTriplicityPeriods` 真机抛 `reading 'Gemini'`。
+  → 三个 astroextra 文件 + `tianxingSnapshot` 都用 `import_redirect` 钉死到共享 shim。
+
+- **条件树用 passthrough，不建模。** 上游两套条件表共 60+ 类，各自 `params` 形状/`validate`/`compile`
+  都不同。在 skill 侧重编一遍 = 造第二份真值源，上游一加条件类就烂。让 vendored `compileTree`/
+  `compileQimenTree` 跑各叶子自己的 `validate`，错误信息还是本地化的。可发现性放 `agent_guidance`。
+
+- **`scanQimen` 吃的是编译后的树，不是 UI 树。** UI 树 `{kind:'group', joiner, children}` 供快照渲染，
+  编译树 `{type:'all', conditions}` 供求值。传错**不会报错**——它安静地匹配不到任何东西，
+  产出一个看起来完全合理的「零命中」。真机实测 0 命中才发现（同窗同条件正解是 11 命中）。
+
+- **零命中不是缺段。** 两个新技法的段头都是**无条件 push**，零命中时上游写的是「时间段内无满足条件的
+  时辰。」这类真话。所以它们**不进** `AI_EXPORT_OPTIONAL_SECTIONS`——登记成 optional 等于拿一个真实的
+  回归探测器（builder 哪天不产该段了）换零收益。判据是**读 builder 源码**，不是猜「搜索可能没结果」。
+
+- **`/electionscan/scan` 属「HTTP 200 带失败信封」家族。** 失败包成
+  `{"ResultCode": -1, "Result": {"err": …}}`，而 `HorosaPlainJsonClient` 只看顶层 `err` → 不加守卫
+  时 `span_too_large` 会**静默退化成零命中**。新增 `_require_electionscan_ok`，与 `_require_ken_pan` 同族。
+
+- 🔴 **第四个机制缺口：点哨兵永远覆盖不全整棵引擎树（同批复盘时才发现）。**
+  以为 v3.7.x 已经同步干净，再审一遍才发现 `vendor/kintaiyi/src/kintaiyi/jieqi.py`
+  **卡在有 bug 的首版**：`datetime.datetime(year,…)` 只支持公元 1–9999，而太乙服务的是全年份域
+  （前 12999 ~ 16799），域外直接 `ValueError` —— 上游自己的注释写着这会「炸掉整个 taiyi/pan
+  （kentang 极端年矩阵三例转红）」，它已改为全程走 `ephem.Date`。
+  漏掉的原因很具体：**7 个哨兵一个都不在 ken 引擎目录内部**（`vendor/` 下唯一那个
+  `kin_year_domain.py` 是根级共享件），而 `verify_vendor_runtime_sources` 只查
+  `REQUIRED_PATHS` 是否**存在**、不查内容。于是「引擎文件在、但是旧的」这一整类漂移无人看管。
+  → 新增 check 2b **整棵子树逐文件比对**（`Horosa-Web/vendor` ken 引擎 / `astropy/astrostudy` /
+  `astropy/websrv`），三个方向都报：内容改了、vendored 有而上游没了、上游有而 vendored 缺。
+  两条实现纪律：① **比对口径必须等于同步口径**——排除集要逐条对齐 sync 脚本的 RSYNC_FILTERS 与
+  kinastro 裁剪，否则守卫会对着「本就故意没拷」的文件恒红（README.md / .github 就这么先红了一轮）；
+  ② 「上游有而 vendored 缺」只在**已 vendor 的顶层目录内部**判，根级杂项不算欠账，
+  但上游**整个新增的顶层目录**单独报一行——那才是「新引擎/新能力」的信号。
+  已做负向对照：故意改脏 jieqi.py，守卫精确报出该文件；还原即绿。不是空绿。
+
+- **一次「已经同步完了」之后再审一遍是值的。** 本条就是在宣布 v3.7.x 同步完成、三个提交都落地
+  之后，重跑同一套审计发现的。守卫全绿只等于「守卫覆盖到的部分是绿的」——覆盖面本身要被质疑。
+
+- **上游 UI 层改动不必跟。** 同批 `ZeriMain/DunJiaMain/SanShiUnitedMain/models/astro/perfFlags`
+  五个文件共 +75 行，全是 `requestIdleCallback` 预挂载 / `forceRender` / kill-switch 之类的
+  响应性改造，零引擎逻辑（逐行核过），且五个文件本仓一个都没 vendor（都是 React 页面壳）。
+  判据：本仓 vendor 的是**引擎**（DunJiaCalc / sanshi/core/*），不是页面壳。
+
+- **契约版本该不该跟着上游不动？不。** 上游那个数是 localStorage 迁移闸（新键无存档，迁移本就是
+  no-op）；skill 这个数是**内容版本**，进每个信封的 `settings_used.version`，是下游判断「段目录变了」
+  的依据。24 个新段正是该事件，故 11 → 12（仓内先例：v8 三技法入册、v11 五技法入册）。
+  `MIRRORED_UPSTREAM_AIEXPORT_VERSION` 保持 50——上游数字确实没动。两个数字语义不同，别「修」成一致。
+
+### v0.25.1+ / 2026-08 — 被指定为「唯一能做真」的那条发布闸，20 次里一次都没跑过
+
+**症状**：v0.25.1 发完复查，发现 `Release Runtime`（`release.yml`）那次 run 卡在 `queued`。翻历史：
+**从 v0.9.2（2026-06）到 v0.25.0，20 次 tag 触发的 run 全部 `cancelled`**。抽查 v0.25.0 那次：
+created `08/01 17:08:57` → updated `08/02 17:09:04`，正好 24 小时，`build-release` job
+`conclusion=cancelled`、**一个 step 都没执行**。
+
+**根因**：`release.yml` 是 `runs-on: self-hosted`，而 `gh api repos/.../actions/runners` 回
+`total_count: 0`——仓库**从来没有注册过 self-hosted runner**。于是每次推 tag 都排队到 GitHub 的
+24h 上限被自动取消。而这条流水线**独占**着三样东西：① `verify_upstream_sync.py --require-upstream`
+② `verify_export_section_baseline.py --source upstream --require-upstream` ③ SBOM + 构建 provenance
+attestation。`ci.yml` 里虽然也调前两个脚本，但**不带 `--require-upstream`**，GitHub runner 上没有上游
+checkout，脚本自报 `{"skipped": true}` 直接放行（那个 step 名字本身就写着 "skipped without an upstream
+checkout"）。两处合起来 = **「vendored 树 vs 上游 HEAD」这一类漂移在任何自动化环境里都从未被断言过**，
+而 runs 页面上显示得像有覆盖。
+
+**同一次排查里还揪出第二个空转的**：`verify_export_section_baseline.py` 的 docstring 白纸黑字写着
+vendored 模式 "works with no upstream checkout, e.g. GitHub CI"，ci.yml 的注释也跟着说「基线本身的
+自洽在这里就能红」——**两句都是假的**。它读的 `vendor/runtime-source` 是 **gitignored** 的，CI 全新
+checkout 上根本没有，实测输出 `::notice::export-section-baseline skipped`。于是段级欠账棘轮
+（「只减不增」那道）在 CI 里同样零断言。**注释写「这里能红」不等于真会红——要去 run 的注解里看。**
+
+旁证：`contracts/vendor_sync_state.json` 至今记着
+`skill_mirrored_version: 48`（v0.24.0 手工跑时写的），而 registry 常量从 v0.25.0 起已是 **50**——
+那个专门用来「避免 vendored 树静默落后」的文件，自己静默落后了两个版本。
+
+这是 v0.24.0「守卫结构性失明」的**第四例**，也是最讽刺的一例：为了堵住失明而新建的守卫，本身从不执行。
+前三例是守卫射程不够（比对自己的 vendored 拷贝 / 只比键不比段 / 正则只认英文标签），这一例是**守卫压根
+没运行**——比射程不够更难发现，因为射程可以读代码看出来，「有没有真跑」只能去翻 runs 历史。
+
+**守卫/法则**：
+
+- **判一个守卫是否有效，先问「它上一次真跑是什么时候」，再问「它断言了什么」。** `runs-on: self-hosted`
+  + 零注册 runner = 永久排队后取消，颜色是灰的不是红的，谁都不会注意。
+- `release.yml` 去掉 `push: tags` 触发，改为**仅 `workflow_dispatch`**——宁可明确没有，也不要一条看起来
+  在跑、实际每次都被取消的流水线。
+- 跨树两闸落地为**本机 pre-tag 步骤** `scripts/preflight_release.py`（须 `HOROSA_SOURCE_ROOT` 指向
+  Horosa-Public，否则直接拒绝运行），写进 AGENTS §7 发布协议。成功会重写
+  `vendor_sync_state.json`，**该 diff 即「跨树核对真发生过」的 git 证据**。
+  （v0.26.0 起该文件已被 `contracts/upstream_provenance.json` 取代——超集，另记上游 commit /
+  应用版本 / preset 键集 / core-js 树摘要；`tests/test_verify_upstream_sync.py` 断言旧文件必须不存在。）
+- `verify_upstream_sync.py` 在无上游树时**不再纯 skip**：改为断言 state 里的 `skill_mirrored_version`
+  是否仍等于 registry 常量，落后就打 `::warning`（当前就在报 48 vs 50）。CI 保持绿（避免 v0.25.0 那种
+  带红上 main），但漂移从此在每次 run 里可见，而不是无声无息。
+- `verify_export_section_baseline.py` 同样不再纯 skip：无 aiExport 源时改为断言**基线 vs 仓内 registry
+  自洽**（`_assert_baseline_coherent`——基线里的键必须都还在 `AI_EXPORT_PRESET_SECTIONS` 里），抓
+  「技法改名/删了而基线还留着旧键」。已用反向测试确认它**真会红**（往基线塞一个不存在的键 → FAIL）。
+  docstring 与 ci.yml 里那两句不实描述一并改掉。
+- **`::warning::` 是单行命令**：消息里带 `\n` 会被 GitHub 在第一个换行处截断，注解结尾留个悬空冒号
+  （第一版就是这样，补救命令整条没进注解）。补救指令必须写在同一行。
+
+### v0.25.1 / 2026-08 — 第一次真跑全套 live：7 红里 4 个是本机无 Mongo、2 个是真段缺陷、1 个是隔离没做全
+
+**症状**：在 v0.25.0 runtime（独立 root `rt-verify`，心跳 `pdSyncRev = pd_method_sync_v15` 与当前 rev 一致）
+上跑全套 `uv run pytest` → **7 failed / 332 passed / 1 skipped**；而同一棵树在服务未起时是
+**278 passed / 62 skipped / 0 failed**。更迷惑的是 `doctor` 同时报 `status: ready` + 双端点 reachable。
+
+**根因分三类（别混为一谈）**：
+
+1. **4 条死在 `/nongli/time`** ：`xiaoliuren` / `feigong` / `zhengchuan_tieban` / `zhengchuan_dading`。
+
+   > 🔴 **本条的归因在 v0.26.1 被推翻，保留原文供对照。** 当时判为「Java 聚合层的 app 注册在 Mongo 里，
+   > 本机无 Mongo → 这一族路由恒 9999（`no.register.app.in.sys.forapp`）」。v0.26.1 复审实测：**Mongo
+   > 在跑**、日志里**零** `no.register.app`、真实错误码是 **`200001 param error`**。真因是**本仓的产品
+   > bug**：这五个占时工具（还有无测试覆盖的 `xiaochengtu`/`guice`）用 `payload.get("lat")` 取值，而
+   > schema 把 `lat` 列为可选 → 把 **`lat: null`** 发给要求 lon+lat 均非空的 `/nongli/time`。
+   > 对照 `qimen`/`taiyi` 用的是 `payload["lat"]`（必填），所以它们从来不犯。
+   >
+   > **为什么会误诊成环境问题**：Java 的农历结果按**年**缓存。任何一次带 lat 的请求都会把该年焐热，
+   > 此后同年的无 lat 请求**全部成功**。于是它表现为「有时好有时坏、换台机器就好了」。决定性实验：
+   > 同一 commit 下先对 1998 年发一次带 lat 的请求，两个原本红的 zhengchuan 测试立刻转绿。
+   > **诊断这类「时好时坏」务必换一个冷年份**，否则你在测一个已经被自己焐热的缓存。
+   > 修复见 `service.py::_require_cast_geo`（缺 lon/lat 提前报结构化错误，不再把 null 发出去）。
+
+   下面这段关于 doctor / selfcheck 的结论**仍然成立**，与归因无关：**`doctor` 探的是 `/common/time`，根本不碰这族路由——
+   所以 `status: ready` 不构成「Java 侧技法可用」的证据。`selfcheck` 更迷惑：它的 `compute` 步骤
+   报 `tool: nongli_time, ok: true`，但那是 issue #14 加的 **chart 侧回退探针**在答题——同一时刻
+   直接 POST `/nongli/time` 仍是 500 / 9999（v0.25.1 装完新 runtime 实测）。
+   **doctor 绿 + selfcheck 绿 都不等于这族路由活着。**
+2. **2 条是 v0.25.0 段级回填留下的「陈旧断言」，不是产品缺陷**——第一直觉判成段缺陷是错的，
+   判据是**去 preset 里查这个段名到底还在不在**：
+   - **`taiyi`**：断言写 `assert "[起盘]" not in snapshot`（"no doubled 起盘"）。但上游 v50 起
+     `起盘` 已是**注册在 taiyi preset 里的正式透传段**，与 builder 的 `[起盘信息]` 并存是对的。
+     旧断言编码的是 v50 之前「后端 起盘 段被丢弃」的行为。
+   - **`acg`**：断言写 `assert "[行星线经度]" in snapshot`。但该旧段名在 v50 已**并入单段
+     `占星地图`**（`registry.map_legacy_section_title` 里就写着这条映射），preset 里只有 `占星地图`。
+   两者都是「registry 改了、live 断言没跟着改」，而 live 测试**进不了 CI**，于是无人发现。
+3. **1 条是隔离没做全**：`test_error_paths_return_a_conformant_envelope`——v0.25.0 之后新加的 autouse
+   fixture 把 `HOROSA_RUNTIME_ROOT` 钉到空目录，本意是与 CI 同形；但**默认端口上有活服务**时它照样失败，
+   因为只钉了 runtime root、没钉 service endpoint，请求照样打通 → 本该失败的错误路径成功了
+   （`assert True is False`）。CI（无服务）绿、维护机（服务在）红，正是 v0.25.0 那条教训的**镜像**。
+
+**法则/守卫**：
+
+- **「live 全绿」在无 Mongo 的机器上不可达**——干净 Windows 机的最强信号只有 chart 半边。README 的测试数
+  因此改按**离线 CI 形状**标注（278 passed / 62 skipped），不再声称一个没人真验过的 `N / N pass`。
+- **改 export preset / 段名映射时，必须同步 grep live 测试里的段名断言**。段级回填（v0.25.0 那种
+  216→7 的大批量）只跑得动 CI 里的离线契约；`@requires_runtime` 的段名断言在 CI 里恒 skip，
+  改错了要等下一次有人真起服务才炸。判据永远是 **preset 里有没有这个段名**，不是凭印象说「重复/缺失」。
+- 想把 `requires_*` 测试真正钉成 CI 形状，**必须同时把 service root 指到不可达地址**——只钉 runtime root
+  不够（本条是 `HOROSA_RUNTIME_ROOT=<空目录>` 复现法的补丁：那招只在服务也没起时成立）。
+- 判 Java 侧是否真可用，别看 `doctor`，直接打 `/nongli/time` 看是不是 `ResultCode 9999`。
+
+### v0.25.1 / 2026-08 — 中文首页的数字漂了两代，因为守卫的徽章正则只认英文标签
+
+**症状**：`verify_docs_sync.py` 全程绿，而 `README.md`（中文首页 = 默认落地页）上：徽章写
+`技法-83`（同一行的 `alt` 却写着 "89 tools"）、验收表写 `可调用工具 83 / 83`、`已建模 63 个导出
+technique`；测试数四处写 `326` 而 `README_EN.md` 的代码块写 `315`；`📦 Release runtime` 行还写着
+「Windows (x64) 由构建机补传（补传前 win 用户拿到上一版 runtime）」——而 v0.25.0 的 Windows 半边
+早在 2026-08-02 就已补齐，`sync_windows_release.py --check` 判定 in-sync。即：中文首页在劝退
+Windows 用户，并把工具数少报了 6 个。
+
+**根因**：`check_tool_coverage()` 的徽章正则是 `badge/tools-(\d+)-`，只能匹配 EN 侧的
+`badge/tools-89-`；zh 侧标签是中文的 `badge/技法-83-`，**整个漏出守卫射程**。于是 83→89 那次 bump
+只有被守卫盯着的 EN 侧被迫改对，中文首页无人拦。同源问题一串：验收表的 `可调用工具 N / N` 与
+`已建模 N 个导出 technique` 都是 registry 的纯函数，却从来没人断言。测试数更糟——它**无法从代码静态
+推出**，于是五处提及各写各的，分叉成 326×7 + 315×1 谁也没发现。这是 v0.24.0「守卫结构性失明」的第三例：
+守卫不是不存在，是**射程比它自称的窄**。
+
+**守卫**：① 徽章正则拓宽为 `badge/(?:tools|技法)-(\d+)-`；② 新增 zh/EN 两侧「可调用工具 N / N」行
+断言 == `len(TOOL_DEFINITIONS)`；③ 新增「已建模 N 个导出 technique」断言 == `len(AI_EXPORT_TECHNIQUES)`；
+④ 测试数不可静态推导 → 新增 `check_test_count_consistency()`，只守「两份 README 的所有提及必须是同一个
+数」，首跑即抓出 315/326 分叉；⑤ `本地 memory / report 83 / 83` 这类**既推不出、也没有测试覆盖的手测
+计数**直接改写成结构性陈述（「每次技法调用写 1 条 run 记录 + 1 份 JSON artifact」），不再留一个会腐烂
+的数字。
+
+**法则**：README 里的每个数字，要么**能从代码断言**（那就当场加断言），要么**改写成不含数字的结构性
+陈述**——绝不留「只能靠人记得更新」的计数。双语文档的守卫正则**必须覆盖两种语言的标签**，只写英文
+pattern 等于只守了一半。
+
+### v0.25.0+ / 2026-08 — 一个 em dash 打死整个 Windows runtime（无 BOM 的 .ps1 + PowerShell 认花引号）
+
+- **症状**：v0.25.0 Windows 半边刚建完，装进独立 runtime root 跑 `selfcheck` → `runtime.start_failed`，
+  stderr 是启动器自己的 **4 个 parse error**：`Missing closing '}' in statement block`、
+  `Unexpected token 'chartpy:'`、`The string is missing the terminator: "`——启动器**一行都没跑**就死，
+  Java/chart 双半边全不起。zip 里文件一个不少、`verify_runtime_release.py` 全绿。
+- **根因链**：① runtime manager 用 `powershell`（**Windows PowerShell 5.1**，见
+  `manager._platform_command`）跑 `.ps1`；② 5.1 对**无 BOM** 的 `.ps1` 按**系统 ANSI 代码页**解码
+  （本机 ACP=1252）；③ UTF-8 的 `—`(U+2014, `E2 80 94`) 于是解成 `â` `€` + **U+201D**；
+  ④ PowerShell 词法分析器**把 U+201D 当字符串定界符**——`Write-Host "…without them — it may…"` 的字符串
+  就地截断，后半行变成代码，级联炸穿整个文件。
+- **为什么以前没炸**：`—` 早就在这两个模板里（v0.12.0 加固时进的注释），但**都在注释行**——注释到行尾
+  为止，混进一个花引号也无所谓。issue #14（`3706c94`）把降级提示写进了一个 **`Write-Host` 字符串字面量**，
+  这是第一次让非 ASCII 落进可执行的字符串里；而那之后**第一次 Windows 构建**就是本次 v0.25.0 补建。
+  实证：同一文件去掉 BOM + 把 `—` 放回字符串 → 4 errors；去掉 BOM 但字符串里用 ASCII `-` → parse OK。
+- **修复**：两个模板改为 **UTF-8 with BOM**（正解，连注释里的 `格局/神煞` 也不再 mojibake）+ 那条
+  `Write-Host` 里的 `—` 换成 ASCII `-`（第二层：BOM 万一被工具剥掉也不会炸成 parse error）。
+  `manager._apply_runtime_overrides` 与 builder 都是 `shutil.copy2`，BOM 逐字节随行。
+- **守卫**（三层）：① `tests/test_runtime_launcher_templates.py`——BOM 断言 + 「非 ASCII 只许出现在注释行」
+  （到处跑，含 Linux CI）；② 同文件里 Windows-only 用 `powershell`
+  `[Parser]::ParseFile` **真解析**，CI 的 `windows-smoke` job 会执行；③ 发布闸
+  `verify_runtime_release.py::_assert_windows_launchers_are_bom_encoded`——直接读 zip 里那两个 `.ps1`
+  的前三字节，上传前拦住（配套 fake-zip 正反测试）。
+- **横切教训**：`verify_runtime_release.py` 查的是「文件在不在」，查不出「文件能不能跑」。**跨引擎升级版的
+  Windows 补建必须真装真跑**（AGENTS §7 的 native-verify 一步不能省）——这次正是靠它逮住的，否则上传的
+  就是一颗谁也起不来的 runtime，而所有绿灯都会说没问题。
+
+### v0.25.0+ / 2026-08 — 维护机装着 runtime，把「其实要 runtime」的线材契约测试藏到了 CI 才炸
+
+- **症状**：v0.25.0 发布 commit 的门禁本地 254 passed 全绿，push 后 main 上 `CI` 的 `test` 与
+  `windows-smoke` **两个 job 同时红**——`tests/test_mcp_contract.py` 的
+  `test_numeric_coordinates_reach_normalization_instead_of_being_rejected` 与
+  `test_request_escape_hatch_works_over_the_wire` 断言 `ok is True`，实收
+  `error.code == runtime.not_installed`。两平台同一原因，红了一整天没人发现（发布当天没人再看 CI）。
+- **根因**：这两条是**线材契约**测试（考 MCP 面广告的 schema / 归一化 / `request` 逃生通道），却用
+  「算成功」当判据 → 走 `call_tool` 一路真算。维护机装着离线 runtime，所以本地恒绿；CI runner 上没有
+  runtime，`_require_runtime` 直接抛 `runtime.not_installed`。**「本地全绿」在这类测试上不构成证据——
+  维护机与 CI 的形状不同**，而 CI 是唯一无 runtime 的环境。
+- **顺带挖出的第二个真 bug**：`ToolEnvelope` 的顶层镜像三键（`code`/`message`/`details`，
+  `schemas/common.py` 明写「使既有按 code/message/details 读的调用方零改动」）**只在 MCP 面构造的错误
+  信封上填**（闸门 / pydantic 校验），`service.run_tool` 自己构造的错误信封一个都没填 → 最常见的失败
+  （`runtime.not_installed` / `tool.ken_compute_failed` / `transport.*` / `tool.internal_error`）在顶层
+  `code` 上读到 `None`。既有测试只覆盖闸门那条路径，所以「信封契约」看起来是有守卫的。
+- **守卫**：① `test_mcp_contract.py` 加 autouse fixture 把 `HOROSA_RUNTIME_ROOT` 钉到空临时目录——
+  整个文件**一律在「runtime 未安装」形状下跑**，维护机与 CI 同形，此类依赖当场暴露（新写的线材测试
+  再想偷偷依赖 runtime 也会本地就红）；② 两条测试改为断言真正要考的东西（`input_normalized` 里
+  数字经纬度已被吸收成 `39n54`/`116e24`；逃生通道的内层字段确实到了归一化），并共用
+  `_assert_passed_the_mcp_surface`（只否掉 `tool.invalid_payload` / `agent_guidance.required` 两个
+  「归一化之前就被打回」的 code），与本机有没有 runtime 解耦；③ `run_tool` 两条错误路径 + dispatch
+  解析失败路径补齐镜像三键，`test_error_paths_return_a_conformant_envelope` 扩到闸门**之后**的失败
+  信封，逐键断言 `顶层 == error.*`。
+- **可复现判据**（没有 CI 也能在维护机上验）：`HOROSA_RUNTIME_ROOT=<空目录> uv run pytest` —— 这条
+  等价于 CI 的形状；发版前值得跑一遍。
+
+### v0.25.0-dev / 2026-08 — 段级欠账回填（批 1 起）
+
+- **印占 53 段：verbatim vendor 胜过 Python 移植。** 上游 `buildJyotishSnapshotLines`（IndiaChart.js:479，
+  578 行）是**纯格式化**函数——读后端已算好的 `chartObj.jyotish`（30 个子树）产 51 个具名段。闭包极小
+  （只依赖 7 行 `gfmTable`，`PCN` 是块内局部量，零 AstroConst 依赖），逐字 vendor 后真盘一次跑通 57 段。
+  若手抄成 Python 是 600 行抄写面，任一措辞漂移都会与桌面端不一致。**判据**：纯格式化 + 小闭包 = vendor；
+  只有需要发 HTTP 或依赖 Python 侧数据时才移植。
+- **`js_client.run()` 已解包 envelope 的 `data`**，返回的就是 runner 结果对象。照 `_attach_natal_extras`
+  的样子写成 `js.get("data")` 会恒为 None → 段静默不出（本轮踩了一次，表现为「挂载了但段数没变」）。
+- **上游用占位段名登记动态段族**：印占 11 个 `座运·<变体>` 在 preset 里是单个 `座运·X`（同 horary 的
+  `专题深化·X`）。折叠规则加进 `map_legacy_section_title`，否则实产段全成 unknown。
+- **段名折叠方向要跟上游走**：canping/heluo 早期把上游长名（`大运·歲運`/`先天卦·元堂爻辞`）折叠成短名，
+  而上游 preset 现已正式声明长名 → 反转映射（canonical=长名，短名留作向后兼容）。
+- **主限法语义变更（v3.6.0）**：`pdSyncRev` v12→**v15**，方位法从「核 5 + legacy」开放到全谱 13 法，
+  **placidus 已是真方位法、不再回退 core_alchabitius**（实测 114 行 vs 64 行）。原测试断言「两法逐位
+  一致」在新引擎下必红，而且方向危险——引擎真回退时它反而会绿。已改为「都产真行集且彼此不同」。
+- **整文件重 vendor 会抹掉手工加的 `export`。** 上游把 `normalizeBackendPan` 一类叠加函数留作模块私有
+  （组件内部自用），skill 的 headless 工具层却要 import 它——旧 vendored 副本是人手加的 export，一次
+  全文件重 vendor 就把它抹了，症状是 `SyntaxError: does not provide an export named …`（太乙栽过）。
+  `revendor_core_js.py` 现按「skill tools 谁在 import 它」反查自动补 export，不写死函数名清单。
+- **vendor 树布局 ≠ 上游 src 布局**：上游 `../../utils/baziLunarLocal` 在 vendor 树里是 `../bazi/…`。
+  重 vendor 器按 basename 自动重定位；**找不到唯一匹配就大声报 UNRESOLVED**，绝不留坏 import——
+  留着的话模块加载直接失败，而那比「load 过但真盘崩」还早一步，必须显式暴露给人决定补 vendor 还是写 shim。
+- **剥 `fetch*Pan` 会留下孤儿 import**（`cachedKentangFetch` 等网络层助手），同样让模块加载失败；
+  按「符号是否仍被引用」判定删除，不按文件名黑名单。
+- **本命增补段的门控本就该覆盖整个 chart 家族**：`_attach_natal_extras` 只开给 `{chart, mundane}`，
+  而上游给 13 宫/希腊化盘也出 12分度/主宰星链/寿命格局 —— 放开门控即得 3 段（chart13/hellen_chart）。
+- **上游有行内段头写法：`[段名] 正文` 同行**（演禽演法五段就是），而 skill 的导出解析器要求
+  **段头独占一行**——同行写法会被整体误解析成一个空标题段，于是「文本里明明有这些段、却全部报
+  missing」。修法是在 JS 侧只在段头后断行（`/^(\[[^\]]+\])[ \t]+/gm` → `$1\n`），正文逐字不动，
+  快照仍与上游同源。**排查判据**：段出现在 `sections` 里但同时出现在 `missing` 里 = 解析形态问题，
+  不是缺 builder。
+- **preset / optional 之外还有第三态**：上游 `AI_EXPORT_DEFAULT_OFF_SECTIONS` 的语义是「登记进
+  preset（可勾、勾了永久尊重），但用户未自定义时默认不导出」——doctrine 型大段（判语库/古籍全文）
+  专用。skill 侧并入 optional（对解析器同义：缺席不算漏）并在契约里单列 `default_off_sections`。
+  **注意上游的 migration union 也排除这些段**，否则升级会把它们硬并进已自定义用户的选择 = 变相默认开。
+- **抽 AstroConst 子集做 shim 有两条边界规则**（都踩过）：① 块的终点是「下一个顶层 `export const`」
+  而非分号——上游多数常量**不带结尾分号**，按分号切会把后续所有声明卷进来（`Identifier already
+  declared`）；② 必须保持**上游原序**，`LIST_URANIAN` 这类聚合常量引用了排在其后的符号，重排即
+  `ReferenceError: before initialization`。宁可逐值抽取也不手写猜值——这类表以 AstroConst.* 为键。
+- **重 vendor 一个技法要按「上游文件清单」而不是本地清单**：按本地 `ls` 拼参数会漏掉上游**新增**的
+  文件（tarot 的 `openingOfKey.js`/`reversalModes.js` 就这样被漏了），随后重 vendor 报「0 个文件变化」
+  却依旧运行失败——同名文件也可能不同源。判据：报 0 变化但功能仍缺 = 清单取错了，不是已同源。
+- **shell 里 `cd` 到上游树后不要再跑仓内脚本**：相对路径会解析到上游目录（本轮出现过
+  `can't open .../Horosa-Public/.../scripts/revendor_core_js.py`）。命令一律从包根起。
+- **回填铁律的实操顺序**：先 live 跑出**实产段名**，再拿它与上游 preset 做三向差（都有 → 进 preset；
+  上游有实产无 → preset+optional 双登记；实产有上游无 → 查是 skill 自有基础段还是占位名族）。
+  绝不能照抄上游 preset 了事——那会造出死条目，让每次真实导出都报 missing。
+
+
+### v0.24.0 / 2026-07-31 — 守卫「结构性失明」+ MCP 面三处静默破损
+
+- **守卫全绿却漏掉 8 个上游版本：同源校验必须比对上游 HEAD，不能比对自己的 vendored 拷贝。**
+  症状：`verify_export_contract_mirror.py` 与 `verify_vendor_runtime_sources.py` 全绿，而上游已 v50、
+  skill 镜像仍 48。根因：前者读 `vendor/runtime-source/...aiExport.js`（本地 vendored），后者用
+  `MIN_AIEXPORT_SETTINGS_VERSION = 48` 的**下界**断言 —— 两棵 vendor 树都 gitignore，没人 re-sync
+  就永远自洽；`horosa-core-js/src/vendor`（受 git 跟踪）更是**零守卫**。守卫：新增
+  `scripts/verify_upstream_sync.py`（`HOROSA_SOURCE_ROOT` 定位上游 → aiExport 版本恒等 + 哨兵文件
+  sha256 + core-js 按 basename 逐文件比对；无上游树时输出 `{"skipped":true}` + `::notice` 而**不装绿**，
+  `--require-upstream` 在 release 链硬失败）；下界断言改为与 registry 常量**恒等**。首跑即抓出
+  112 个 core-js 文件漂移 + 4 个哨兵漂移（含 `perpredict.py`/`perchart.py` —— 正是主限法 13 法白名单所在）。
+- **键级对齐 ≠ 段级对齐：v0.23.0 的「整版对齐 v48」是虚账。** 实测 skill 653 段 vs 上游 v48 的 843 段。
+  原 mirror 守卫自述 "Deliberately NOT a per-section diff"，于是 180 段欠账藏在全绿背后。守卫：新增
+  `scripts/verify_export_section_baseline.py` + 受 git 跟踪的 `contracts/export_section_debt.json`
+  **棘轮**（新增欠账 fail；还清了也 fail 并提示 `--update-baseline` 收紧，使欠账只减不增、每次回填在
+  git 里可见）。重同步到 v50 后真实欠账 = **314 段 / 51 多余 / 8 缺键，跨 62 技法**（印占 53 段最大）。
+  同时把 `MIRRORED_UPSTREAM_AIEXPORT_VERSION` 的语义写死在注释里：**它表示「对账基准版本」，不表示
+  「该版段全有了」**——两个数字必须一起读。
+- **`__signature__` 漏设 = 工具静默不可调用（P0）。** `horosa_tool_run` 只设了 `__doc__`/`__annotations__`
+  没设 `__signature__` → FastMCP 内省 `**kwargs` 生成 `{"kwargs":{"type":"string"},"required":["kwargs"]}`，
+  而它是 `HOROSA_MCP_COMPACT=1` 下抵达全部技法的**唯一**通道。连带 bug：`request` 存在时
+  `_merge_mcp_arguments` 整体改用 request 作载荷，把兄弟参数 `tool_name` 丢了。测试之所以没抓到，是因为
+  `test_mcp_server.py` **从不走 `srv.call_tool`**（直接调 service 层）——守卫：新增 `tests/test_mcp_contract.py`
+  按「客户端真正看到什么」断言（list_tools 每个工具有描述/title/无 `kwargs` 参数/无残留 `$ref`；
+  call_tool 跑通闸门/成功/畸形/request 通道/数字经纬度五路）。
+- **`__signature__` 优先级高于 `__annotations__` → structured output 全线失效。** 9 处
+  `__annotations__ = {"return": ToolEnvelope}` 是死代码，91 个工具 `outputSchema` 全 None；讽刺的是唯一
+  拿到 outputSchema 的恰是那个坏掉的 `horosa_tool_run`（因为它没有 `__signature__`）。修法：签名带
+  `return_annotation`。**但开启前必须先统一错误载荷**——出参被 server+client 两侧校验，而闸门返回的是
+  5 键裸 dict，声明 outputSchema 后会被打成协议级 ToolError，**整个澄清闸当场报废**（实测复现）。
+  故先给 `ToolEnvelope`/`DispatchEnvelope` 加可选顶层镜像 `code/message/details`、把闸门/elicit/校验
+  三条错误路径全部转成合规信封，再接 `return_annotation`；且因 claude-code#25081（带 outputSchema 时
+  工具列表静默消失，stale-closed 未确认修复）**默认关闭**，`HOROSA_OUTPUT_SCHEMA=1` 显式开启。
+- **FastMCP 注册时 `validate_input=False`——广告 schema 与实际校验解耦，这是解开死结的钥匙。**
+  据此把签名改成「广告保真、校验放松」：字段描述/枚举/`[required]` 标记照登，但全部 `default=None` +
+  `Annotated[Any, WithJsonSchema(...)]` → MCP 层零必填。一次修好三处：文档承诺的 `request={…}` 逃生通道
+  此前**永远走不到**（必填字段先被 arg model 拒）、`{"lat": 39.9}`（模型极高频）在归一化之前就被拒、
+  以及两者都绕过 `agent_recovery` 回裸 pydantic 错误。**坑**：把 property 摘出来单独广告时 `#/$defs/…`
+  解析不到根，且模型间存在自引用（嵌套 BirthInput）——`WithJsonSchema` 里残留 `$ref` 会让 pydantic
+  `KeyError` 到整个服务器起不来。内联必须「遇环/超深/缺失一律降级为无约束对象，绝不留下 `$ref`」。
+- **仓库搬家后 `.venv/bin/*` 的 shebang 仍指旧路径** → `uv run pytest` 静默回退到全局 pytest（旧依赖，
+  报 `mcp.types 无 Icon`），而 `uv run python -m pytest` 正常。判据：直接跑 `.venv/bin/pytest` 报
+  `bad interpreter`。修法 = §8 标准 venv 重建。
+- **log4j 的 `${env:HOME:-${sys:user.home}}` 带默认值形态未被替换** → 日志按**字面量目录名**落在启动
+  CWD，在用户工作目录里留下一个名字诡异的目录，且没人知道日志在哪。`_rewrite_runtime_log4j` 原来只处理
+  `${env:HOME}` 一种写法，现两种都归位。
+- **生态基准变了（2026-07-31 核实）**：MCP **2026-07-28 规范已发布**、python-sdk **v2.0.0 已上 PyPI**
+  （v2 是破坏性重写，钉 `mcp[cli]>=1.28.1,<2` 不迁）；本仓**未使用** logging/roots/sampling 三项废弃 API，
+  且 `_maybe_elicit_gate` 本就在 `service.run_tool` 之前 → 天然满足 v2 的「工具函数会被整体重放」要求。
+  **Claude Code 的工具搜索已默认开启**，83 工具的上下文膨胀在该客户端已由平台解决，ROI 重心移到
+  server `instructions`（此前只用了 164/2048 字节）与 `_meta["anthropic/alwaysLoad"]` 入口标记；
+  Cursor 仍有较紧工具数上限 → 新增 `HOROSA_TOOLSETS` 分组白名单（registry 的 domain 天然可用）。
+  **官方 Registry 可不发 PyPI 上架**：`registryType: "mcpb"` + GitHub Release 的 .mcpb + `fileSha256`，
+  正好绕开 horosa-core-js 在 wheel 之外的分发归属难题（`registryType: "github"` **不是**合法通道）。
+
+### v0.23.0+ / 2026-07-22 — issue #14：Java 后端被环境杀死时全盘卡死 → chart-only 降级 + 诊断透传
+
+- **症状**（用户报告，Windows 11 + Clash Verge/安全软件）：`selfcheck` 挂死、`doctor` 只报
+  `services:not_running` 不说原因；Java(:9999) 启动即静默退出、无自身日志。**根因（环境层）**：jar 的
+  `AIAnalysisProxyService` bean 构造期 `new HttpClient()` → `Selector.open()` → JDK-17 `PipeImpl`
+  在 Windows 上**硬编码优先 AF_UNIX** 做内部 loopback（`PipeImpl(sp)` 写死 `this(sp,true,false)`），
+  且 **connect 失败无 TCP 回退**（只有 bind 失败才回退）——代理/VPN/安全软件的 WFP 过滤拦
+  `UnixDomainSockets.connect0` 即整跳崩；报告者机器连 java.exe 的 TCP loopback 也被拦（WFP 驻留内核，
+  停服务不够、需禁用+重启），Java 侧无解。**根因（我们的放大器）**：manager 就绪门要求 8899+9999 双活；
+  chart-up/java-down 触发 partial-recovery 把**健康的 chart 也停掉**重试，二次同败后 raise——只需 :8899
+  的三式/神数/地占等全被连坐；Java 崩溃栈无处可看（log4j appender 随进程死，doctor 不读启动器捕获的 std 流）。
+- **fix/guard（同一 change 全落）**：① 启动器降级门（Windows 模板 + `manager._run_start_command`
+  **锁步**）：java 进程死 → 秒级 exit 0 降级 + marker `java backend process exited` + java 日志尾进
+  stdout；java 慢 → 窗尽头 exit 0 降级；chart 死 → 照旧 throw。实测损坏 jar 场景 **5s** 降级退出
+  （旧行为 300s throw + 全锁）。② manager 接受 chart-only 为降级成功：`runtime.start_degraded_chart_only`
+  warning + runtime_state `degraded_chart_only`；见 marker 时等待截短 ≤20s；degraded ready **不再**触发
+  破坏性 stop+retry。③ doctor 分半报 `services:{java_backend,chart}_not_running`，java 死时附
+  `java_diagnostics`（读最新 `.horosa-local-logs/*/astrostudyboot.std{err,out}.log` 提取
+  `Application run failed`/`Caused by:` 链，best-effort 永不 crash doctor）。④ selfcheck：`nongli_time`
+  （java 面）失败自动回退 chart 侧 `wangji` 探针——降级机器上 ok=true + `degraded: chart_only` +
+  定向 next_action，不再挂死。⑤ README×2 排障：受限网络 assets-API 安装法（github.com:443 不通时）+
+  WFP 干扰判据。回归测试：`test_runtime_manager.py` 降级三测（`_run_start_command` 降级判定 /
+  start 不破坏性重试 / doctor 摘录）+ 分半 issue 命名测。
+
+### v0.23.0+ / 2026-07-22 — Temurin「releases/latest」半发布窗口打空 JDK 下载（Windows 补建时踩中）
+
+- **症状**：v0.23.0 Windows 半边补建时 `build_runtime_release_windows.py` 第一步即死：
+  `could not resolve Temurin asset for OpenJDK17U-jdk_x64_windows_hotspot_.zip`。**根因**：builder 从
+  GitHub `temurin17-binaries/releases/latest` 按资产名匹配下载 JDK；GitHub 的 `releases/latest` 按
+  **tag 提交日期**取，Adoptium 刚打 GA tag（jdk-17.0.20-ga）而平台二进制尚未传完的窗口内，该 release
+  资产为空/不全 → 匹配空手。且其 `/releases` 列表顺序按 release 对象创建时间（老版本重发会插队到最前，
+  实测 2023 年的 17.0.9+9.1 排第一），「遍历列表取第一个含资产的」同样不可靠。linux builder 同模式同病。
+  **fix/guard**：两个下载 JDK 的 builder（win/linux）改走 Adoptium 官方分发 API
+  `api.adoptium.net/v3/binary/latest/17/ga/<os>/x64/jdk/hotspot/normal/eclipse`（307 只指向**已存在**的
+  最新 GA 二进制，`download()` 的 `curl -fL` 跟随重定向；实测解析到 17.0.19+10、正确跳过无资产的
+  17.0.20）；`verify_builder_parity.py` 新增断言：JDK-downloading builders（win/linux）必含 Adoptium
+  API URL、禁再引用 `temurin17-binaries/releases/latest`；mac builder 不下载 JDK（vendored
+  runtime/mac/java）豁免。
+- **kintaiyi `game_theory` 的 scipy 缺失是两平台一致的良性 prewarm 噪音**：symptom = bundled chart 服务
+  启动日志出现 `prewarm_kentang_modules → kintaiyi/game_theory.py → ModuleNotFoundError: No module named
+  'scipy'` 整段 traceback，看似 taiyi 引擎坏了。root cause = 上游 kintaiyi 新增 **opt-in** 博弈论模块
+  （`pan(..., enable_game_theory=False)` 默认关、`if enable_game_theory` 内懒 import），scipy 既不在 ken
+  依赖集（§6 只有 bidict/numpy/kerykeion/ephem/pendulum）也不在**任何**平台 bundle 内——实测 v0.23.0
+  darwin tar 同样含 `game_theory.py` 且无 scipy，两平台行为一致；skill 调用面永不置 True。判据 =
+  `/taiyi/pan` 返 `ResultCode 0 + source kintaiyi` 即健康，该 traceback 无需处置；**勿为它加 scipy**
+  （~40MB，瘦身红线，服务于永不触发的功能）。守卫：CI 起不了 runtime（§7），无廉价断言点，按 §8 症状表
+  + 本条documentation 处置。顺带观察：darwin tar 混入 `._game_theory.py`（AppleDouble，inert，
+  mac 侧滤网漏网，无碍）。
+
+### v0.23.0 / 2026-07 — 全面重同步至上游 v3.5.1（全年份域 + 地占大改 + 六爻扩充 + 5 新技法）
+
+- **导出契约三层脱节收口（40<44<48 → 48）+ mirror 守卫**：`MIRRORED_UPSTREAM_AIEXPORT_VERSION` 40→48、
+  `AI_EXPORT_SETTINGS_VERSION` 10→11（5 新技法 + geomancy/primarydirect 对齐）。新守卫
+  `verify_export_contract_mirror.py`：①版本锁步——vendored aiExport 的 `AI_EXPORT_SETTINGS_VERSION` 必须
+  == skill `MIRRORED_UPSTREAM_AIEXPORT_VERSION`（堵「同步旧树」与「改一个忘改另一个」）；②技法键覆盖——
+  每个 skill 导出键须在 vendored 上游 `AI_EXPORT_TECHNIQUES` 内，或走 `KEY_ALIAS`（wangji↔huangji、
+  acg↔locastro 键名分叉）/`DIVERGENCE_WHITELIST`（astrodata skill-only、generic、astrochart_like）。
+  jieqi 分点子键经 JIEQI_SPLIT_TECHNIQUES spread 入上游，按字符串字面识别。守卫需 vendored 树 → 跑在
+  self-hosted release runner（release.yml），非 GitHub CI（后者无 vendored 树）。**逐技法对齐、非整版盲抄**：
+  skill-extra 段（起卦信息）、UI-only 死段（主限天球）、收缩契约由白名单显式豁免。
+
+- **`kin_year_domain.py` 同步漏拷（sync 脚本枚举陷阱）**：symptom = 从上游 v3.5.0+ 重同步
+  `vendor/runtime-source` 后，每个 ken/神数 引擎在**首个域外（BC/远期）请求**上 500。root cause =
+  上游 v3.5.0「全年份域」把域外四柱回退逻辑抽成**顶层共享模块**
+  `Horosa-Web/vendor/kin_year_domain.py`，被 16 个引擎 `config.py`/`jieqi.py`/`shenyishu.py` 懒
+  `from kin_year_domain import solar_term_name/extreme_pillars`。`sync_vendored_runtime_sources.sh`
+  的 require+rsync 清单**逐引擎目录枚举**，漏了这个**平级的顶层单文件** → 重同步静默丢弃它，域内请求
+  照常、域外静默炸。guard = sync 脚本显式拷 `kin_year_domain.py`（+ 其兄弟 `test_month_pillar_boundary.py`）；
+  `verify_vendor_runtime_sources.py` REQUIRED_PATHS 断言该文件 + geomancy `data/ifa_odu.json` + xuanshi
+  `public_data.sqlite` 真文件，并加**内容断言 vendored aiExport `AI_EXPORT_SETTINGS_VERSION >= 48`**
+  （通用拦「同步了旧树」，堵住三层版本脱节 skill<vendored<上游 的静默复发）。教训 = 上游把子逻辑上提为
+  vendor 根级共享件时，逐目录枚举的 sync 清单必须同步补顶层单文件。
+- **kentang registry 已懒挂载 → raw-vendor hard-fail 警告过时**：AGENTS §5/§8 旧警告「raw vendor 直接起
+  chart 服务时 registry 列了未 vendor 引擎会 hard-fail（graceful patch 只在打包 staged 拷贝）」在
+  vendored v44 与上游 v48 都已不成立——`astropy/websrv/kentang/registry.py` 现用 `_LazyMountedService`
+  （默认 `HOROSA_KENTANG_LAZY=1`）：缺引擎只在**首请求**时响亮 500 + 下次重试，启动不炸。18 个 mount 的
+  引擎全在 vendored 集合内。影响 live 验证法：不能再靠「启动即知」，改为**启动后逐 mount 打真请求**强制加载。
+  （按 §2 compaction 蒸馏进 AGENTS §5/§8。）
+- **v3.3.6「有情/无情」purity 是 UI-only，不进 AI 导出链（防后人重查）**：上游 astroPatternOverview.js 的
+  purity 只被 `AstroInfo.js` 消费；`astroAiSnapshot.js::buildPatternOverviewLines` 与 [古典] 接纳/互容行
+  **都不渲染 purity**。故 skill 镜像导出契约**无需移植 purity**。真正落后的是 pre-v44 的一处快照可见细节：
+  [古典] 正/邪接纳行缺 FIX-15 `（拒绝）` 标（supplier 在 beneficiary 座为 exile/fall = 凶接纳）——已补
+  `_reception_reject_mark`（镜像 astroAiSnapshot.isReject）。
+- **geomancy v3.5.1 地占大改版接入**：`_build_geomancy_snapshot_text` 对齐上游 v48 builder —— [判定] 补
+  首母中止/sikidy 三道校验+列比对/hakata 四片盘；[解读技法] 补 points_parity 取样域/黄道宫三方/数量+判官之数；
+  新增 [转宫派生]/[定局落星·甲乙]；十二宫·图形入宫 与 十六图形 改 **markdown 表**（印度派多支名/曜两列）。
+  ifa（西非同族）为**结构对照模式、不产占断**：schema 白名单 8 家占断传本、明确拒绝 ifa
+  （`tool.geomancy_structural_only_unsupported` + 文化声明），换来 判定/十二宫/十六图形 可作**必出段**的强契约；
+  [图形释义]（doctrine 默认关）与 [边界声明]（ifa）skill 不产，仅进 preset 作 export_parse 识别面（同 fengshui）。
+- **primarydirect 段名对齐**：上游 v48 判 `主/界限法设置|表格` 为死名、真名 `主限法设置|表格`；skill builder/
+  preset/report-payload-map 同步改真名，旧名走 `map_legacy_section_title`。UI-only 新段
+  `主限天球·当前动画所指`（3D 动画所指）headless 不产，**故意不进 preset**（§5 UI-only 段过滤）。
+- **live 0-skip 需 Mongo：干净机器只能验 chart 半边**：
+  > 🔴 **本条归因在 v0.36.0 收尾被推翻，原文保留供对照**（见 v0.36.0 段「Java 族 live 从来不需要 Mongo」）。
+  > 实锤：app 注册读的是 jar 内 `data/rsakey.json`（`RequestHeaderInterceptor`），本机 Mongo 里根本没有注册表；
+  > 9999 的真因是 vendored 实例脚本**裸 `java -jar`** → jar 内写死的 `mongodb.host` 解析不到 → 每个碰库请求
+  > 30s 连接超时。按上游桌面模式起（`--mongodb.ip` + `HOROSA_DESKTOP_MONGO_OPTIONAL=1` + 文件回退目录）后，
+  > Mongo/Redis 都不在也全 Java 族真数据；本 Mac 首次 0-skip 全量 live：678 passed。
+  vendored chart 服务（`:8896`）**完全独立**，
+  geomancy/predict/astroextra/ken-formatter 全可验；但 Java 聚合层（`:9996`）的 app 注册在 Mongo 里，
+  无 Mongo 时 `/nongli/time`·`/bazi/birth`·`/ziwei/birth`·`/liureng/*` 一律返 `ResultCode 9999
+  "no.register.app.in.sys"`（不是启动慢、是缺注册）。连带 qimen/taiyi/jinkou（需 `/nongli/time` 脚手架）
+  与 5 新技法的**占时**路径在无 Mongo 机器上跑不了 live。判据 = 这类 500/9999 全落在 java 端点、chart 端点
+  全绿 → 环境限制而非代码问题；这些路径的离线覆盖 = FakeClient 全形状 `/nongli/time` 桩 + FakeJsClient +
+  node golden，占时派生纯 Python 亦离线可测。完整 0-skip 留给带 Mongo/Redis 的发布机。
+- **core-js 重 vendor（baziLunarLocal 全年份域守卫 + gua 六爻大扩充）**：
+  ① `baziLunarLocal.js` 重拷带入 v3.5.0 **全年份域守卫**——`lunarDomainGuard.isLunarJsYearReliable`（AD1~9999
+  外 lunar-js 节气静默错位 → 月柱错，比崩溃更危险，故域外 throw 让上层走后端星历）+ `dateStrSafe.parseDateParts`
+  （`'-7040-07-19'` 裸 split 撕成 NaN 年）两个新 import-free 兄弟依赖随拷；公共 export 面不变（canping/heluo/
+  yizhangjing/zhengchuan 链零改）。
+  ② **gua 六爻整子树重 vendor**：14 引擎模块 + 6 data（tianjiDoctrine 9581 行纯数据）统一 sed 变换
+  （`./X`→`./X.js`、`../../utils/helper`→`./guaHelper`、`../../utils/safeStorage`→`./safeStorage` no-op shim）。
+  新增 liuyaoDuanJue/GuFa/YingQi/ShenShaEx 引擎 → `analyzeLiuyao` 新出 `duanJue`/`yingqi` 等键（旧键全保留=
+  向后兼容）；`tools/liuyao.js` 把「断诀命中」（金锁玉关/随官入墓/随金伏…命中项，**空 render 过滤**）+「应期」
+  折进已有 [断卦结构]（optional）段，不新增段名、契约零变。closure 干净（引擎只 import 兄弟+data+2 shim，
+  无 React/canvas）；golden + analyzeLiuyao real-chain 验证。
+  ③ **本轮 core-js 已完成 = bazi + gua**；ken formatter（DunJia/JinKou/TaiYi 各 4~23 行极端年 clockTime/BC-safe
+  显示微漂）、tarot engine（cardSchema/reportText/verdict 微漂）、tongshefa 三十二观、calendar 4→14 段（黄历
+  四页签，需审 fengshui/zeri.js headless）**列为后续专项**——ken 引擎全年份域已由 Phase 0 runtime 重同步覆盖，
+  这些是极端年显示 polish 与能力增补，非在域正确性缺口，留待专项验证 pass。
+
+### v0.22.0 / 2026-07-16 — parity lint 常量交叉扩到全部 manifest-stamping 脚本（Windows 侧）
+
+- **症状**：`export_registry_version` 在 linux builder + 两个 scaffold 曾滞留 6 而 mac/win 已到 10
+  （上一条台账已记），CI 全绿放行。**根因**：`verify_builder_parity.py` 的
+  `SHARED_MANIFEST_CONSTANTS` 交叉只读 mac/win 两个文件——第三平台 builder 与 scaffold 不在射程。
+- **守卫（本条完成上条教训的机器守卫件）**：lint 新增 `CONSTANT_STAMPERS` 清单
+  （mac/win/linux 三 builder + windows/linux 两 scaffold），三常量
+  （`schema_version`/`runtime_layout_version`/`export_registry_version`）N 路交叉断言；
+  清单中不存在的文件跳过（容忍 repo 演进），存在但缺常量 = 错。已 mutation 验证：
+  临时把 `scaffold_windows_runtime.py` 改 6 → FAIL 并点名 `Windows scaffold=[6]`，还原 → PASS。
+- 注：协议第 3 件（CHANGELOG）不可执行——本仓当前不存在 `CHANGELOG.md`（文档重构后未保留），
+  §2 协议文本与树的这一处不一致留待 mac 侧裁定。
+
+### v0.21.0+ / 2026-07-16 — MCP 面顶级化 + 三方审计（上游基线/用户路径/前沿调研）
+
+- **上游同步基线纠偏**：上游 Horosa-Public 实际已到 **v3.4.0 / aiExport v48**（UPGRADE_LOG 最新条目在文件**顶部**，
+  用 tail 看会误读旧版本）；skill 导出契约整版镜像 ≈ **v40** + 零散摘取 v44 个别段（拼接式而非整版对齐）。
+  约 20+ 技法有段级缺口；一档必同步清单（indiachart ~40 Jyotish 段、guolao 四段、星运族×12 起盘信息、
+  tongshefa/jinkou/tieban 计算层、sanshi 紫微四化、horary/election/relative/ziwei 补段、taiyi「起盘」段
+  ——旧「kintaiyi 不产此段」判定已过期（上游 `webtaiyisrv.py:306` 现由后端产）、qimen 八宫克应、
+  zhengchuan 新技法）与二/三档全表见本轮审计 agent 报告（要点已录入本条）；`wangji` vs 上游导出键
+  `huangji` 存在**键名分叉**（外部 huangji 导出 parse 不识别，需 alias）。守卫：`exports/registry.py`
+  新增机读常量 `MIRRORED_UPSTREAM_AIEXPORT_VERSION = 40`，整批同步后必须更新。
+- **构建常量三平台漂移**：`export_registry_version` win builder=10 而 **linux builder + 两个 scaffold=6**
+  （verify_builder_parity 只交叉 mac/win，linux/scaffold 不在其射程）。已统一为 10；教训 = 新增第三平台
+  builder/scaffold 时，`SHARED_MANIFEST_CONSTANTS` 类常量的锁步检查范围要同步扩。
+- **venv shebang 陷阱（仓库搬家后必踩）**：仓从 `Downloads/` 移到 `Desktop/` 后，`.venv/bin/*` console-script
+  的 shebang 仍指旧绝对路径 → `uv run pytest` 静默回退到**全局** pytest（环境里是旧 mcp，无 Icon）报
+  `module 'mcp.types' has no attribute 'Icon'`，而 `uv run python -m pytest` 正常。症状 = 直接执行
+  `.venv/bin/pytest` 报 `bad interpreter: …旧路径…`。修复 = AGENTS §8 标准 venv 重建。
+- **MCP 面升级（服务器侧）**：78+8 工具全量 **tool annotations**（口径：全部 openWorldHint=False；
+  查询类 readOnly+idempotent；计算类 readOnly=False/destructive=False/idempotent=False——会追加本地 run 行，
+  如实标注）；**elicitation 双轨澄清闸**（客户端有能力→原生表单：按默认一跳闭环 / 补充设置→备注回带给
+  agent 不代答参数；无能力/异常→逐字节回落旧 agent_recovery 错误往返；`HOROSA_MCP_ELICIT=0` 总闸）；
+  **3 prompts**（quick_cast/annual_fortune/export_report → Claude Code 斜杠命令）+ **2 resources**
+  （技法目录/导出注册表）；server icons + website_url；compact/dispatch/factory 路径补 pydantic
+  `ValidationError` → `build_validation_recovery` 兜底。**实测澄清**：动态 `__annotations__` 并未激活
+  FastMCP structured output（`outputSchema: False`）——此前审计担心的「错误分支违约」不存在；structured
+  output 保持未来 opt-in（Claude Code 曾有带 outputSchema 掉工具的事故，开启前必须实测 `tools/list`）。
+- **registry 合规**：`server.json` 按官方 2025-12-11 schema 重写（reverse-DNS name `io.github.horace-maxwell/
+  horosa-skill`、`homepage`→`websiteUrl`、非 schema 字段收进 `_meta`、`$schema` 钉 static URL、transport
+  对象化）；`verify_server_json.py` 从「字段存在性」升级为**严格 schema 结构断言**。README 的 Changelog
+  徽章链接 gitignored 的 CHANGELOG.md（公开仓 404）→ 已删（EN），docs-sync 加「README 禁引用 CHANGELOG.md」
+  守卫。CITATION.cff 在 v0.20/v0.21 又双叒停在 0.19.0（checker 未进 CI 前的积欠）→ 已修，CI 已有守卫。
+- **接入面**：`client config` 新增 **cursor / vscode** 格式（输出官方 install deep link / `vscode:mcp/install`
+  链接 + `code --add-mcp`，真实路径注入）；`--write` 改为 **mcpServers 按键合并**（原来整文件覆盖会清掉用户
+  已有的其他 MCP server）；新增 **Claude Code plugin/marketplace 三件套**（`.claude-plugin/{plugin,marketplace}.json`
+  + 根 `.mcp.json` 用 `${CLAUDE_PLUGIN_ROOT}`，`/plugin marketplace add Horace-Maxwell/horosa-skill` 一步接入）；
+  SKILL.md frontmatter 补 agentskills.io 规范字段（license/compatibility/metadata.version，随版本锁步进
+  docs-sync）；README×2 补 Cursor/VS Code/Plugin 行与 `calendar_month`（v0.20 新工具漏档 EN/SKILL）。
+  依赖钉板 `mcp[cli]>=1.27,<2`（SDK v2 于 2026-07-27 发稳定版、7-28 新规范废弃 sampling/roots/logging——
+  本仓未用，迁移窗口 12 个月）。
+- **前沿调研结论存档（2026-07-15 逐页核实）**：elicitation Claude Code≥2.1.76/Cursor/VS Code 已支持（Claude
+  Desktop/Codex/OpenWebUI 未支持→双轨必要）；llms.txt 有实证证据不值得做（97% 无人读取，Google 明确不用）；
+  MCPB(.mcpb) 可给 Claude Desktop 一键安装（uv 型 manifest，待打包）；MCP Registry 发布需 PyPI 包 +
+  `mcp-publisher login github`（PyPI README 放 `mcp-name:` 行验证）；MCP Apps 扩展值得盯（Claude Code 尚未支持，
+  支持后可做盘面可视化）。
+
+### 开源栈上不可得的段 —— 明确排除项台账（回填时先查这里，别当缺口重查一遍）
+
+判据统一是：**上游 builder 依赖的数据在开源 Horosa-Public 栈上取不到**（后端无该路由 / 依赖 canvas
+渲染 / 依赖交互点位），而不是「本仓还没写」。每条都附可复核的证据，下次审计直接引用。
+
+**另有一类不是「取不到」，而是「上游自己就不当它是可导出技法」——同样别当缺口重查（v0.26.0 记）：**
+
+- **kentang 服务 `qizhengelection`（七政四余择日）与 `xuanshi`（玄学史）** —— 两者都在上游
+  `integrations/kentang/serviceRoot.js` 的 21 个服务里，本仓无对应工具。判据：**两者都不在
+  `aiExport.js` 的 `AI_EXPORT_TECHNIQUES` / `AI_EXPORT_PRESET_SECTIONS` 里**（grep 零命中）——
+  即上游自身没把它们登记为 AI 可导出技法，没有 preset 段表，也就不存在「缺段」。
+  `xuanshi` 是 ECharts 驱动的史料检索/地图页（`XuanShiCelestial/XuanShiMap`），非排盘技法；
+  其 SQLite 数据仍在 `REQUIRED_PATHS` 里（打包需要），**有数据 ≠ 有技法**，别据此判缺口。
+  → 沿用 AGENTS §5 审计前置的老结论：**权威清单是 `aiExport.js` 的技法表，不是服务注册表、
+  也不是组件目录**。「上游有 engine/服务 ≠ 可进公开 skill」。
+
+- **`guolao` 的 `[虚实]` / `[本命化曜]` / `[流年流曜]`（3 段）** —— 三者读 `moiraRules.weakSolid`
+  与 `moiraRules.yearStars`，该对象来自后端 **`/qizheng/moira`**（上游 `services/qizheng.js:10`
+  `fetchMoiraQizhengRules`）。开源 astropy 的 `websrv/` 只挂了 `webqizhengelectionsrv` 与
+  `webqizhengkinsrv`，**没有这条路由**（仓内 vendored 实例实测 POST `/qizheng/moira` → 500）；
+  【v0.36.0 更正：上一行的「没有这条路由」是**测错了服务**——`/qizheng/moira` 挂在 Java 聚合层（astrostudycn
+  `QizhengMoiraController`），Python chart 服务 500 不能证明路由不存在；C1 已按 Java 契约接活。】
+  上游的本地回退 `buildLocalMoiraRules` 只产 `houses/patterns/godHits`，不产这两个字段。
+  → 同批的 `[星曜庙旺与星点动态]` **可得**（纯表查询、只吃 `/chart` 响应），已于 v0.25 补上；
+  别因为「guolao 还欠 4 段」就以为整批同因。
+  这也顺带裁掉了历史矛盾：registry 里「headless 未移植」的旧注释与 LESSONS 早期「已 DONE」的
+  记录互斥 —— 实际是 `政余格局` 早已 DONE（走 vendored Moira DSL），欠的是另外三段且不可得。
+
+- **`primarydirect` 的 `[主限天球·当前动画所指]`** —— 段名即语义：它指的是 3D 天球**动画当前所指**，
+  没有动画就没有「所指」。UI-only，不进 preset。
+
+- **`fengshui` 的 `[风水·玄空六法]` / `[风水·命理派]` / `[风水·综合罗经]`（3 段）** —— 整个 fengshui
+  技法本就是仓内**早已明文的排除项**（canvas + 户型图上传 + 交互点位驱动，`new FengShuiEngine(canvas,…)`，
+  无 birth/time 输入；SKILL.md 与 README×2 都写了「明确排除·风水未完成 headless 化」）。这三段只是该
+  排除面下新增的页签，不改变结论。**别因为「上游 preset 里有」就重新当缺口查一遍**——这已是第四轮踩它。
+
+- **从上游 React 文件抽纯函数：闭包必须连 `const` 箭头助手一起走，且别整份 vendor。** 本轮四个
+  「功能缺口」段全部落地，路上踩了三次同一形态的坑：
+  1. 只按 `function` 声明做传递闭包 → 漏掉 `const luckHouseName = …` 这类箭头助手，症状是段**恒空**
+     而不报错（我的 wrapper 有静默 catch）；
+  2. 漏掉跨文件的**别名导入**（`houseName as luckHouseName`），同样恒空；
+  3. 图省事整份 vendor `ZWLuckPanel.js` → 把 JSX 带进来，Node 直接 `Unexpected token '<'`。
+  做法：闭包同时扫 `function` 与 `const … =>`，从**目标函数**反向传递求闭包，只搬闭包内的东西；
+  调试期先把静默 catch 换成打印，否则「段恒空」这个症状指向不了任何具体原因。
+
+- 对比一条**看起来像**排除项、实际不是的：`jieqi` 的 `[X3D盘]` 曾被我判为 3D 渲染而搁置，
+  读码后发现上游 astro3d 页签走的是 `buildAstroSnapshotContent(one, flds, {headerless:true})`
+  —— 与 `[X星盘]` 逐字同一份文本。**「名字里有 3D」不等于不可 headless**，一律以 builder 实际取数为准。
+
+### v0.25.0 段级回填（上游 v50，216 → 141 段）— 四条会反复咬人的坑
+
+- **🔴 上游前端源不在 `vendor/runtime-source`。** 该树的 `astrostudyui/src/` 只镜像了 `utils/`（供 aiExport
+  对账），**只有 1 个文件**；`components/` 与 `divination/` 整个不在。在那棵树上 grep 段头会得到「上游根本
+  没有这段」的**错误结论**。真身在 `Horosa-Public/Horosa-Web/astrostudyui/src`（12712 文件）。
+  判据：`find <树>/astrostudyui/src -type f | wc -l` —— 个位数就是镜像树，别在上面找 builder。
+
+- **🔴 桩比真实响应「更简单」＝ 把 bug 盖住。** 本轮抓到两处同一形态，都是线上真坏、离线恒绿：
+  1. `/astroextra/harmonic` 真实响应把整个 chart-wrap 放在 `chart` 键下（比通用段构建器预期深一层），
+     调波盘 14 段全是占位存根；FakeClient 的桩**根本没有 chart 字段**。
+  2. `/predict/*` 的交叉相位是 `chart.aspects` **数组**；FakeClient 在**顶层**塞了本命形状的 aspects，
+     于是推运族 5 键的 `[相位]` 段在真机上只有三个空子标题、零条相位，而测试还断言着 `"标准相位" in text`
+     —— 等于在断言 bug 的产物。
+  **规则**：写桩时以真实响应的**嵌套层级与容器类型**为准，宁可繁琐；桩每简化一层，就等于给自己关掉一层守卫。
+  改完桩顺手加反向断言（如 `assert "标准相位" not in text`）锁住方向。
+
+- **段在 `sections` 里 ≠ 真的产出了。** 导出层会给 preset 里没产出的段注入占位存根
+  （「本次本地计算结果未返回「X」细项…」）。看产出要看 **`section_titles_detected`**；`sections` 含存根。
+  「某段同时出现在 `sections` 和 `missing_selected_sections`」是这个信号的典型形态。
+
+- **工具自带 `snapshot_text` 会短路自动渲染器。** 统一出口是 `if not snapshot_text:` 才调
+  `_auto_snapshot_text_for_tool`。工具里回填一份「只含自家几段」的文本，会把整套通用盘面段挡在门外
+  （调波盘就是这么丢了 12 段）。要合并通用段 + 技法段，就**不要**在 `_run_*_tool` 里回填。
+
+- **`revendor_core_js.py` 的落点默认值会丢嵌套层级。** 旧实现取 `Path(rel).parent.name`，于是
+  `divination/data/x.js` 落到 `vendor/data/`，与既有的 `vendor/divination/data/` 形成**同名重复树**，
+  且 relocate 还会把 import 指回旧树 —— 同一模块两份、改一份不生效。已改为「vendor 里存在完整相对父
+  路径就用它」。
+
+- **从上游 React 文件抽函数，记得扫模块级 const。** 抽 `buildJinKouSnapshotText` 时漏了 `MD_DASH`，
+  运行期才炸。做法：抽完用正则把上游所有 `^const X =` 与新文件里已定义的符号做差集，一次补齐。
+
+- **往 registry 插条目时，正则必须锚定字典起点。** `"liureng":` 在 PRESET 与 OPTIONAL 两个字典里都有，
+  `re.search` 命中第一个 → optional 条目被插进了 PRESET（重复键被后一条覆盖，行为无害但语义错、且
+  下次读代码会误判）。先 `t.index("AI_EXPORT_OPTIONAL_SECTIONS = {")` 再在其后找锚点。
+
+- **上游把一族盘按「哪个页面出的」拆成独立导出键**（`aiExport.js` 的 `ASTRO_LIKE_EXPORT_KEYS`：
+  astrochart_like / hellenastro / dwadasamsa / harmonic / draconic / relocation / locastro）。段单同构，
+  所以 `locastro`(=本仓 acg) 这种「看起来是独立技法」的键，导出其实是 **astrochart 全套盘段 + 尾部地图段**。
+  判据：技法在该常量里 → 它的 builder 应复用通用盘面渲染器，而不是自建几段线表。
+
+### v0.14.0 sync lessons (古典占星 [古典] + [古典格局] 补到 chart 家族 — vendor 源 = Horosa-Public, 72 工具不变)
+
+- **新增任何到 chart 服务的 `_call_remote(endpoint)` 必须把 endpoint 加进 `_PYTHON_CHART_ENDPOINTS`。** `[古典格局]` 经
+  `_attach_classical_analysis` 调 `/astroextra/analysis`；最初漏登记该 endpoint → `use_chart_server=False` 落到 **Java** 通路，
+  读 `_java_runtime_ready`（仍 False）→ 二次探针 + 二次 `start_local_services`，直接打挂 `test_service_*runtime*`（`started==1`/`probe_calls==1`）。
+  判据：chart 服务族（`/chart`·`/predict/*`·`/astroextra/*`·`/*/pan`…）一律进该 set，才会复用 `_chart_runtime_ready` 缓存、首调后不再探针。
+- **段补到「既有工具」≠ 新工具**：古典两段挂在 chart 家族导出上，工具数仍 72。版本仍要全量 bump（pyproject/uv.lock/__init__/
+  package.json+lock/server.json/README×2/JSON 例），但 badge/句子/全景标题的 **72 不动**；测试数 260→263 要同步。
+- **`_attach_*` 增补走「gated + try/except graceful + 顶层 stash」**：`_CLASSICAL_ANALYSIS_TOOLS={chart,chart13,hellen_chart}`
+  控制 `[古典格局]` 只挂本命三盘；india/mundane 走 `_build_astro_snapshot_text` 自带 `[古典]`（来自 `/chart` objects），但不挂
+  `[古典格局]`——preset 必须**逐工具对齐**（astrochart/astrochart_like 双段；indiachart/mundane 仅 `[古典]`），否则挂不上的段进 preset 会成「死条目」。
+- **离线 vs live 覆盖分层**：`[古典]` 的 Melothesia 段离线即出（FakeClient objects 带 `sign`），但**逐曜古典状态/围攻/围绕**需富集
+  per-object 字段（outOfBounds/phase/joy/mansion…），仅 live 出；故离线测试断言 stub 驱动的 `[古典格局]` + Melothesia，富集 `[古典]`
+  交 live 测试 + export-fixture（用真 live 快照 `astrochart_classical_live_snapshot.txt` 锁解析契约）。FakeClient 要加 `/astroextra/analysis` 桩。
+
+
+### v0.13.0 sync lessons (4 未同步 AI 技法 + 太乙/八字 段口径 — vendor 源 = Horosa-Public, 68→72)
+
+- **审计前先查自家「明确排除项」+ 过 headless-readiness 闸。** 第三轮把 `fengshui` 误当可补缺口——它是 canvas +
+  户型图上传 + 交互点位驱动（`new FengShuiEngine(canvas,…)`，无 birth/time 输入），无法 headless；仓内 SKILL.md/README×2
+  早有「明确排除·风水未完成 headless 化」政策。教训：上游有 engine 文件 ≠ 可进公开 skill；每个候选先 grep 排除政策，
+  再确认其 `buildXxxSnapshotText` 是纯 `chart/data→text`（无 canvas/DOM/上传/点击依赖）。
+- **AI-export 技法的权威清单 = `aiExport.js` 的 `EXPORT_TECHNIQUES` + `EXPORT_PRESET_SECTIONS`**（不是组件目录）。本轮
+  4 个缺口（triplicityrulers/keypoints/lunationphase/extrareturns）都在该表里却无 skill 工具。`utils/triplicityRulers.js`
+  用 `AstroConst.SignsProp` → shim 必须补该表（v0.11 闭合教训复发点：load 过、真盘崩）。
+- **请求型 builder（如 extrareturns 逐体拉 `/astroextra/planetreturn`）不能塞进 headless JS**（JS 层不发 HTTP）——
+  后端调用放 Python（`_run_*_tool` 循环 `_call_remote`），JS 只做纯格式化；或直接 Python 拼段（extrareturns 即此）。
+- **后端「整段 sections」可能被旧 vendor 层 strip 掉**：太乙的 13 段解读 kintaiyi 后端本就返回（top-level `sections`），
+  但 `tools/taiyi.js` 历史上 `sections: undefined` 整体丢弃。排查法：抓 `js_client.run` 实际收到的 `ken_response`，
+  grep `sections`/段名，再决定是「透传」还是「重 vendor builder」。条件出现的段：**同时进 preset（present 不 unknown）
+  + optional（absent 不 missing）**——单进 optional 不够（parser 的 unknown 只减 preset，见 `exports/parser.py:130`）。
+- **CI 起不了后端**：GitHub Linux runner 无 Linux 运行时（Linux PR 已拒；运行时 macOS/Windows-only + gitignore）。
+  别造「boot runtime」假 job；CI 网 = offline FakeClient 契约 + export-fixture 契约，全套 live 在本机 vendored 实例发布前跑。
+- **`04caa37`（Windows v0.12.0）带来的两道闸**：`release-completeness.yml`（发布后查 latest 是否双平台——darwin-only latest
+  过渡期必红=预期信号）+ `verify_builder_parity.py`（mac/win builder 锁步 + REQUIRED_ENTRIES 对称）。新技法是 horosa-core-js
+  内的 JS+Python（随包带入，不改 payload/REQUIRED_ENTRIES），故 parity 不受影响——但发布前要跑 `verify_builder_parity.py`。
+
+
+### v0.12.0 sync lessons (主限法 v12 核5收敛 + 排盘修正批 + faRelatedPeople — vendor 源 = Horosa-Public)
+
+- **vendor 源 = 开源仓 Horosa-Public**（`HOROSA_SOURCE_ROOT=/Users/horacedong/Desktop/Horosa-Public`；
+  sync 脚本默认根是 Desktop、其下无 Horosa-Web，必须显式传）。Public 的 PD 引擎天然就是核5+legacy 白名单
+  （perchart 白名单 ↔ `_PD_METHOD_REGISTRY` 6 键锁步），v12 核 kernel 完整（Vertex/多圈/每盘钥匙/显示窗）。
+  同步后核法：vendored astropy 与 Horosa-Public 逐文件 `diff -q` 全同 + `PD_SYNC_REV==pd_method_sync_v12`
+  + golden v266 在位。**同步与核对一律以 Horosa-Public 为唯一来源。**
+- **`/predict/pd` 的 params 回显是原样输入，不是引擎解析值**：送 `placidus` 回显仍 `placidus`，但引擎内已
+  回退 core_alchabitius（行集与显式 core 逐位一致，live 测试钉死）。skill 快照对白名单外键如实标注
+  「未核验，引擎回退 Alcabitius 半弧法」，不静默换标签。
+- **live 验证必须打 skill 自己 vendored 的引擎实例，不是 :8899/:9999 上恰好在跑的东西**——默认端口上
+  常驻的服务不保证与 vendored 引擎同版本（陈旧实例会掩盖白名单/钥匙问题）。本轮把 tests 的
+  gate+`make_service` 从写死 `:8899/:9999` 改为尊重 `HOROSA_CHART_SERVER_ROOT`/`HOROSA_SERVER_ROOT`
+  （此前 env 覆盖静默无效，一次「带覆盖的全绿」实际测的是默认端口上的旧实例）。
+  起 vendored 实例：chart 要 `PYTHONPATH=<vendor>/Horosa-Web/astropy`
+  + `HOROSA_CHART_PORT`（脚本只自动解析 flatlib，不解析自身包根）；java 用 vendored
+  `runtime/mac/java/bin/java -jar runtime/mac/bundle/astrostudyboot.jar --server.port=… --astrosrv=…`
+  （root 500 = 正常无路由）。
+- **防陈旧进程门已制度化为 live 测试**：chart 心跳 `GET /` 回显 `pdSyncRev`，断言 ==`pd_method_sync_v12`
+  再信任结果（v12 注记坑#6：陈旧引擎把未知时间钥匙静默按 Ptolemy 算）。**钥匙分叉探针别用 Kündig**（静态
+  标度 1.0 与 Ptolemy 同日期）——用每盘真算的 Kepler（live：321/321 行日期分叉）。
+- **pd 表行是列表不是字典**：`[arc, prom, sig, type, date]`；3000 年多圈 = 同 (prom,sig) 弧 +360°×n
+  （live 实测 168 组复发对，max arc 2995.5°）。宿命点行 id `N_Vertex_0` 仅 In-Zodiaco；skill 侧
+  `ASTRO_TEXT_MAP["Vertex"]="宿命点"`（主短两表都要）。
+- **faRelatedPeople 透传**：vendored `computeProtect` 吃 `pan.faRelatedPeople=[{name, yearGan}]`（显式数组
+  为准，缺省不出行）。skill 在 Python 侧把 `{name, birth}` 经 `/nongli/time` 的 `yearJieqi`（立春界）归一化
+  为年干（1991-02-03 → 庚，立春前归前一年，live 钉死），JS 保持上游 verbatim 只 stamp。上游的
+  `birthToYearGan` 依赖 lunar-javascript，skill 不引这个依赖——走自家 nongli 后端同口径。
+- **排盘修正批随重同步自动带入**（日返/月返种子、合盘/组合盘归一化、恒星跨0°、围攻 orb、均时差等，上游
+  pytest 60 + golden byte-perfect 已验）；skill 结构断言型测试全绿，无需改动。
+- 界 (term) promissor row id = `T_<ruler>_<sign-name>`（非经度）；上游 dial 的 `_PD_CHART_METHOD_HSYS`
+  只在 skill 暴露 dial 时才相关（目前只暴露 PD 表）。
+
+
+> ↓ 附录：v0.12.0 当轮的同步清单原文（自述「留作历史核对参照」）。
+
+## 主限法 v12 批(upstream 星阙 v2.6.6 — ✅ 已于 v0.12.0 同步完成,vendor 源=Horosa-Public)
+
+> 下面 7 条是当时的同步清单,留作历史核对参照;实际执行结论与坑见上方「v0.12.0 sync lessons」节
+> (全部逐条核到:核5白名单/22钥匙/Vertex/3000多圈/golden v266/pdSyncRev 心跳门/钥匙分叉 live 测试)。
+
+1. **显示窗口径换了**:行星对显示窗 = 「弧 pre-norm 原值 |Δ| < 107.5」单参数判据(`_passesCoreDisplayWindow`),旧三分支 λ 窗 + EPS 已删。世俗(In-Mundo)核旧窗符号错配修复 → **In-Mundo 行星对行显著增多是修复非回归**,skill 的 golden/selfcheck 若按旧行数断言会假红。
+2. **宿命点(Vertex)应星新增**(仅黄道向运;世俗核不出):行 id `N_Vertex_0`,闭式直算。snapshot/导出段如列方向行,新应星会出现。
+3. **时间钥匙修真**:Simmonite/Kepler/Brahe 由常数改**每盘真算**(本命太阳日速);新增 `Kündig`(静态 1.0)与 `SymbolicSolarArc`(动态,逐弧查星历)。同步时 `STATIC_TIME_KEY_SCALES` 集合与 `PER_CHART_TIME_KEY_FALLBACK` 一起带。
+4. **pdYears 上限 360→3000**:`perchart.py` 夹断 3000;`perpredict._extendCorePdRecurrences` 统一旧「180+ 互补行」与多圈复发(基弧+360m)。≤360 逐位等价旧式;skill 侧若有 pdYears 校验/文档要同步上限。
+5. **golden 改名** `golden_alcabitius_ptolemy_v266.ndjson.gz`(v253 删),manifest 同步;`PD_SYNC_REV = pd_method_sync_v12`(helper.py/webchartsrv.py + 前端 + Java 4 控制器——skill 只 vendor Python 也要带 rev,响应 params.pdSyncRev 会回显)。
+6. **坑·陈旧 Python 进程静默吞新钥匙**:长驻 webchartsrv 不重启时,新动态钥匙会**静默按 Ptolemy 算日期**(未知 key 不报错走默认 scale)。skill 打包运行时若复用旧进程同坑;验证法 = 直接 POST 对比 Ptolemy vs 新键日期是否分叉。
+7. 同步自检建议:vendored 引擎跑 `pdYears=3000` 应出多圈行(同 (prom,sig) 链上 arc+360k、日期逐圈递增);`pdYears=100` 行集与 v2.6.5 vendor 比对 — 仅显示窗/宿命点差异属预期。
+
+
+### v0.11.0 sync lessons (Xingque v2.6.3→v2.6.5 parity + 2 v0.10.0 deferrals — no new tools, still 68)
+
+- **Sidereal ayanāṃśa is pure Python passthrough.** `perchart.py` reads `data.get('siderealAyanamsa')` and emits
+  `chart.siderealAyanamsa` + `chart.nakshatras` (sidereal only). `BirthInput` has `extra="allow"` so the param already
+  flows via `model_dump(exclude_none=True)`; declaring it is for discoverability + guidance only. **Real bug fixed:** the
+  skill's `ASTRO_MSG["Sidereal"]` was hardcoded `恒星黄道，岁差:Lahiri` → mislabelled Raman/Fagan charts; de-hardcode it,
+  read the ayanāṃśa from `chart.siderealAyanamsa` (西占) / `chart.siderealModeKey`+`ayanamsaValue` (印占, **different field
+  names**), and put the real name on its own line. `chart.zodiacal` is a *localized string* ("恒星黄道"), not an int — don't
+  gate on `== 1`. Nakshatras read from `response.chart.nakshatras`, NOT top-level.
+- **India is Python (`/india/chart` in `_PYTHON_CHART_ENDPOINTS`), reads `indiaHsys`/`indiaAyanamsa`** (aliases hsys/ayanamsa/
+  siderealMode). Golden = ayanāṃśa *differences* are stable astronomical constants (Raman−Lahiri Sun lon = +1.446°,
+  Lahiri−Fagan = +0.88°) — robust without pinning fragile absolute lon.
+- **JS vendor dependency-closure is the whole game (六壬毕法 D + 政余格局 E).** Both are pure module-level closures
+  (zero `this.`/React) — extract by transitive-call analysis, but **CONST refs are caught separately from function refs**
+  (missing `JiaZiList`/`ERFAN_SU_TO_BRANCH` → silent `ReferenceError` swallowed by try/catch → null result). The 六壬 三传
+  engine is a plain `ChuangChart` class — vendor it with draw-only imports (GraphHelper/helper/LRShenJiangDoc) replaced by
+  no-op stubs (only `genCuangs` runs). `SZConst.js` reads `localStorage` at *module load* → **hardcode a no-op shim** (node
+  25's experimental global `localStorage` throws without `--localstorage-file`; don't probe `globalThis.localStorage`).
+  `AstroText.js` keys its maps on `AstroConst.*` constants → extend the `constants/AstroConst.js` shim with every planet/
+  node/point the closure looks up, or the lookups return `undefined`-keyed.
+- **政余格局 honest limitation:** 七政神煞 (官/福/疾/天贵/玉贵/岁驾) come from a *separate* kinastro qizheng engine
+  (`fetchKinastroQizheng`) the western-`/chart` guolao path never calls → `guolaoGods` absent → god-dependent patterns
+  can't fire (chart-object ones do). The 神煞 section was already empty for the same reason. `能接多少接多少、跑不通如实标出`.
+- **紫微 P0–P2 data is all in the jar response** (re-synced): top-level `patterns` (命中格局: name/category/duanyi/broken),
+  `houses[].starsOthersGood/Bad/Small` (杂曜), `direction`/`smallDirection` (大限/小限). Just surface it in
+  `_build_ziwei_snapshot_text`. 来因宫 + rich 流曜运限 are frontend-only (ZiWeiHelper) → not in the response, honestly skipped.
+- **Offline contract (`test_all_callable_techniques...`) forbids bare `无` sections.** Any new JS-fed or jar-fed section
+  needs a `FakeJsClient`/`FakeClient` handler returning real content (guolao_moira; `/ziwei/{birth,rules}` patterns), AND
+  the section in both preset + `AI_EXPORT_OPTIONAL_SECTIONS` (conditional → no false `missing`).
+
+
+### v0.10.0 sync lessons (Xingque v2.5.4/v2.6.x parity — no new tools, still 68)
+
+- **PD full-house params flow through `PerChart`, not the web layer.** `webpredictsrv.py:pd()` is just
+  `PerChart(data) → getPredict() → getPrimaryDirection()`; `perchart.py` reads `pdMethod/pdDirect/pdAntiscia/...`
+  from the request, `perpredict.py` reads them via `getattr(self.perchart, ...)`. So A only needed schema fields
+  + a vendor re-sync (`input_normalized` is `model_dump(exclude_none=True)` → unset params fall back to the
+  upstream defaults: direct/converse on, antiscia/terms off). Don't grep the web srv for the param — grep `perchart.py`.
+- **JS re-vendor dependency closure is the #1 trap.** The jinkou 解读层 crashed on `LRConst.TaiXuanNum` undefined —
+  the curated `vendor/liureng/LRConst.js` (131-line, AstroConst-free) was missing 6 new constants
+  (`TaiXuanNum/ZiCong/ZiHai/ZiPo/ZiSangHe/ZiXing`). Do NOT re-vendor the full upstream `LRConst.js` (it `import`s
+  `AstroConst` from a path that doesn't exist headless); append only the new pure constants. Always do a
+  `node -e "import('...')"` load-check AND a real-data run after vendoring, not just a load-check.
+- **qimen 法奇门 = surgical add, not a 2086-line re-vendor.** `DunJiaFaDoc.js` is pure; `DunJiaFaCalc.js` imports
+  only `DunJiaFaDoc`. The existing `DunJiaCalc.js` works, so just add `import { buildFaQimenAnalysis }` + the +8-section
+  block before its `return`. `buildFaQimenAnalysis(pan)` is compatible with the skill's kinqimen pan (live-verified);
+  all 8 法 headers emit when `fa` is truthy. Preset = the builder's actual sections (14: skill has no `九宫与宫内星体`).
+- **liureng `毕法/占断向导` — DONE in v0.11.0** (was deferred in v0.10.0): the ~40-field layout context IS assemblable
+  headless. `buildLiuRengReferenceContext` + `buildLiuRengLayout`/`buildKeData`/`buildSanChuanData` are pure
+  module-level functions (20-fn / ~570-LOC closure, zero `this.`/React) — extracted verbatim into
+  `vendor/liureng/liurengRefContext.js`. The 三传 engine is `ChuangChart.genCuangs()` (plain class; vendored with
+  the 3 draw-only imports — GraphHelper/helper/LRShenJiangDoc — replaced by no-op stubs since only genCuangs runs).
+  Deps: full `LRConst.js` (re-vendored 21→52 exports superset; has GanJiZi/GuiRengs/GanZiWuXing/getGuiZi), `LRPanStyle.js`,
+  a 12-LOC `constants/AstroConst.js` shim (LIST_SIGNS + Sun/Moon). Wired in `tools/liureng.js`: `[毕法（已命中）]` always
+  (refCtx success), `[占断向导]` only when `payload.zhanCategory` ∈ {hunyin/taichan/jibing/caiyun/…}. Both in the liureng
+  preset + `AI_EXPORT_OPTIONAL_SECTIONS["liureng"]` (conditional → no false missing). **坑**: missing a module-level const
+  in the closure (JiaZiList/ERFAN_SU_TO_BRANCH) → silent `ReferenceError` caught by try/catch → refCtx null → 毕法 absent;
+  and a missing `ChuangChart` import → 三传 null → only non-三传 毕法 fire. Always trace refCtx + sanChuan on a real 盘.
+- **guolao `政余格局` — DONE in v0.11.0** (was deferred): `buildLocalMoiraPatterns` (Moira DSL) + its 34-fn/~600-LOC
+  pure closure (zero `this.`) extracted verbatim into `vendor/guolao/guolaoMoira.js`; runs via `js_client.run("guolao_moira")`
+  in `_run_guolao_chart_tool`, appended as the `[政余格局]` section. Deps chained out: `vendor/suzhan/SZConst.js` (with a
+  hardcoded `localStorage` no-op shim — node 25's experimental global localStorage throws without a flag), the real
+  `constants/AstroText.js` (name maps) + an extended `constants/AstroConst.js` shim (planets/nodes/points the maps key on),
+  and inline `GUOLAO_LIFE_MODE_*` + `getStored*` default stubs (headless has no UI prefs → ASC 命度 / su28=2).
+  **Honest limitation** (`能接多少接多少、跑不通如实标出`): the 七政神煞 (官/福/疾/天贵/玉贵/岁驾) come from a *separate*
+  kinastro qizheng engine (`fetchKinastroQizheng`), which the skill's western-`/chart`-only guolao path never fetches — so
+  `guolaoGods` is absent and the **god-dependent patterns** (八杀朝天/日月拱官/官福失垣/…) can't fire. The **chart-object
+  patterns** (孛犯太阳/罗犯太阳/金水相涵/日月失所/命坐两歧/孤月独明) DO fire (golden: 1985-03-21 → 金水相涵 + 孛犯太阳).
+  The 神煞 section was already empty for the same reason (pre-existing). Closing it = wiring the qizhengkin gods in (future).
+- **Live services make the @requires_* tests run.** When `:8899` (chart/ken) and `:9999` (Java) are up, pytest runs
+  the integration tests for real (233 passed, 0 skipped). That validated B/C/A against real Python compute and the
+  qimen/jinkou 解读层 against the real ken backend — the best signal available. CI (services down) skips them.
+
+
+### v0.9.2 hardening lessons (audit pass — tests/robustness/fidelity/runtime)
+
+- **`f"{response.get('snapshot')}"` produces the literal string `"None"` when the key is absent** (a truthy
+  6-char string → a garbage "None" export that silently passed). Always guard `raw = response.get("snapshot")`
+  then `f"{raw}".strip() if raw else ""`. This bit `_run_shenshu_tool`; the same `f"{...or ''}"` idiom is safe
+  only because of the explicit `or ''`.
+- **Don't silently fall back in compute runners.** `_split_birth_ymdhm` used to substitute `2025-01-01` on an
+  unparseable date (wrong-moment chart, no error). Now it raises `tool.shenshu_bad_date`; `_run_shenshu_tool`
+  raises `transport.shenshu_snapshot_unavailable` on a no-snapshot (old-backend) response; horary/election/
+  progextra log + attach `snapshot_error` instead of a bare `except: pass`.
+  *(v0.50.0 supersedes the progextra half: `_run_progextra_js_tool` — balbillus / triplicityrulers / keypoints /
+  yearsystem129 — no longer returns ok=true with placeholder sections when the JS builder fails; it raises
+  `tool.<technique>_empty_snapshot` like its siblings, and re-raises `js_engine.*` untouched so the install /
+  `HOROSA_CORE_JS_ROOT` recovery survives. Guard: `test_progextra_failure_is_a_structured_error_not_a_placeholder`.)*
+- **persiandirected dates differ from 星阙 by ≤1 day** (~40% of rows). Root cause: 星阙's moment
+  `add(N,'days')` TRUNCATES the fractional day (JS `Date.setDate` floors), AND `arc % 360` has JS↔Python
+  float noise that rounds to the same 2-dp age but flips a day at the integer boundary. Matching the truncation
+  made it worse (float noise dominates). The ages/aspects/targets are byte-identical; the ≤1-day 应期 date is
+  astrologically negligible and documented (`docs/v091-fidelity-spotcheck.md`). To verify a hand-port's
+  fidelity, extract the 星阙 builder's pure functions + run them on the same fixture and diff — but mind
+  `moment` (CJS, `createRequire`) and the React-class lines.
+- **Runtime-slim reality: `pyarrow`(119M)/`pandas`(40M) are astropy deps, NOT streamlit-only.** kintaiyi needs
+  `import astropy.units` → astropy needs pyarrow+pandas. Stripping them breaks taiyi. streamlit is imported
+  pervasively across `kinastro/astro/*` (st.markdown ×1817 …) so it can't be stripped without a fragile stub.
+  **Only `plotly`(40M) is safely strippable** (streamlit-only + lazily imported for `st.plotly_chart`, never hit
+  headless). Verified `import streamlit` + cetian snapshot + `astropy.units` all OK without it.
+- **Export presets are a SUPERSET; some sections are 星阙-UI-only or conditional.** `AI_EXPORT_OPTIONAL_SECTIONS`
+  (registry) lists sections a preset names but the headless snapshot may not emit (检索/查询 panels, mode/topic
+  conditional). The parser excludes them from `missing_selected_sections` so real exports read clean; strict
+  techniques keep an empty optional set. Also: a preset copied from `aiExport.js` can MISS sections the backend
+  actually emits (qizhengkin 今制宿度/古制宿度) → they surface as `unknown_detected_sections`; add them to the preset.
+
+
+> ↓ v0.9.0 暂缓、v0.9.1 全部补齐的神数家族整合记录原文。
+
+### 神数 family (14) — ALL SHIPPED (v0.9.1)
+
+The kentang registry (`astropy/websrv/kentang/registry.py`) mounts **14 神数 engines on the chart
+service (:8899)**: wangji / wuzhao / taixuan / jingjue / shenyishu (5 standalone engines) + shaozi /
+tieban / fendjing / beiji / nanji / chunzi / xianqin / cetian / qizhengkin (9 sharing the **`kinastro`**
+engine). Both groups are now integrated — the wiring is identical (backend `snapshot` → export), the
+only difference is which engine dir is vendored:
+
+- **Tier 1 — 5 standalone engines: SHIPPED.** `vendor/{kinwangji,kinwuzhao,taixuanshifa,jingjue,shenyishu}`
+  (~5.2 MB total). Each `web{key}srv.py` builds a `response["snapshot"]` whose `[小节]` headers already
+  match 星阙's `aiExport.js` preset, so the skill needs **no snapshot builder** — just POST `/{key}/pan`
+  and export `response.snapshot`. Wiring: one shared `_run_shenshu_tool(payload, key)` + `_split_birth_ymdhm`
+  (神数 take split year/month/day/hour/minute, not date/time strings) + a `ShenShuInput` (FlexibleModel:
+  date + optional time + 晚子时 switches + an `options` passthrough for engine-specific overrides like
+  wuzhao mode/number). **CRITICAL routing gotcha:** kentang mounts only reach :8899 if the endpoint is in
+  `_PYTHON_CHART_ENDPOINTS` — otherwise `_call_remote` sends them to the Java :9999 server and they 500.
+  Add `/wangji/pan` … `/shenyishu/pan` there (alongside `/qimen/pan`).
+- **Tier 2 — 9 kinastro-* engines: SHIPPED (v0.9.1).** All 9 share the `kinastro` engine
+  (`from astro.{shaozi,fendjing,chunzi,cetian_ziwei,…} import …`). Same shared `_run_shenshu_tool`;
+  cetian/qizhengkin/xianqin also forward `gender` + place. **The v0.9.0 "deferred" call was WRONG:** the
+  live :8899 returned `basic`-only data only because the user's *running* app was an older build — the
+  current source's `web{key}srv.py` all set `pan["snapshot"] = build_snapshot(pan)`, and the engine
+  imports + computes cleanly under the bundled Python. Vendor the **engine only**: `vendor/kinastro`
+  with `--exclude=tools` (the 26 MB `tools/cities` geocoding DB is not needed for ganzhi 神数) +
+  `--exclude={ui,frontend,docs,wiki,examples,tests,styles,scripts,.streamlit,…}` → ~31 MB (`astro/` is
+  32 MB raw). `ensure_kinastro_path()` puts `vendor/kinastro` on `sys.path` so `import astro.shaozi`
+  resolves; `streamlit` is a kinastro import but it's already in the bundled site-packages (the
+  `@cache_data`-without-runtime warning is harmless). **Validate offline by invoking each
+  `web{key}srv` class's `pan()` with a mocked `cherrypy.request` from a NEUTRAL CWD** (NOT `cd $HW`, or
+  the local `Horosa-Web/astropy/__init__.py` shadows PyPI astropy → `No module named astropy.units`).
+- **The 9 kinastro-* have NO live `@requires_chart` test** — the user's running app is an older build
+  without their snapshots, so a live test would red. They're covered by the offline FakeClient contract
+  suite (the fake synthesizes a preset-covering snapshot) + the in-process srv validation.
+- **Some kinastro presets have conditional sections** (tieban/chunzi/cetian emit fewer than the full
+  `aiExport.js` preset for a given input). The FakeClient emits the FULL preset so the offline contract
+  is clean; real exports may show a few `missing_selected_sections` — that's expected (like election).
+- **NATIVELY CONFIRMED on Windows (v0.9.1 release build).** Booting the bundled `win32-x64` chart service
+  and POSTing to each `/{key}/pan`, **all 14 神数 returned `ResultCode 0` with a real `Result.snapshot`** —
+  the 5 standalone (`source` `kinwangji`/`kinwuzhao`/`taixuanshifa`/`jingjue`/`shenyishu`) and all 9
+  kinastro-* (`source: kinastro`, snapshots 540–6000 chars). So the engine-only kinastro trim (above)
+  is sufficient and the "deferred" worry is fully retired on Windows too — not just structurally.
+- **Native-probe gotcha: the snapshot is nested at `Result.snapshot`, not top-level.** The raw chart-service
+  response is `{ResultCode, Result:{source, engine, snapshot, raw, …}}` (the skill's `_call_remote` unwraps
+  `Result` for `_run_shenshu_tool`, which then reads `response["snapshot"]`). If you probe `/{key}/pan` with
+  raw HTTP and read a top-level `snapshot`/`engine`, you'll wrongly see "empty" and think the engine failed.
+  Read `Result.snapshot` / `Result.source`.
+
+
+> ↓ ≈skill v0.8.x 时代：上游星阙 v2.5.0 批的整合记录原文。
+
+### v2.5.0 推运 (7) + 卜卦/择日 — JS-vendor vs Python-port decision tree
+
+星阙 v2.5.0 added 7 推运 (jaynesprog / vedicprog / planetaryarc / planetaryages / balbillus /
+yearsystem129 / persiandirected) plus the **horary (卜卦)** and **election (择日)** divination engines.
+The integration rule that emerged:
+
+- **Backend-computed (has a `/predict/*` or `/astroextra/*` endpoint) → Python.** jaynesprog
+  (`/astroextra/jaynesprog`), vedicprog (`/astroextra/progressions` zodiacal=1), planetaryarc
+  (`/predict/planetaryarc`) — `_call_remote` + a Python snapshot builder. Add the endpoint to
+  `_PYTHON_CHART_ENDPOINTS`. **These 3 endpoints did NOT exist in the v2.4.0 `vendor/runtime-source`** —
+  they need the v2.5.0 re-sync (`sync_vendored_runtime_sources.sh`) before the bundled runtime can serve
+  them; the LIVE 星阙 app (:8899) already has them, which is why the live `@requires_chart` tests pass
+  pre-rebuild.
+- **Frontend, reads pre-computed chart data → Python.** planetaryages (reads `chart.objects` +
+  `params.birth`), yearsystem129 (reads `predictives.yearsystem129`, which `/chart` only emits when cast
+  with `predictive` truthy — `getPredictivesObj`), persiandirected (pure 1°/年 arithmetic off
+  `chart.objects`/`houses`/`birth`). Ported to Python reusing `_astro_msg` / `_aspect_label` /
+  `_split_degree`.
+- **Frontend, algorithm-heavy / risky to re-derive → vendor the JS verbatim.** balbillus (247-line
+  129年旺距削减 with recursive sub-periods). Vendored `astrostudyui/src/utils/balbillus.js` →
+  `horosa-core-js/src/vendor/astroextra/balbillus.js`, redirecting its `AstroConst`/`AstroText` imports to
+  a tiny **`progConst.js` stub** (7 classical planet ids + `LIST_SIGNS` + `AstroTxtMsg` — avoids vendoring
+  the 1128-line AstroConst). Needs `moment` (added to `horosa-core-js/package.json`). Dispatched through a
+  new **`progextra` JS tool** (`technique` → builder map) called from `_run_progextra_js_tool`.
+- **卜卦/择日 = vendor the whole `divination/` tree.** It's ~3200 lines of **pure logic with only relative
+  imports** (no React/antd). Copy the entire `astrostudyui/src/divination/` into
+  `horosa-core-js/src/vendor/divination/` (this also re-syncs the v0.8.0 lifespan subset to upstream), then
+  **add `.js` to every relative import** (Node ESM needs explicit extensions; a one-shot regex over
+  `from '…'` does it — 22 files). Two thin JS tools `horary.js` / `election.js` call
+  `runHorary(chartResp, category)`+`buildHorarySnapshot` / `runElection(chartResp, topicId)`+
+  `buildElectionSnapshot`. Python `_run_horary_tool` / `_run_election_tool` cast a **traditional**
+  (`tradition:1`, `predictive:0`) chart at the question/candidate moment, pass the `/chart` response as
+  `payload.chart`, and read back the JS-resolved `category`/`topicId` (the engine falls back unknown →
+  `general`/`marriage`).
+
+Gotchas that bit us here:
+- **`buildFacts(result)` wants the full `/chart` response** (it reads `result.chart.objects`, `result.objectMap`,
+  `result.aspects`, …), so pass the whole response object as `chart`, not just `chart.objects`.
+- **election preset has dead/conditional sections.** 星阙's `aiExport.js` election preset lists `应期`
+  (its builder **never** emits it) and `用事专属` (only when the topic rule-pack produced items). We mirror the
+  preset for fidelity, but `_assert_clean_export` (which requires `missing_selected_sections == []`) is too
+  strict for election — assert `missing ⊆ {用事专属, 应期}` instead. horary's 9 sections are all reliably
+  emitted (描述 is technically conditional but present for normal charts), so horary keeps strict clean-export.
+- **Router: 卜卦 also contains the generic 卦.** The 梅花易数/卦 branch (`["梅易","卦","gua"]`) must exclude
+  horary phrasing (`卜卦/horary/起卦/占问`) or `卜卦问婚姻` mis-routes to `gua_desc`.
+- **Offline test fakes must cover the new JS tools.** `FakeJsClient.run` needs `progextra` (balbillus snapshot),
+  `horary`, `election` handlers, and `FakeClient` `/chart` needs `predictives.yearsystem129`, or the offline
+  export-contract suite falls back to `generated_template` and fails.
+
+
+> ↓ ≈skill v0.7.x 时代：上游星阙 v2.4.0 批的整合记录原文。
+
+### v2.4.0 西占 (Western) techniques — agepoint / distributions / mundane / natal extras
+
+These are 星阙 v2.4.0 additions; integrating them required **re-vendoring `vendor/runtime-source` from
+星阙 v2.4.0** (the bundled chart service then carries `/predict/agepoint`, `/predict/dist`,
+`/astroextra/greatconj`, and the enriched `/chart`). Patterns:
+
+- **`agepoint` / `distributions` are simple backend predict tools** (like harmonic): `_call_remote`
+  (`/predict/agepoint` → `{agepoint:{points:[…]}}`; `/predict/dist` → `{dist:[…]}`) + a Python snapshot
+  builder (`_build_agepoint_snapshot_text` / `_build_distributions_snapshot_text`, ports of 星阙's frontend
+  builders). Both endpoints are in `_PYTHON_CHART_ENDPOINTS`. Each has a single-section export contract.
+- **本命增补 (12分度 / 主宰星链 / 寿命格局) is JS-computed, Python-formatted.** 星阙 computes these in the
+  frontend (`astroAiSnapshot.js`), reading the chart object. The skill vendored the needed 星阙
+  `divination/` engine subtree into `horosa-core-js/src/vendor/divination/` (chartFacts + the Ptolemy
+  **lifespan** engine + `data/{signs,dignities,planets,houseMeanings}` + `engine/utils` — a clean 8-file
+  closure, no npm deps) and wrote `src/vendor/astroextra/natalExtras.js` + the `astroextra` JS tool that
+  return **structured** data (dodeca pairs / dispositor chains / the runLifespan res). `service.py`'s
+  `_attach_natal_extras` (only for `chart` + `mundane`) calls it via `js_client`, and
+  `_build_natal_extra_sections` formats the 3 sections with `_astro_msg` — so the JS does compute, Python
+  does the Chinese formatting (no `AstroText`/`whichTerm` vendored). They are inserted into the astrochart
+  snapshot before `可能性`; the `astrochart` preset gained the 3 sections.
+- **`mundane` (世俗入宫盘) is a composite** local tool: `/jieqi/year` (seedOnly, `jieqis:[term]`) → find
+  the `jieqi24` entry whose `jieqi==term` → its `time` is the precise ingress moment → `/chart` at that
+  instant → `_attach_natal_extras('mundane', …)` → prepend a `[世俗入宫]` head to the astrochart snapshot.
+  Input is **year + 入宫节气 + place** (date/time are derived, not user input).
+- **Re-vendoring `vendor/runtime-source` (the skill's copy) is allowed and READ-ONLY on 星阙.**
+  `sync_vendored_runtime_sources.sh` with `HOROSA_SOURCE_ROOT=<星阙 tree>` does it. After it, re-apply the
+  graceful-kentang-mount patch to the vendor's `astropy/websrv/kentang/registry.py` if you run the chart
+  service directly from `vendor/` (the **build** scripts patch the staged copy automatically; the raw
+  vendor hard-fails on `mount_kentang_services` because the kentang registry lists engines like `kinwangji`
+  that the skill doesn't vendor).
+
+
+### 发布完整性编年（v0.10.0–v0.18.0）— 原文
+
+> ↓ 原为 AGENTS.md 打包 gotcha 大 bullet；现行「三失效模式 + 检测 + 修复」法则已蒸馏进 `AGENTS.md` §7，这里保存完整案例史。
+
+- **A new release published as `latest` is repeatedly missing its Windows half — ALWAYS check the release
+  manifest first. The CI guard now catches this automatically.** The mac side has shipped this incomplete on
+  **every minor since v0.10.0**: v0.10.0 had **no** `runtime-manifest.json` at all (`releases/latest/download/runtime-manifest.json`
+  404 → `install` broke on BOTH platforms); v0.11.0 through **v0.16.0** shipped a **darwin-only** manifest +
+  no win32 zip (mac installs, **Windows** install finds no `win32-x64` entry / 404s the zip). **Auto-caught
+  since v0.13.0**: `release-completeness.yml` fires on the release event and fails, exactly as designed —
+  so rely on that red check instead of noticing by hand (it flagged v0.14.0/v0.15.0/v0.16.0 too).
+  **v0.16.1 (2026-07-01) broke the streak: the first mac-shipped COMPLETE dual-platform `latest`.** The mac
+  side repacked the Windows-built v0.16.0 zip with a corrected embedded manifest (version 0.16.1 +
+  `export_registry_version` 7 — confirmed by range-reading the published zip; sizes differed from the
+  v0.16.0 archives by only ~50 bytes) and the guard went green on the release event with zero Windows-side
+  action. A repack like this is only valid when the release diff has **no payload-affecting changes**
+  (horosa-core-js source, vendored engines, wheels, launchers — skill-layer Python/docs are fine); when a
+  suspiciously same-size win zip appears on a new release, verify the embedded manifest (version +
+  `export_registry_version`) and that diff condition before trusting it.
+  **v0.17.0 / v0.18.0 introduced a THIRD, stealthier mode — "pin-forward":** the new release's manifest
+  lists `win32-x64` but points it at the *previous* version's win zip (v0.17.0/v0.18.0 both pinned
+  `.../download/v0.16.1/horosa-runtime-win32-x64-v0.16.1.zip`). **The guard stays GREEN and `install` does
+  NOT break** — both platforms are present, the URL resolves 200, and the sha matches — but Windows users
+  silently get a runtime **N versions stale** (missing every feature since the pinned version). The guard
+  can't catch this (it only checks presence + resolvability, not version match). **`sync_windows_release.py
+  --check` IS the reliable detector**: it looks for the version-specific `horosa-runtime-win32-x64-vX.Y.Z.zip`
+  asset, which is absent under pin-forward, so it reports `[GAP]` even while the guard is green. Treat a
+  `--check` GAP as authoritative regardless of guard colour; the remediation (build + upload the real win
+  zip, re-pointing the manifest) is identical. **Freshness caveat for these jumps:** v0.17.0 was an "引擎全面
+  升级" that added real chart-service endpoints (`/location/acg` 占星地图, `/astroextra/relative`) and new
+  bundled data (`astrostudyui/dist-file/astrodata/astrodata-aa.sqlite.gz` for 名人库, ~50 MB) — a pin-forward
+  jump can span such changes, so re-populate `vendor/runtime-source` from the **current** Windows workspace
+  (check astropy / dist-file mtimes are newer than the target release) and native-verify the new endpoints
+  return real data before shipping. The Windows runtime is built off-repo on a Windows box, so a mac-only
+  release publish leaves it out. **First diagnostic when
+  "check sync" / a new version appears:** `gh release view vX.Y.Z --json assets` (expect darwin tar.gz +
+  win32 zip + runtime-manifest.json + SHA256SUMS.txt) and confirm
+  `releases/latest/download/runtime-manifest.json` has **both** `darwin-arm64` and `win32-x64` platforms.
+  If the win half is missing: build it, regenerate the **dual-platform** manifest + SHA256SUMS, and upload —
+  the release is usually already `latest`, so the upload alone (no flip) restores Windows `install`.
+  **Automated since v0.12.0:** `.github/workflows/release-completeness.yml` (schedule + dispatch + release
+  events) fails if the published `latest` lacks either platform / an archive 404s, and
+  `scripts/verify_builder_parity.py` (CI `test` job) fails if the two builders or the verifier contract
+  drift. If either alarms, the fix is this same build-the-Windows-half flow.
+  **One-command remediation (v0.14.0):** on the Windows build box, `python scripts/sync_windows_release.py`
+  detects whether the current `latest` is missing its Windows half and (when run with `--upload`) runs the
+  whole build → download-darwin → dual-platform manifest + SHA256SUMS → `verify_runtime_release.py` →
+  upload pipeline. Safe by default (no `--upload` = build + verify only, no irreversible action), idempotent
+  (no-op + exit 0 when already in sync), and it gates the upload behind `verify_runtime_release.py`. It
+  reads the version from `pyproject.toml`, so `git pull` to the release commit first. This is the canonical
+  way to clear a `release-completeness` red — prefer it over doing the steps by hand. **Battle-tested
+  end-to-end on v0.16.0 (2026-07-01):** re-populate `vendor/runtime-source` from the Windows workspace,
+  build, native-verify (chart `:8899` compute — the new `/geomancy/reading` + `/astroextra/*` mundane
+  endpoints returned real data, confirming the source tree was fresh), then the sync tool packaged +
+  uploaded and the guard went green + a public `install --force` matched the sha.
+
+
+> ↓ 上游星阙 v2.2.1 的 SSE 陷阱原文；不影响 skill 计算路径，仅供替用户排障星阙桌面端时参考。
+
+### Bonus upstream trap (v2.2.1) — AI-analysis SSE Issue #8
+
+The skill talks to its own ken backend, not 星阙's `chat/stream` SSE proxy, so this does NOT affect
+skill compute paths. It's documented here because if a user ever debugs 星阙 desktop and asks "why did
+my Ollama chat just go silent and then die", the answer is upstream:
+
+- **Catch block in `AIAnalysisProxyService.chatStream` used to swallow the first-cause exception**:
+  `sendEvent` inside catch rethrew `ClientAbortException` as `RuntimeException`, killing the
+  `ai-analysis-chat-stream` thread, and the original Ollama error went only into a
+  `safeErrorMessage(...)` SSE frame that never reached the client. Upstream fix: `QueueLog.error(...)`
+  first, then nested try around `sendEvent` + `completeWithError`.
+- **The three `stream***` methods used to send zero bytes until the first delta**: with a local Ollama
+  TTFT of 10–60 s, browsers/Chromium/middleware time the SSE socket out as idle. Upstream fix: each
+  stream method is now wrapped in `withHeartbeat`, which emits `: keep-alive` every 15 s.
+
+If a skill user reports flaky 星阙 AI streaming, point them at upstream v2.2.1 and the
+`release_preflight.sh` sentinel `[7]` that gates both lines (`QueueLog.error(AppLoggers.ErrorLogger` and
+`keep-alive`) in `AIAnalysisProxyService.java`.

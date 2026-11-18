@@ -1,0 +1,75 @@
+import { type NextRequest } from 'next/server';
+import { jsonError, jsonOk, requireUserContext, staleUserResponse } from '@/lib/api-utils';
+import { json } from '@/lib/db/sql-helpers';
+import {
+    buildUserSettingsUpdatePayload,
+    getUserSettingsSnapshot,
+    hasEffectiveUserSettingsUpdate,
+    type UserSettingsUpdateInput,
+} from '@/lib/user/settings';
+import { validPromptTemplates } from '@/lib/agent/prompt-templates';
+
+export async function GET(request: NextRequest) {
+  const auth = await requireUserContext(request);
+  if ('error' in auth) return jsonError(auth.error.message, auth.error.status);
+  const staleUser = staleUserResponse(request, auth.user.id, '账号已切换，请重新加载设置');
+  if (staleUser) return staleUser;
+
+  const { settings, error } = await getUserSettingsSnapshot(auth.db, auth.user.id);
+  if (error) {
+    return jsonError('获取用户设置失败', 500);
+  }
+
+  return jsonOk({
+    settings,
+  });
+}
+
+export async function PATCH(request: NextRequest) {
+  const auth = await requireUserContext(request);
+  if ('error' in auth) return jsonError(auth.error.message, auth.error.status);
+  const staleUser = staleUserResponse(request, auth.user.id, '账号已切换，请重新加载设置');
+  if (staleUser) return staleUser;
+  let body: UserSettingsUpdateInput;
+  try {
+    body = await request.json() as UserSettingsUpdateInput;
+  } catch {
+    return jsonError('请求体不是合法 JSON', 400);
+  }
+
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return jsonError('设置无效', 400);
+  if (body.chatPreferences?.promptTemplates !== undefined && !validPromptTemplates(body.chatPreferences.promptTemplates)) return jsonError('问法模板无效，最多 20 个，每个正文最多 4000 字符', 400);
+  if (body.chatPreferences?.memoryEnabled !== undefined && typeof body.chatPreferences.memoryEnabled !== 'boolean') return jsonError('记忆设置无效', 400);
+  if (body.chatPreferences !== undefined) {
+    const previous = await getUserSettingsSnapshot(auth.db, auth.user.id);
+    if (previous.error) return jsonError('读取原设置失败', 500);
+    body.chatPreferences = { ...previous.settings.chatPreferences, ...body.chatPreferences };
+  }
+  const payload = buildUserSettingsUpdatePayload(auth.user.id, body);
+  if (!hasEffectiveUserSettingsUpdate(payload)) {
+    return jsonError('没有可更新的设置字段', 400);
+  }
+  // pg encodes a JS array as a PostgreSQL array literal; this column is jsonb.
+  const values = Array.isArray(payload.prompt_kb_ids)
+    ? { ...payload, prompt_kb_ids: json(payload.prompt_kb_ids) as never }
+    : payload;
+
+  try {
+    await auth.db.tx((trx) => trx
+      .insertInto('user_settings')
+      .values(values as never)
+      .onConflict((conflict) => conflict.column('user_id').doUpdateSet(values as never))
+      .execute());
+  } catch {
+    return jsonError('更新用户设置失败', 500);
+  }
+
+  const refreshed = await getUserSettingsSnapshot(auth.db, auth.user.id);
+  if (refreshed.error) {
+    return jsonError('读取更新后的用户设置失败', 500);
+  }
+
+  return jsonOk({
+    settings: refreshed.settings,
+  });
+}

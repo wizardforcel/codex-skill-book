@@ -1,0 +1,136 @@
+// divination/babylon/babylonSchools.js —— 巴比伦占星两条流派轴(文类×派系)。
+// 镜像 horarySchools 的 backend/judge 分离范式:
+//   backend = 影响位置计算的参数(星历源/分至规范;null=不联动);
+//   judge   = 前端解读/显示口径(微段变体/cubit/纪元)。
+// 默认 swissA10 = 零回归基线(现代实位 + Aldebaran 锚 + A 规范)。
+
+export const PRODUCTS = [
+	{ key: 'horoscope', cn: '个人星盘', hint: '七曜清单·Lunar Three·分至天狼·食(无宫位/相位/上升)' },
+	{ key: 'ephemeris', cn: '数理星历', hint: '五星会合现象表 + 月亮列(阶梯/锯齿)' },
+	{ key: 'mulapin', cn: '图式天文', hint: '三道星表·偕日升·ziqpu·置闰(约前一千年汇编)' },
+	{ key: 'microzodiac', cn: '微黄道', hint: '144 微段·×13/×277 历表映射' },
+	{ key: 'melothesia', cn: '医疗占星', hint: '黄道-身体·配料·巫术·吉日' },
+	{ key: 'eae', cn: '天象预兆', hint: '大预兆系列:前件→后件·四国地理·颜色' },
+	{ key: 'almanac', cn: '年历预测', hint: '目标年周期法·年度摘要' },
+	{ key: 'hemerology', cn: '吉日历', hint: '月宜忌·逐日吉凶体系' },
+];
+
+export const BABYLON_SCHEMES = {
+	swissA10: {
+		id: 'swissA10', cn: '现代实位·A 规范',
+		desc: '现代天文实位(恒星黄道,毕宿锚)+ 分至在基本宫 10°(阶梯系统规范)。默认基线。',
+		backend: { ephemerisSource: 'swiss', siderealAyanamsa: 'aldebaran_15tau', solstice: 'A10' },
+		judge: { dodecaVariant: 'B', cubitDeg: 2.2, era: 'seleucid' },
+	},
+	systemA: {
+		id: 'systemA', cn: '数理复原·阶梯(System A)',
+		desc: '阶梯/分带算术:黄道分带、带内会合弧恒值、越界按比缩放;分至白羊 10°。',
+		backend: { ephemerisSource: 'systemA', siderealAyanamsa: 'aldebaran_15tau', solstice: 'A10' },
+		judge: { dodecaVariant: 'B', cubitDeg: 2.2, era: 'seleucid' },
+	},
+	systemB: {
+		id: 'systemB', cn: '数理复原·锯齿(System B)',
+		desc: '锯齿/线性算术:会合弧在极值间等差往返;分至白羊 8°。',
+		backend: { ephemerisSource: 'systemB', siderealAyanamsa: 'aldebaran_15tau', solstice: 'B8' },
+		judge: { dodecaVariant: 'B', cubitDeg: 2.2, era: 'seleucid' },
+	},
+};
+export const SCHEME_ORDER = ['swissA10', 'systemA', 'systemB'];
+
+// 「派系」这个下拉在哪些页真有区别 —— **由三档配置自证**,不手维护名单:
+// 三档只在取值真不同的键上有分歧(实测只有 ephemerisSource 与 solstice;dodecaVariant / cubitDeg / era 三档全同),
+// 再看这些键的 appliesTo 覆盖到哪些页。覆盖不到的页,切派系什么都不会变 —— 界面上要说出来,别让人以为切了有用。
+export const SCHEME_VARYING_KEYS = (()=>{
+	const ids = SCHEME_ORDER;
+	const flat = (id)=>({ ...((BABYLON_SCHEMES[id] || {}).backend || {}), ...((BABYLON_SCHEMES[id] || {}).judge || {}) });
+	const first = flat(ids[0]);
+	const keys = Object.keys(first);
+	return keys.filter((k)=>ids.some((id)=>flat(id)[k] !== first[k]));
+})();
+
+export function schemeAffectsTab(tab){
+	return BABYLON_PARAM_SPEC.some((p)=>SCHEME_VARYING_KEYS.indexOf(p.key) >= 0 && (p.appliesTo || []).indexOf(tab) >= 0);
+}
+
+// 派系在本页「哪几条」真起作用 / 另外那几条在哪页起作用 —— 同样由 spec 自证。
+// 个人星盘页只吃「分至规范」,位置源只作用于「数理星历」;此前页面不说,快照却写着「派系:System A」,
+// 读的人会以为七曜位置也换了算法。
+export function schemeVaryingKeysForTab(tab){
+	return BABYLON_PARAM_SPEC
+		.filter((p)=>SCHEME_VARYING_KEYS.indexOf(p.key) >= 0 && (p.appliesTo || []).indexOf(tab) >= 0)
+		.map((p)=>p.key);
+}
+export function schemeVaryingKeysElsewhere(tab){
+	return BABYLON_PARAM_SPEC
+		.filter((p)=>SCHEME_VARYING_KEYS.indexOf(p.key) >= 0 && (p.appliesTo || []).indexOf(tab) < 0)
+		.map((p)=>({ key: p.key, label: p.label, tabs: (p.appliesTo || []).map((t)=>{
+			const hit = PRODUCTS.find((x)=>x.key === t);
+			return hit ? hit.cn : t;
+		}) }));
+}
+export function schemeKeyLabel(key){
+	const hit = BABYLON_PARAM_SPEC.find((p)=>p.key === key);
+	return hit ? hit.label : key;
+}
+
+export function schemeOf(id){
+	return BABYLON_SCHEMES[id] || BABYLON_SCHEMES.swissA10;
+}
+// 仅非默认才下发(零回归:默认组合请求体字节不变)
+export function backendFields(id, overrides){
+	const sc = schemeOf(id);
+	const eff = { ...sc.backend, ...(overrides || {}) };
+	const out = {};
+	if(eff.ephemerisSource && eff.ephemerisSource !== 'swiss'){ out.ephemerisSource = eff.ephemerisSource; }
+	if(eff.solstice && eff.solstice !== 'A10'){ out.solstice = eff.solstice; }
+	return out;
+}
+export function judgeOpts(id, overrides){
+	const sc = schemeOf(id);
+	return { ...sc.judge, ...(overrides || {}) };
+}
+export function presetOf(fields){
+	const src = fields && fields.ephemerisSource;
+	const sol = fields && fields.solstice;
+	if(src === 'systemA'){ return 'systemA'; }
+	if(src === 'systemB'){ return 'systemB'; }
+	if(sol === 'B8'){ return 'systemB'; }
+	return 'swissA10';
+}
+export function selectOptions(){
+	return SCHEME_ORDER.map((id) => ({ value: id, label: BABYLON_SCHEMES[id].cn }));
+}
+
+// 派系设置项(渲染于模块设置面板;solstice 联动 scheme 但可显式覆盖)
+export const BABYLON_PARAM_SPEC = [
+	// 微黄道页是纯前端的 144 微段映射,既不发后端请求也不读位置源 —— 声明进去只会让
+	// 「切派系」在这一页看着像有用(派系三档的差异全在 ephemerisSource / solstice 上)。
+	// 位置源真正被消费的只有「数理星历」页(BabylonEphemeris);个人星盘页的七曜位置恒取
+	// /chart 的现代实位,System A/B 在那页只改说明文案 —— 声明进 horoscope 会让 schemeAffectsTab 说假话。
+	{ key: 'ephemerisSource', label: '位置源', type: 'select', appliesTo: ['ephemeris'],
+		options: [
+			{ value: 'swiss', label: '现代实位(锚点)·递推按 A' },   // 与 A 档同表递推,只锚点取实位
+			{ value: 'systemA', label: '阶梯复原(A)' },
+			{ value: 'systemB', label: '锯齿复原(B·仅木星)' },
+		], default: 'swiss' },
+	// 微黄道页只读 dodecaVariant,从不读 solstice —— 声明进去就是这一页上的死下拉。
+	{ key: 'solstice', label: '分至规范', type: 'select', appliesTo: ['horoscope', 'ephemeris'],
+		options: [
+			{ value: 'A10', label: '春分白羊 10°(A 规范)' },
+			{ value: 'B8', label: '春分白羊 8°(B 规范)' },
+		], default: 'A10', hint: '两规范几乎同时出现且长期并用;随位置源联动,可显式覆盖。' },
+	{ key: 'dodecaVariant', label: '十二分变体', type: 'select', appliesTo: ['microzodiac'],
+		options: [
+			{ value: 'B', label: '加于点本身(楔文/古典)' },
+			{ value: 'A', label: '加于宫起点' },
+		], default: 'B', hint: '两变体结果黄经可差约 29°;楔文方案表行如前者。' },
+	// cubitDeg(距星 cubit 度值)不设开关:肘读数只出现在占星页的参照星定位(/astroextra/analysis
+	// 后端 _BABYLON_CUBIT_DEG=2.2 统计最佳),本技法页从不显示 —— 挂在这里就是死选择器(选了无处生效)。
+	// era 只在「个人星盘」页被读取(BabylonHoroscope);数理星历/年历/吉日历三页不消费,
+	// 声明进去=三页死下拉,故 appliesTo 收窄到真消费页。
+	{ key: 'era', label: '纪元显示', type: 'select', appliesTo: ['horoscope'],
+		options: [
+			{ value: 'seleucid', label: '塞琉古纪元(S.E.)' },
+			{ value: 'arsacid', label: '安息纪元(= S.E.−64)' },
+		], default: 'seleucid' },
+];

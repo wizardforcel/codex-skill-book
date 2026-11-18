@@ -1,0 +1,272 @@
+#!/usr/bin/env python3
+"""仓内提交的客户端配置必须**真能连上**，占位符必须属于该作用域的词表。
+
+为什么有这把守卫：仓根 `.mcp.json` 曾把**插件作用域**的占位符写进 Claude Code 的**项目**配置
+（`${CLAUDE_PLUGIN_ROOT}` 与 `${user_config.*}`）。项目作用域里这两类都不展开：前者变空串 →
+`uv run --directory /horosa-skill` → 目录不存在；后者原样落进 env → 每个技法工具回
+`runtime.not_installed`，`Settings.ensure_dirs()` 还会 mkdir 出一个名叫 `${user_config.runtimeRoot}`
+的真目录。本机 `~/Library/Caches/claude-cli-nodejs/.../mcp-logs-horosa/` 里 2026-08-21 起
+**24 份日志、24 次 CONNECTION_CLOSED，零成功** —— 本仓自己的 MCP 从未连通过，而所有测试全绿：
+没有任何检查看过这个文件。
+
+三条断言：
+1. 项目配置（`.mcp.json`）只许用 Claude Code 文档化的 `${VAR:-default}` 形态，且不得出现
+   插件/MCPB 专属占位符；`--directory` 去掉占位符后必须指向仓内真实的 `pyproject.toml`。
+2. 插件配置（`.claude-plugin/mcp.json`）的占位符必须 ⊆ 插件词表，且 `user_config.<key>` 里的
+   key 必须在 `plugin.json.userConfig` 里声明过（写错 key 的后果与上面那 24 次一模一样）。
+3. 两份配置都必须显式 `--transport stdio`——`serve` 的默认传输是 streamable-http，漏了这个
+   参数客户端会连一个**根本没在监听 stdio** 的进程，症状同样是 CONNECTION_CLOSED。
+
+stdlib-only；负向对照见 tests/test_verify_client_configs.py。接在 ci.yml。
+"""
+from __future__ import annotations
+
+import json
+import re
+import sys
+
+# Windows 控制台默认 cp1252/cp936：脚本自己 print 的中文会抛 UnicodeEncodeError 并让脚本 exit 1
+# （v0.38.0 的 repack 脚本在「打印成功信息」那一步失败过）。统一在入口把两条流改成 UTF-8。
+for _stream in (sys.stdout, sys.stderr):
+    _reconfigure = getattr(_stream, "reconfigure", None)
+    if _reconfigure is not None:
+        _reconfigure(encoding="utf-8", errors="replace")
+from pathlib import Path
+
+SCRIPTS = Path(__file__).resolve().parent
+PKG_ROOT = SCRIPTS.parent
+REPO_ROOT = PKG_ROOT.parent
+
+PROJECT_CONFIG = REPO_ROOT / ".mcp.json"
+PLUGIN_CONFIG = REPO_ROOT / ".claude-plugin" / "mcp.json"
+PLUGIN_MANIFEST = REPO_ROOT / ".claude-plugin" / "plugin.json"
+
+_PLACEHOLDER = re.compile(r"\$\{([^}]*)\}")
+# 插件作用域词表（Claude Code 插件文档）。项目作用域**只有** env 变量，且必须带 `:-` 默认值。
+_PLUGIN_VARS = {"CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_DATA", "CLAUDE_PROJECT_DIR"}
+# 这些名字出现在项目配置里就是把作用域搞混了。
+_PLUGIN_ONLY_MARKERS = ("CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_DATA", "user_config.")
+
+
+def _servers(payload: dict) -> dict:
+    for key in ("mcpServers", "servers", "context_servers"):
+        if isinstance(payload.get(key), dict):
+            return payload[key]
+    return {}
+
+
+def _placeholders(blob: str) -> list[str]:
+    return [m.group(1) for m in _PLACEHOLDER.finditer(blob)]
+
+
+def _directory_arg(args: list) -> str | None:
+    for i, arg in enumerate(args):
+        if arg == "--directory" and i + 1 < len(args):
+            return str(args[i + 1])
+    return None
+
+
+def check_project_config(errors: list[str]) -> None:
+    if not PROJECT_CONFIG.is_file():
+        errors.append(f"{PROJECT_CONFIG.name} 不存在——Claude Code 打开本仓时就没有可用的项目 MCP 配置")
+        return
+    payload = json.loads(PROJECT_CONFIG.read_text(encoding="utf-8"))
+    blob = json.dumps(payload, ensure_ascii=False)
+    for marker in _PLUGIN_ONLY_MARKERS:
+        if marker in blob:
+            errors.append(
+                f"{PROJECT_CONFIG.name} 含插件作用域占位符 `{marker}` —— 项目作用域不展开它。"
+                "插件那份放 .claude-plugin/mcp.json。"
+            )
+    for name, entry in _servers(payload).items():
+        args = [str(a) for a in entry.get("args", [])]
+        if "--transport" not in args or "stdio" not in args:
+            errors.append(f"{PROJECT_CONFIG.name}:{name} 的 args 缺 `--transport stdio`（serve 默认是 streamable-http）")
+        if entry.get("env"):
+            errors.append(
+                f"{PROJECT_CONFIG.name}:{name} 带 env 块 —— 项目作用域没有 user_config 可展开，"
+                "留空即用默认值（~/.horosa/runtime、~/.horosa-skill）。"
+            )
+        for var in _placeholders(json.dumps(entry, ensure_ascii=False)):
+            if ":-" not in var:
+                errors.append(
+                    f"{PROJECT_CONFIG.name}:{name} 的占位符 `${{{var}}}` 没有 `:-默认值` —— "
+                    "宿主没设该变量时会展开成空串"
+                )
+        directory = _directory_arg(args)
+        if directory:
+            # 去掉占位符段落后应指向仓内真实包目录。
+            tail = _PLACEHOLDER.sub("", directory).removeprefix("/") or "horosa-skill"
+            if not (REPO_ROOT / tail / "pyproject.toml").is_file():
+                errors.append(
+                    f"{PROJECT_CONFIG.name}:{name} 的 --directory `{directory}` 去掉占位符后是 `{tail}`，"
+                    f"但 {tail}/pyproject.toml 不存在"
+                )
+
+
+def check_plugin_config(errors: list[str]) -> None:
+    if not PLUGIN_CONFIG.is_file():
+        errors.append(f"{PLUGIN_CONFIG} 不存在（plugin.json.mcpServers 指向它）")
+        return
+    payload = json.loads(PLUGIN_CONFIG.read_text(encoding="utf-8"))
+    manifest = json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8")) if PLUGIN_MANIFEST.is_file() else {}
+    declared = set((manifest.get("userConfig") or {}).keys())
+    pointer = str(manifest.get("mcpServers") or "")
+    # 🔴 用 removeprefix 而不是 lstrip("./")：lstrip 剥的是**字符集**，会把 `.claude-plugin`
+    # 开头那个点也吃掉 → 查 `claude-plugin/mcp.json`（不存在）。写这把守卫时当场踩了一次。
+    if pointer and not (REPO_ROOT / pointer.removeprefix("./")).is_file():
+        errors.append(f"plugin.json.mcpServers 指向 `{pointer}`，该文件不存在")
+
+    for name, entry in _servers(payload).items():
+        args = [str(a) for a in entry.get("args", [])]
+        if "--transport" not in args or "stdio" not in args:
+            errors.append(f"{PLUGIN_CONFIG.name}:{name} 的 args 缺 `--transport stdio`")
+        for var in _placeholders(json.dumps(entry, ensure_ascii=False)):
+            base = var.split(":-", 1)[0]
+            if base.startswith("user_config."):
+                key = base.split(".", 1)[1]
+                if key not in declared:
+                    errors.append(
+                        f"{PLUGIN_CONFIG.name}:{name} 引用 `${{{base}}}`，但 plugin.json.userConfig "
+                        f"没有声明 `{key}`（已声明：{sorted(declared)}）——宿主不会替换未声明的键"
+                    )
+            elif base not in _PLUGIN_VARS:
+                errors.append(f"{PLUGIN_CONFIG.name}:{name} 用了词表外的占位符 `${{{base}}}`")
+
+
+# v0.38.1 C3：仓内提交的 Cursor / VS Code 项目配置也要过守卫（此前只看 .mcp.json 与插件那份）。
+# 占位符必须 ⊆ 该客户端**真的会展开**的词表（与 cli.CLIENT_PLACEHOLDER_WHITELIST 锁步：tests/test_verify_client_configs.py）。
+EDITOR_PROJECT_CONFIGS = {
+    "cursor": REPO_ROOT / ".cursor" / "mcp.json",
+    "vscode": REPO_ROOT / ".vscode" / "mcp.json",
+}
+EDITOR_PLACEHOLDER_WHITELIST = {
+    "cursor": ("env:", "userHome", "workspaceFolder", "workspaceFolderBasename", "pathSeparator"),
+    "vscode": ("workspaceFolder", "workspaceFolderBasename", "env:", "userHome", "input:"),
+}
+
+
+def _allowed(var: str, whitelist: tuple[str, ...]) -> bool:
+    base = var.split(":-", 1)[0]
+    return any(base.startswith(item) if item.endswith(":") else base == item for item in whitelist)
+
+
+def _label(path: Path) -> str:
+    try:
+        return path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def check_editor_project_configs(errors: list[str], configs: dict | None = None) -> None:
+    for client, path in (configs or EDITOR_PROJECT_CONFIGS).items():
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except ValueError as exc:
+            errors.append(f"{_label(path)} 不是合法 JSON：{exc}")
+            continue
+        whitelist = EDITOR_PLACEHOLDER_WHITELIST[client]
+        for name, entry in _servers(payload).items():
+            args = [str(a) for a in entry.get("args", [])]
+            if "--transport" not in args or "stdio" not in args:
+                errors.append(f"{_label(path)}:{name} 的 args 缺 `--transport stdio`")
+            for var in _placeholders(json.dumps(entry, ensure_ascii=False)):
+                if not _allowed(var, whitelist):
+                    errors.append(
+                        f"{_label(path)}:{name} 用了 {client} 不会展开的占位符 `${{{var}}}`"
+                        f"（允许：{', '.join(whitelist)}）"
+                    )
+            directory = _directory_arg(args)
+            if directory:
+                expanded = directory.replace("${workspaceFolder}", str(REPO_ROOT))
+                if "${" not in expanded and not (Path(expanded) / "pyproject.toml").is_file():
+                    errors.append(f"{_label(path)}:{name} 的 --directory `{directory}` 展开后没有 pyproject.toml")
+
+
+# v0.41.0：Agent Plugins v1（agent-plugins.org，1.0.0）——VS Code / Copilot CLI / Codex / Kiro / OpenHands 读仓根的
+# `plugin.json` + `mcp.json`。两份 schema 都是**封闭**的：未知字段在清单里「报告并忽略」、在 server 里整条拒收；
+# `command` 是单个可执行名（不展开占位符）；Cursor 不展开 `${PLUGIN_ROOT}` / `${PLUGIN_DATA}`——所以我们一个占位符都不写。
+AGENT_PLUGIN_MANIFEST = REPO_ROOT / "plugin.json"
+AGENT_PLUGIN_MCP = REPO_ROOT / "mcp.json"
+AGENT_PLUGIN_SPEC = "1.0.0"
+_AGENT_PLUGIN_KEYS = {"$schema", "name", "version", "description", "author", "homepage", "repository", "license", "keywords", "extensions"}
+_AGENT_PLUGIN_NAME = re.compile(r"^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$")
+_AGENT_STDIO_KEYS = {"type", "command", "args", "env", "cwd"}
+
+
+def _pyproject_version() -> str:
+    match = re.search(r'^version = "([^"]+)"', (PKG_ROOT / "pyproject.toml").read_text(encoding="utf-8"), re.M)
+    return match.group(1) if match else "?"
+
+
+def check_agent_plugin(errors: list[str], *, manifest_path: Path = AGENT_PLUGIN_MANIFEST, mcp_path: Path = AGENT_PLUGIN_MCP,
+                       version: str | None = None) -> None:
+    version = version or _pyproject_version()
+    if not manifest_path.is_file() or not mcp_path.is_file():
+        errors.append("Agent Plugins v1 需要仓根 plugin.json 与 mcp.json 两份文件")
+        return
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("$schema") != f"https://agent-plugins.org/schemas/{AGENT_PLUGIN_SPEC}/plugin.schema.json":
+        errors.append(f"plugin.json $schema 必须是 {AGENT_PLUGIN_SPEC}（Codex / VS Code / OpenHands 只认这一版，1.1.0 仍是草案）")
+    stray = sorted(set(manifest) - _AGENT_PLUGIN_KEYS)
+    if stray:
+        errors.append(f"plugin.json 有规范之外的字段 {stray}（skills / mcpServers 按目录约定发现，不写进清单）")
+    if not _AGENT_PLUGIN_NAME.match(str(manifest.get("name") or "")) or len(str(manifest.get("name") or "")) > 64:
+        errors.append(f"plugin.json name `{manifest.get('name')}` 不符合 [a-z0-9.-]、1–64 字符")
+    if manifest.get("version") != version:
+        errors.append(f"plugin.json version {manifest.get('version')!r} != pyproject {version!r}")
+    if set(manifest.get("author") or {}) - {"name", "email", "url"}:
+        errors.append("plugin.json author 只许 name / email / url")
+    mcp = json.loads(mcp_path.read_text(encoding="utf-8"))
+    if set(mcp) != {"$schema", "mcpServers"}:
+        errors.append(f"mcp.json 只许 $schema 与 mcpServers 两个键，现有 {sorted(mcp)}")
+    if mcp.get("$schema") != f"https://agent-plugins.org/schemas/{AGENT_PLUGIN_SPEC}/mcp.schema.json":
+        errors.append(f"mcp.json $schema 必须与 plugin.json 同为 {AGENT_PLUGIN_SPEC}（版本不一致 = 客户端禁用该插件的 MCP）")
+    servers = mcp.get("mcpServers") if isinstance(mcp.get("mcpServers"), dict) else {}
+    if not servers:
+        errors.append("mcp.json 没有任何 server")
+    for name, entry in servers.items():
+        if entry.get("type") != "stdio":
+            errors.append(f"mcp.json:{name} 必须显式 \"type\": \"stdio\"")
+        stray = sorted(set(entry) - _AGENT_STDIO_KEYS)
+        if stray:
+            errors.append(f"mcp.json:{name} 有 stdio 之外的字段 {stray}（schema 封闭，整条 server 会被拒）")
+        command = str(entry.get("command") or "")
+        if not command or any(ch.isspace() for ch in command) or "${" in command or ("/" in command and not command.startswith("./")):
+            errors.append(f"mcp.json:{name} command `{command}` 必须是单个可执行名（不是 shell 行、不展开占位符）")
+        blob = json.dumps(entry, ensure_ascii=False)
+        if "${" in blob:
+            errors.append(f"mcp.json:{name} 含占位符——Cursor 不展开 ${{PLUGIN_ROOT}} / ${{PLUGIN_DATA}}，会原样传给 server")
+        args = [str(a) for a in entry.get("args") or []]
+        if "--transport" not in args or "stdio" not in args:
+            errors.append(f"mcp.json:{name} 的 args 缺 `--transport stdio`")
+        pinned = f"/releases/download/v{version}/horosa_skill-{version}-py3-none-any.whl"
+        if not any(arg.endswith(pinned) for arg in args):
+            errors.append(f"mcp.json:{name} 必须钉当前版本的发布 wheel（…{pinned}）——bump_version 会一起改它")
+        if set(entry.get("env") or {}) & {"PLUGIN_ROOT", "PLUGIN_DATA"}:
+            errors.append(f"mcp.json:{name} env 不许定义 PLUGIN_ROOT / PLUGIN_DATA（客户端导出它们）")
+
+
+def main() -> int:
+    errors: list[str] = []
+    check_project_config(errors)
+    check_plugin_config(errors)
+    check_editor_project_configs(errors)
+    check_agent_plugin(errors)
+    if errors:
+        print("client-config guard FAILED —— 提交的客户端配置连不上：", file=sys.stderr)
+        for err in errors:
+            print(f"  - {err}", file=sys.stderr)
+        return 1
+    print(
+        "client-config OK: 项目配置无插件占位符、占位符全带默认值、--directory 指向真实包；"
+        "插件配置占位符 ⊆ 插件词表且 user_config 键均已声明；.cursor/.vscode 项目配置占位符 ⊆ 各自词表；"
+        "Agent Plugins v1 根清单与 mcp.json 符合 1.0.0 封闭 schema、钉当前 wheel。"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

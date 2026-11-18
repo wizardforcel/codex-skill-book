@@ -1,0 +1,10 @@
+interface:
+  display_name: "灵感算命师"
+  short_description: "支持八字塔罗占星图片视频与对话式灵感解读体验"
+  icon_small: "./assets/oracle-icon.svg"
+  icon_large: "./assets/oracle-icon.svg"
+  brand_color: "#6D5DD3"
+  default_prompt: "Use $fortune-telling to 做一次娱乐性的八字、塔罗、星座或图片灵感解读。"
+
+policy:
+  allow_implicit_invocation: true

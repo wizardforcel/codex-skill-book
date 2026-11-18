@@ -1,0 +1,168 @@
+// 河洛理数 formatter.
+//
+// Like canping, heluo is a "原生·非 kentang" technique computed entirely in-process: the four pillars
+// come from the vendored bazi chain (baziLunarLocal.js → lunar-javascript), and heluoLocal.js does the
+// 起命（天地数→卦→元堂→后天）, 起运（大限/流年）, 命运篇 judge, and 爻辞 lookup. This mirrors 星阙's
+// HeLuoMain.js, which calls buildLocalBaziResult → calc → daYun → judge → buildSnapshotText.
+//
+// The 命运篇 section depends on the real 节气 (solar term) at birth. Since v3.11.2 the upstream keeps that in one
+// place — heluoLocal.heluoSolarTermOfDate(dateStr, zone, quHuaGong) (HeLuoMain.solarTerm and
+// aiAnalysisContext.heluoSolarTermForDate both call it) — so the wrapper calls the vendored single source instead of
+// carrying its own port; it derives the 化工/三候 context that judge() consumes. Non-UTC+8 births compare the term's
+// LOCAL date (the JieQi table is in Beijing time); UTC+8 is byte-identical to the old port. snapshot_text is byte-identical to 星阙's heluoLocal.buildSnapshotText; the 先天·…/后天·…
+// /大限·岁运 dynamic labels are legacy-mapped to the declared aiExport sections 先天卦/后天卦/大限 in
+// the skill's export layer.
+import { buildLocalBaziResult } from '../vendor/bazi/baziLunarLocal.js';
+import calc, { daYun, judge, buildSnapshotText, heluoSolarTermOfDate, chartExtras } from '../vendor/heluo/heluoLocal.js';
+import { ganzhiYearBase } from '../vendor/utils/ganzhiYearBase.js';
+import { parseYearFromDateStr } from '../vendor/bazi/dateStrSafe.js';
+
+function pillarGanzhi(pillar) {
+  return (pillar && (pillar.ganzi || pillar.ganZhi)) || '';
+}
+
+function insufficient(normalized, reason, message) {
+  return {
+    tool: 'heluo',
+    technique: 'heluo',
+    input_normalized: normalized,
+    data: { ok: false, reason, message: message || '' },
+    snapshot_text: '',
+  };
+}
+
+export function runHeluo(payload) {
+  const input = payload && typeof payload === 'object' ? payload : {};
+  // parseDateTime (baziLunarLocal) splits the date on '-' only; coerce '/' so YYYY/MM/DD also works.
+  const date = `${input.date ?? ''}`.trim().replace(/\//g, '-');
+  const time = `${input.time ?? ''}`.trim() || '00:00:00';
+  // timeAlg: 0 → 真太阳时; any other value → clock time.
+  // 缺省 0（sync311 wave 3b，此前误为 1）：上游 AI 挂载无头路径 buildHeluoSnapshotForRecord → buildChartShusuanBazi →
+  // buildChartBaziParams 取 buildFieldObject 的 timeAlg = record.timeAlg ?? 0（aiAnalysisContext.js:603,1793）；挂载齿轮
+  // 缺省亦 0（techniqueMountSettings.js:147,1882）。页面 HeLuoMain.getModel 的 `fieldVal(f, 'timeAlg', 1)`（:188）读全局
+  // fields.timeAlg —— 该字段恒在、出厂种子 0（models/astro.js:380-382 + newChartSeeds.js:48），回退值 1 从不生效。
+  const timeAlg = input.timeAlg === undefined || input.timeAlg === null ? 0 : input.timeAlg;
+  // 日界 / 晚子时：上游两路缺省同为全局出厂 1/1 —— 无头 buildFieldObject after23NewDay = record ?? defaultAfter23NewDay()
+  // （aiAnalysisContext.js:606）、页面 fieldVal(f,'after23NewDay',defaultAfter23NewDay())（HeLuoMain.js:191-192）。
+  // 此前不传 → v3.11 的 vendored baziLunarLocal 把 undefined 当「24 点换日」（v3.13.0 起缺键回落全局缺省 1；仍显式传）（baziLunarLocal.js:1107），23 点档生人日柱与上游不同。
+  const after23NewDay = input.after23NewDay === undefined || input.after23NewDay === null ? 1 : input.after23NewDay;
+  const lateZiHourUseNextDay = input.lateZiHourUseNextDay === undefined || input.lateZiHourUseNextDay === null
+    ? 1 : input.lateZiHourUseNextDay;
+  const baziParams = {
+    date,
+    time,
+    zone: input.zone,
+    lon: input.lon,
+    gender: input.gender,
+    timeAlg,
+    after23NewDay,
+    lateZiHourUseNextDay,
+  };
+  const normalized = {
+    date,
+    time,
+    zone: input.zone ?? null,
+    lon: input.lon ?? null,
+    gender: input.gender ?? null,
+    timeAlg,
+    after23NewDay,
+    lateZiHourUseNextDay,
+  };
+
+  if (!date) {
+    return insufficient(normalized, 'missing_date', 'heluo requires a birth date.');
+  }
+
+  let bazi;
+  try {
+    bazi = buildLocalBaziResult(baziParams).bazi;
+  } catch (error) {
+    return insufficient(normalized, 'invalid_bazi_input', error instanceof Error ? error.message : `${error}`);
+  }
+
+  const fc = (bazi && bazi.fourColumns) || {};
+  const fourPillars = {
+    year: pillarGanzhi(fc.year),
+    month: pillarGanzhi(fc.month),
+    day: pillarGanzhi(fc.day),
+    hour: pillarGanzhi(fc.time),
+  };
+  if (!fourPillars.year || !fourPillars.month || !fourPillars.day || !fourPillars.hour) {
+    return insufficient(normalized, 'incomplete_pillars', 'Could not derive four pillars from the birth input.');
+  }
+
+  const monthZhi = fourPillars.month.charAt(1);
+  const hourZhi = fourPillars.hour.charAt(1);
+  // 2026-09-04：第 N 岁流年以干支年为基准（桌面 HeLuoMain/ganzhiYearBase 同修；立春前生者此前错一位）
+  // 上游 v3.13.0（CanPingMain.js:172 / HeLuoMain.js:200）parseYearFromDateStr(dateStr)：带符号年（公元前 / 五位年）；
+  // 旧 parseInt(slice(0, 4)) 把 '-0500' 切成 -50、'10000' 切成 1000。
+  const birthYear = ganzhiYearBase(parseYearFromDateStr(date) || 0, fourPillars.year);
+  const gender = bazi.gender === 'Female' ? '女' : '男';
+
+  // 取法四轴 + 阳令手定（缺省与 vendor calculate() 内建默认逐字相同 → 不给即字节不变）
+  const hlOpts = {
+    ziShuMode: input.ziShuMode === 'single' ? 'single' : 'pair',
+    jiGongMode: input.jiGongMode === 'legacy' ? 'legacy' : 'manualSanYuan',
+    zhiZunEnabled: !(input.zhiZunEnabled === false || input.zhiZunEnabled === 0 || input.zhiZunEnabled === 'false' || input.zhiZunEnabled === '0'),
+    pureGanKunVariant: input.pureGanKunVariant === 'alt' ? 'alt' : 'current',
+    // 键名必须是 liunianStep2：buildSnapshotText 读 snapOpts.liunianStep2 再转成 liuNian 的 step2；
+    // 此前发 step2 → 引擎永远走默认应爻法（同模块另一函数恰有 step2 参数，子串式边界契约看不见这条死键）。
+    liunianStep2: input.liunianStep2 === 'sequential' ? 'sequential' : 'ying',
+    // 纪年基准（黄帝纪元差）：[断验]「纪年：黄帝N年」行 = 干支年 + huangdiOffset（heluoLocal.jiNian）。
+    // 缺省 2697；与上游 KinAstroMain.buildHeluoOpts 同式 parseInt、0 可达（[Q-265/SO-18]）。
+    huangdiOffset: Number.isFinite(parseInt(input.huangdiOffset, 10)) ? parseInt(input.huangdiOffset, 10) : 2697,
+  };
+  // 取化工法（上游挂载 schema heluo.quHuaGong，techniqueMountSettings.js:2274-2277）：只认两档，余者回缺省。
+  const quHuaGong = input.quHuaGong === 'siFangBoOnly' ? 'siFangBoOnly' : 'tuWangKunGen';
+  const monthYangLing = (input.monthYangLing === undefined || input.monthYangLing === null || input.monthYangLing === '')
+    ? undefined
+    : (input.monthYangLing === true || input.monthYangLing === 1 || input.monthYangLing === 'yang' || input.monthYangLing === '1' || input.monthYangLing === 'true');
+  let chart;
+  try {
+    chart = calc({ fourPillars, gender, hourZhi, birthYear, monthZhi, monthYangLing, opts: hlOpts });
+  } catch (error) {
+    return insufficient(normalized, 'heluo_calc_failed', error instanceof Error ? error.message : `${error}`);
+  }
+  if (!chart || !chart.xian || !chart.hou || !chart.xian.name || !chart.hou.name) {
+    return insufficient(normalized, 'heluo_no_chart', 'heluo could not derive the 先天/后天 gua.');
+  }
+
+  const dy = daYun(chart.xian, chart.hou, birthYear);
+  const st = heluoSolarTermOfDate(date, input.zone, quHuaGong);
+  const jg = judge(chart, fourPillars, monthZhi, st);
+  // 报告盘图（app 的 HeLuoMain.renderCenter）另读两样正文用不到的：年柱纳音与 chartExtras。照 HeLuoMain.getModel 的同一式
+  // 由这一次的 bazi / chart / judge 交出（board_context），盘图不另算。
+  const nayinStr = (fc.year && (fc.year.naying || fc.year.nayin)) || '';
+  const nayinChar = '金木水火土'.includes(nayinStr.slice(-1)) ? nayinStr.slice(-1) : '';
+  const extras = chartExtras(chart, fourPillars, monthZhi, jg, { sanhou: st ? st.houLabel : '', nayin: nayinChar });
+
+  return {
+    tool: 'heluo',
+    technique: 'heluo',
+    input_normalized: {
+      ...normalized,
+      gender,
+      birthYear,
+      fourPillars,
+      monthZhi,
+      hourZhi,
+      ...hlOpts,
+      quHuaGong,
+      ...(monthYangLing === undefined ? {} : { monthYangLing }),
+    },
+    data: {
+      gender,
+      fourPillars,
+      monthZhi,
+      hourZhi,
+      birthYear,
+      chart,
+      dayun: dy,
+      judge: jg,
+      solarTerm: st,
+      board_context: { nayin: nayinStr, extras },
+    },
+    // extra 带 opts/monthZhi：流年分歧口径随取法走，且 [断验] 的时令/先后天卦气三行由 monthZhi→SEASON 救活
+    snapshot_text: buildSnapshotText(chart, jg, dy, { opts: hlOpts, monthZhi, birthYear }),
+  };
+}

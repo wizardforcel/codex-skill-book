@@ -1,0 +1,244 @@
+/* Compact reading card in the chat (Main board): glyph or pillars, title, subtitle and the workspace button. */
+.agent-result-card { display: flex; min-width: 0; align-items: center; gap: 16px; padding: 12px 12px 12px 16px; border: 1px solid var(--border); border-radius: 14px; background: var(--chat-raised); }
+.agent-result-text-block { min-width: 0; flex: 1; }
+.agent-result-card h3 { overflow: hidden; margin: 0; font-size: calc(14 / 16 * 1rem); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.agent-result-card .agent-result-summary { margin: 0; font-size: calc(12.5 / 16 * 1rem); }
+.agent-result-pillars { display: flex; flex-shrink: 0; gap: 6px; font-family: var(--font-display); font-size: calc(17 / 16 * 1rem); font-weight: 600; line-height: 1.15; text-align: center; }
+.agent-result-pillars > span { display: flex; flex-direction: column; padding: 4px 6px; border-radius: 6px; background: var(--background-secondary); }
+.agent-result-pillars > span[data-day-pillar] { background: var(--accent-light); }
+.agent-result-pillars[data-size="small"] { gap: 3px; font-size: calc(14 / 16 * 1rem); }
+.agent-result-pillars[data-size="small"] > span { padding: 3px 5px; }
+/* Overview and known-data cards (Completed and AgentQuestion boards): four equal pillar tiles across the card. */
+.agent-result-pillars[data-size="overview"] { display: grid; width: 100%; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; font-size: calc(19 / 16 * 1rem); line-height: 1.2; }
+.agent-result-pillars[data-size="overview"] > span { align-items: center; padding: 5px 0; border-radius: 8px; }
+.agent-result-glyph { display: flex; flex-shrink: 0; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 10px; background: var(--background-secondary); color: var(--foreground); font-family: var(--font-display); font-size: calc(20 / 16 * 1rem); font-weight: 600; }
+.agent-primary-button[data-shown] { background: var(--background-secondary); color: var(--foreground-secondary); }
+.agent-primary-button { display: inline-flex; flex-shrink: 0; align-items: center; gap: 6px; height: 36px; padding: 0 12px; border: 1px solid var(--border-hover, var(--border)); border-radius: 10px; background: var(--chat-raised); font-size: calc(13 / 16 * 1rem); color: var(--foreground); white-space: nowrap; }
+.agent-primary-button:hover { background: var(--fill-ghost-hover); }
+.agent-result-summary { font-size: .8rem; color: var(--foreground-secondary); overflow-wrap: anywhere; margin: .25rem 0 0; }
+.agent-chart-scroll { overflow: auto; max-width: 100%; padding: .25rem; overscroll-behavior: contain; }
+/* 紫微盘在 42rem 以下自动换成紧凑排布（星曜横排、宫名缩小），工作区与对话列平分时也放得下；
+   只在极窄（拖到 280 附近）时保留横向滚动，不把十二宫挤到无法辨认。 */
+.agent-canonical-chart--ziwei { min-width: 24rem; }
+.agent-result-full { min-width: 0; }
+.agent-result-full > .agent-result-summary { margin-bottom: 1rem; }
+.agent-result-fallback { padding: 1rem; }
+.agent-result-text { max-height: 24rem; overflow: auto; overflow-wrap: anywhere; margin-top: .75rem; font-size: .8rem; }
+.agent-result-text pre { white-space: pre-wrap; }
+.app-modal.agent-chart-dialog { width: min(76rem, calc(100vw - 2rem)); max-width: none; padding: 0; background: var(--background); }
+.agent-chart-dialog-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); }
+.agent-chart-dialog-header h2 { font-size: 1.25rem; font-family: var(--font-display); }
+.agent-chart-dialog-body { padding: 1rem; overflow: auto; max-height: calc(90dvh - 6rem); }
+/* 命盘 (Main board): the position being looked at with the tools, and the chart with bazi relations drawn on it. */
+.agent-interactive-chart { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.agent-board-heading { display: flex; align-items: center; gap: 12px; min-height: 28px; }
+.agent-board-tools { display: flex; flex-shrink: 0; align-items: center; gap: 2px; margin-left: auto; }
+.agent-board-tool { display: flex; width: 26px; height: 26px; align-items: center; justify-content: center; border: 0; border-radius: 6px; color: var(--foreground-secondary); }
+.agent-board-tool.has-label { width: auto; height: 28px; gap: 5px; padding: 0 9px; font-size: calc(13 / 16 * 1rem); white-space: nowrap; }
+.agent-board-tool.is-save { border: 1px solid var(--border-hover); margin-left: 6px; }
+.agent-board-tool.is-save:hover:not(:disabled) { border-color: var(--accent); }
+.agent-board-tool.is-save.is-saved { border-color: transparent; background: transparent; margin-left: 6px; }
+.agent-board-tool:hover { background: var(--fill-ghost-hover); color: var(--foreground); }
+.agent-board-tool.is-viewing, .agent-board-tool.is-saved { color: var(--accent-hover); }
+.agent-board-tool:disabled { opacity: .5; cursor: default; background: transparent; }
+.agent-board-focus { display: flex; min-width: 0; flex: 1; flex-direction: column; align-items: stretch; gap: 6px; padding: 0; border-radius: 0; background: transparent; font-size: calc(12.5 / 16 * 1rem); }
+.agent-board-focus.is-empty { display: none; }
+.agent-board-focus-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.agent-board-focus-label { display: flex; align-items: center; gap: 6px; font-size: calc(12.5 / 16 * 1rem); font-weight: 500; color: var(--foreground-secondary); white-space: nowrap; }
+.agent-board-focus[data-source="model"] .agent-board-focus-label { color: var(--accent-hover); }
+.agent-board-follow-state { margin-left: 2px; font-weight: 500; white-space: nowrap; color: var(--foreground-tertiary); }
+/* 说明：没有位置清单时留在标题行里（单行省略）；有清单时和清单一起收进「N 处」展开区。 */
+.agent-board-focus-detail { display: flex; flex-direction: column; gap: 6px; }
+.agent-board-caption { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(12.5 / 16 * 1rem); color: var(--foreground-tertiary); }
+.agent-board-focus-detail .agent-board-caption { margin: 0; overflow: visible; white-space: normal; line-height: 1.5; overflow-wrap: anywhere; }
+.agent-board-chips-toggle { display: inline-flex; align-items: center; gap: 2px; height: 20px; padding: 0 6px; border-radius: 5px; font-size: calc(11.5 / 16 * 1rem); color: var(--foreground-tertiary); white-space: nowrap; }
+.agent-board-chips-toggle:hover { background: var(--fill-ghost-hover); color: var(--foreground-secondary); }
+.agent-board-chips-toggle svg { transition: transform .12s var(--ease-out); }
+.agent-board-chips-toggle svg.is-open { transform: rotate(180deg); }
+.agent-board-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.agent-board-chips > li { display: flex; }
+.agent-board-chip { padding: 1px 6px; border-radius: 4px; background: var(--fill-field); font-size: calc(11.5 / 16 * 1rem); line-height: 18px; color: var(--foreground-secondary); overflow-wrap: anywhere; text-align: left; }
+.agent-board-chip:hover, .agent-board-chip[aria-pressed=true] { background: var(--fill-ghost-hover); color: var(--foreground); }
+/* While the model looks at positions the rest recede. A unit (palace, line, card, lesson…) carries
+   data-chart-selected="true|false", a control aria-pressed, and palaces looked at alongside (三方四正)
+   data-chart-related. A unit stays lit when it is looked at, holds something looked at, or sits inside
+   one; units inside a receding unit are not dimmed twice. Pointing at a unit lights only it — the
+   innermost unit under the pointer with everything inside — over what the model is looking at.
+   The bazi board is spotlit by its relation overlay instead (below). */
+.agent-interactive-chart .agent-canonical-chart:not(.agent-canonical-chart--bazi) :is([data-chart-selected], [data-chart-target]) { transition-property: opacity, color, background-color, border-color, box-shadow; transition-duration: .15s; }
+.agent-interactive-chart[data-viewing] .agent-canonical-chart:not(.agent-canonical-chart--bazi):not(:has(:is([data-chart-selected], [data-chart-target]):hover)) :is([data-chart-selected], [data-chart-target]):not([data-chart-selected="true"], [aria-pressed="true"], [data-chart-related], :has([data-chart-selected="true"], [aria-pressed="true"], [data-chart-related]), :is([data-chart-selected="true"], [data-chart-related]) *, :is([data-chart-selected], [data-chart-target]):not([data-chart-selected="true"], [aria-pressed="true"], [data-chart-related], :has([data-chart-selected="true"], [aria-pressed="true"], [data-chart-related])) *) { opacity: .3; }
+.agent-interactive-chart[data-viewing] .agent-canonical-chart:not(.agent-canonical-chart--bazi):has(:is([data-chart-selected], [data-chart-target]):hover) :is([data-chart-selected], [data-chart-target]):not(:hover, :is([data-chart-selected], [data-chart-target]):not(:hover) *, [data-chart-selected]:hover:not(:has([data-chart-selected]:hover)) *) { opacity: .3; }
+/* 八字盘面与详查柱位条：GanzhiRelationOverlay 在 Agent 在看或指着一处时给宿主打 data-relation-spotlight，
+   给亮着的字与根透标记打 data-relation-lit；其余的字与标记退后，连线与徽标的明暗由关系层自己画。 */
+:is([data-relation-cell], [data-relation-tag]) { transition: opacity .15s, background-color .15s, box-shadow .15s; }
+[data-relation-spotlight] :is([data-relation-cell], [data-relation-tag]):not([data-relation-lit]) { opacity: .3; }
+/* 四柱表 as the board draws it: a rounded frame, a header band, serif characters and the located cells boxed. */
+.agent-interactive-chart .agent-canonical-chart--bazi > div { margin: 0; padding: 0; }
+.agent-interactive-chart .agent-canonical-chart--bazi table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: var(--background); font-size: calc(13 / 16 * 1rem); }
+.agent-interactive-chart .agent-canonical-chart--bazi thead th { padding: 9px 4px; border: 0; background: var(--background-secondary); font-size: calc(13 / 16 * 1rem); font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--foreground); }
+.agent-interactive-chart .agent-canonical-chart--bazi tbody :is(td, th) { border-top: 1px solid var(--border); }
+/* 行标签是 th：与数据格同底色、同分隔线，左侧留白，垂直居中到本行字形；天干与地支两行之间不画线，读作一柱。 */
+.agent-interactive-chart .agent-canonical-chart--bazi thead th:first-child { padding-left: 12px; }
+.agent-interactive-chart .agent-canonical-chart--bazi tbody th[scope="row"] { padding-left: 12px; padding-right: 6px; vertical-align: middle; background: var(--background); font-size: calc(12.5 / 16 * 1rem); font-weight: 500; letter-spacing: 0; line-height: 1.3; text-align: left; text-transform: none; color: var(--foreground-tertiary); }
+.agent-interactive-chart .agent-canonical-chart--bazi tbody tr[data-row="branch"] > * { border-top: 0; }
+.agent-interactive-chart .agent-canonical-chart--bazi tbody tr[data-row="stem"] > th { vertical-align: bottom; padding-bottom: 10px; }
+.agent-interactive-chart .agent-canonical-chart--bazi tbody tr[data-row="branch"] > th { vertical-align: top; padding-top: 10px; }
+/* 字形按钮贴着字：定位高亮是包住字的小块，相邻两字之间留出直连线的位置。 */
+.agent-interactive-chart .agent-canonical-chart--bazi .chart-cell-button { display: inline-flex; min-width: 3rem; min-height: 0; justify-content: center; padding: 4px 12px; border: 0; border-radius: 10px; font-family: var(--font-display); font-size: calc(28 / 16 * 1rem); font-weight: 600; line-height: 1.2; }
+.agent-interactive-chart .agent-canonical-chart--bazi .chart-cell-button[aria-pressed="true"] { background: var(--accent-light); box-shadow: inset 0 0 0 2px var(--accent); }
+.chart-cell-button { min-width: 2.25rem; min-height: 2.75rem; border: 2px solid transparent; border-radius: .5rem; transition: background .15s, border-color .15s, opacity .15s; }
+.chart-cell-button:hover, .chart-star-button:hover { background: var(--fill-ghost-hover); }
+.chart-cell-button[aria-pressed=true], .chart-star-button[aria-pressed=true] { border-color: var(--accent); background: var(--accent-light); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent); }
+.chart-star-button { border: 1px solid transparent; border-radius: .35rem; padding: .2rem; }
+.chart-cell-button:focus-visible, .chart-star-button:focus-visible, .chart-palace-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.chart-palace-button { padding: .2rem; margin: -.2rem; text-align: left; }
+/* A saved chart from before relation details keeps only the relation text, under the board. */
+.agent-board-legacy { font-size: calc(12.5 / 16 * 1rem); color: var(--foreground-secondary); }
+.agent-board-fallback { white-space: pre-wrap; font-size: .8rem; }
+.agent-focus-receipt { padding: .6rem .8rem; font-size: .8rem; border-left: 2px solid var(--accent); overflow-wrap: anywhere; }
+.agent-focus-receipt span { display: block; color: var(--foreground-secondary); font-size: .7rem; margin-bottom: .2rem; }
+.chart-target-control { display: inline-flex; align-items: center; font: inherit; color: inherit; text-align: inherit; padding: .15em .3em; border-radius: .3rem; transition: background .15s; }
+.chart-target-control:hover { background: var(--fill-ghost-hover); }
+.chart-target-control[aria-pressed=true] { color: var(--accent); background: var(--accent-light); font-weight: 600; }
+.chart-target-control:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.agent-canonical-chart [data-chart-selected=true] { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--accent-light); }
+/* 奇门宫格自带选中环，不再叠一层外框。 */
+.agent-canonical-chart--qimen [data-chart-selected=true] { outline: 0; }
+.chart-astrology-wheel { max-width: 420px; margin: 0 auto; color: var(--foreground-secondary); }
+.chart-astrology-wheel svg { width: 100%; height: auto; }
+.chart-astrology-wheel figcaption { text-align: center; font-size: .75rem; }
+.chart-astrology-wheel g[data-chart-planet] { cursor: pointer; }
+.chart-astrology-wheel g[data-chart-selected=true] { color: var(--accent); outline: none; }
+.chart-aspect-line { stroke: var(--accent); stroke-width: 1.5; opacity: .7; }
+@media (prefers-reduced-motion: reduce) { .chart-cell-button, .agent-canonical-chart :is([data-chart-selected], [data-chart-target]), :is([data-relation-cell], [data-relation-tag]) { transition: none; } }
+@media (max-width: 767px) {
+  /* Mobile board: the card stacks with a full-width button. */
+  .agent-result-card { flex-wrap: wrap; gap: 10px; padding: 12px; }
+  .agent-result-card .agent-result-pillars { gap: 3px; font-size: calc(15 / 16 * 1rem); }
+  .agent-result-card .agent-result-pillars > span { padding: 3px 5px; }
+  .agent-result-card > .agent-primary-button { width: 100%; height: 44px; justify-content: center; border-radius: 12px; background: var(--background); font-size: calc(14 / 16 * 1rem); font-weight: 500; }
+  .app-modal.agent-chart-dialog, .app-modal.agent-workspace-dialog { width: 100vw; height: 100dvh; max-height: 100dvh; max-width: 100vw; margin: 0; border: 0; border-radius: 0; }
+  .agent-chart-dialog-header { padding-top: calc(1rem + var(--sat)); }
+  .agent-chart-dialog-body { max-height: calc(100dvh - 6.5rem - var(--sat)); padding-bottom: calc(1rem + var(--sab)); }
+}
+
+/* ---- 黄历工作区视图（与日运页同构：左栏日期大卡 + 右栏宜忌色块与方位 + 值日 + 时辰条） ---- */
+.almanac-view { display: flex; flex-direction: column; gap: 12px; container-type: inline-size; }
+/* 主卡：左 236px 日期栏（面板底）+ 右栏宜忌与细项，圆角 14、发丝边。 */
+.almanac-main { display: flex; overflow: hidden; border: var(--hairline) solid var(--border); border-radius: 14px; background: var(--background); }
+.almanac-date { display: flex; width: 204px; flex-shrink: 0; flex-direction: column; gap: 2px; padding: 18px 16px; border-right: var(--hairline) solid var(--border); background: var(--panel, var(--background-secondary)); }
+.almanac-date-line { font-size: calc(13 / 16 * 1rem); color: var(--foreground-secondary); }
+.almanac-date-day { font-family: var(--font-display); font-size: calc(64 / 16 * 1rem); font-weight: 400; line-height: 1; }
+.almanac-date-lunar { margin-top: 4px; font-family: var(--font-display); font-size: calc(21 / 16 * 1rem); line-height: 1.3; }
+.almanac-date-ganzhi { font-family: var(--font-display); font-size: calc(15 / 16 * 1rem); color: var(--foreground-secondary); }
+.almanac-kv-date { margin-top: 12px; padding-top: 12px; border-top: var(--hairline) solid var(--border); }
+.almanac-body { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 16px; padding: 18px; }
+.almanac-yiji { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.almanac-yiji-block { display: flex; min-width: 0; flex-direction: column; gap: 8px; }
+.almanac-yiji-title { font-family: var(--font-display); font-size: calc(26 / 16 * 1rem); line-height: 1; }
+.almanac-yiji-block[data-kind="yi"] .almanac-yiji-title { color: var(--wood, var(--chat-success)); }
+.almanac-yiji-block[data-kind="ji"] .almanac-yiji-title { color: var(--fire, var(--danger)); }
+.almanac-yiji-block h3 { display: flex; align-items: baseline; gap: 8px; margin: 0; }
+.almanac-yiji-block h3 > small { font-size: calc(12 / 16 * 1rem); color: var(--foreground-secondary); }
+.almanac-yiji-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.almanac-yiji-chips > span { padding: 3px 10px; border-radius: 6px; font-size: calc(14 / 16 * 1rem); line-height: calc(20 / 16 * 1rem); }
+.almanac-yiji-block[data-kind="yi"] .almanac-yiji-chips > span { background: var(--wood-soft, var(--accent-light)); color: var(--wood, var(--chat-success)); }
+.almanac-yiji-block[data-kind="ji"] .almanac-yiji-chips > span { background: var(--fire-soft, var(--background-secondary)); color: var(--fire, var(--danger)); }
+.almanac-yiji-empty { background: none !important; color: var(--foreground-secondary) !important; padding-left: 0 !important; }
+.almanac-details { display: flex; gap: 16px; padding-top: 16px; border-top: var(--hairline) solid var(--border); }
+/* 标签列按最长标签取宽（如「二十八星宿」），整张清单共用一列，不折行也不错位 */
+.almanac-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 12px; margin: 0; font-size: calc(13.5 / 16 * 1rem); line-height: calc(19 / 16 * 1rem); }
+.almanac-kv > div { display: contents; }
+.almanac-kv dt { color: var(--foreground-secondary); white-space: nowrap; }
+.almanac-kv > div[data-wide] { display: grid; grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr); gap: 2px; }
+.almanac-kv dd { margin: 0; overflow-wrap: anywhere; }
+.almanac-kv dd[data-kind="yi"] { color: var(--wood, var(--chat-success)); }
+.almanac-kv dd[data-kind="ji"] { color: var(--fire, var(--danger)); }
+.almanac-kv-detail { min-width: 0; flex: 1; }
+.almanac-badge { margin-left: 6px; padding: 0 5px; border-radius: 4px; font-size: calc(11.5 / 16 * 1rem); }
+.almanac-badge[data-tone="yi"] { background: var(--wood-soft, var(--accent-light)); color: var(--wood, var(--chat-success)); }
+.almanac-badge[data-tone="ji"] { background: var(--fire-soft, var(--background-secondary)); color: var(--fire, var(--danger)); }
+.almanac-direction-wrap { display: flex; width: 176px; flex-shrink: 0; flex-direction: column; gap: 8px; }
+.almanac-direction-caption { font-size: calc(13 / 16 * 1rem); color: var(--foreground-secondary); }
+.almanac-directions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; text-align: center; font-size: calc(11 / 16 * 1rem); }
+.almanac-direction { display: flex; min-height: 52px; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border-radius: 8px; background: var(--background-secondary); }
+.almanac-direction[data-tone="god"] { background: var(--accent-light); color: var(--accent-strong, var(--accent-hover)); }
+.almanac-direction > small { color: var(--foreground-tertiary); }
+.almanac-direction[data-tone="god"] > small { color: inherit; opacity: .75; }
+.almanac-direction > span { font-family: var(--font-display); font-size: calc(13 / 16 * 1rem); }
+.almanac-direction.is-center { background: var(--fill-control); color: var(--foreground); font-family: var(--font-display); font-size: calc(15 / 16 * 1rem); }
+.almanac-card { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border: var(--hairline) solid var(--border); border-radius: 14px; background: var(--background); }
+.almanac-card h3 { margin: 0; font-family: var(--font-display); font-size: calc(17 / 16 * 1rem); font-weight: 400; }
+.almanac-card p { margin: 0; font-size: calc(13 / 16 * 1rem); line-height: 1.6; color: var(--foreground-secondary); }
+.almanac-hours-card { gap: 10px; }
+.almanac-hours-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.almanac-hours-head > span { font-size: calc(12 / 16 * 1rem); color: var(--foreground-tertiary); }
+/* 时辰带：宽时 13 格一行，窄时每行 7 格、第二行 6 格居中；没有灰色填充格，吉凶用顶边色条加文字标示。 */
+.almanac-hours { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; }
+.almanac-hour { display: flex; min-width: 0; flex: 0 0 calc((100% - 24px) / 7); flex-direction: column; align-items: center; gap: 1px; padding: 6px 1px 7px; border: var(--hairline) solid var(--border); border-top: 2px solid var(--danger); border-radius: 8px; background: var(--background); font-size: calc(10.5 / 16 * 1rem); }
+.almanac-hour[data-kind="yi"] { border-top-color: var(--chat-success, var(--success)); }
+@container (min-width: 600px) { .almanac-hour { flex-basis: calc((100% - 48px) / 13); } }
+.almanac-hour > small { color: var(--foreground-tertiary); font-size: calc(9.5 / 16 * 1rem); white-space: nowrap; }
+.almanac-hour > strong { font-family: var(--font-display); font-size: calc(15 / 16 * 1rem); }
+.almanac-hour > span { max-width: 100%; overflow: hidden; font-size: calc(9.5 / 16 * 1rem); text-overflow: ellipsis; white-space: nowrap; color: var(--foreground-secondary); }
+.almanac-hour > em { font-style: normal; }
+.almanac-hour[data-kind="yi"] > em { color: var(--chat-success, var(--success)); }
+.almanac-hour[data-kind="ji"] > em { color: var(--danger); }
+.almanac-hour:hover { background: var(--fill-ghost-hover); }
+.almanac-hour[aria-pressed="true"] { border-color: var(--accent); border-top-color: var(--accent); background: var(--accent-light); color: var(--foreground); }
+/* 选中时辰的详情条：时辰、天神、冲煞一行，宜忌各一行。 */
+.almanac-hour-detail { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 10px; margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--background-secondary); font-size: calc(12.5 / 16 * 1rem); line-height: 1.6; }
+.almanac-hour-detail > div { display: contents; }
+.almanac-hour-detail-head { display: flex !important; grid-column: 1 / -1; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; color: var(--foreground-secondary); }
+.almanac-hour-detail-head > strong { font-family: var(--font-display); font-size: calc(15 / 16 * 1rem); font-weight: 500; color: var(--foreground); }
+.almanac-hour-detail dt { font-family: var(--font-display); }
+.almanac-hour-detail dd { margin: 0; overflow-wrap: anywhere; }
+.almanac-hour-detail > div[data-kind="yi"] dt { color: var(--chat-success, var(--success)); }
+.almanac-hour-detail > div[data-kind="ji"] dt { color: var(--danger); }
+/* 星宿歌诀：收成两行的引文，悬停、聚焦或被模型定位时展开。 */
+.almanac-verse { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: calc(12 / 16 * 1rem); line-height: 1.6; color: var(--foreground-tertiary); quotes: none; }
+.almanac-verse:is(:hover, :focus-visible, [aria-pressed="true"]) { -webkit-line-clamp: unset; }
+/* 窄工作区：日期栏移到上方，值日细项排成两对一行；再窄时方位九宫移到清单下方。 */
+@container (max-width: 640px) {
+  .almanac-main { flex-direction: column; }
+  .almanac-date { width: auto; border-right: 0; border-bottom: var(--hairline) solid var(--border); }
+  .almanac-date-day { font-size: calc(52 / 16 * 1rem); }
+  .almanac-kv-date { grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr); }
+}
+@container (max-width: 440px) {
+  .almanac-kv-date { grid-template-columns: max-content minmax(0, 1fr); }
+  .almanac-details { flex-direction: column; }
+  .almanac-direction-wrap { width: auto; }
+}
+/* 档案（archive.ts）: a card the user saves, and the receipt of an event recorded from their own words. */
+.agent-archive-card { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 14px; background: var(--chat-raised); }
+.agent-archive-card > header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.agent-archive-kind { font-size: calc(13 / 16 * 1rem); font-weight: 600; }
+.agent-archive-where { min-width: 0; font-size: calc(12 / 16 * 1rem); color: var(--foreground-secondary); overflow-wrap: anywhere; }
+.agent-archive-title { margin: 0; font-size: calc(13.5 / 16 * 1rem); font-weight: 550; overflow-wrap: anywhere; }
+.agent-archive-detail { margin: 0; max-height: 9.6em; overflow: auto; font-size: calc(12.5 / 16 * 1rem); line-height: 1.6; color: var(--foreground-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-archive-lines { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; font-size: calc(13 / 16 * 1rem); }
+.agent-archive-tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; }
+.agent-archive-tags > span { padding: 1px 6px; border-radius: 4px; background: var(--fill-field); font-size: calc(11.5 / 16 * 1rem); color: var(--foreground-secondary); }
+.agent-archive-note { margin: 0; font-size: calc(11.5 / 16 * 1rem); color: var(--foreground-tertiary); }
+.agent-archive-card > footer { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 2px; }
+.agent-archive-action { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border: 1px solid var(--border-hover, var(--border)); border-radius: 8px; background: var(--chat-raised); font-size: calc(12.5 / 16 * 1rem); color: var(--foreground); white-space: nowrap; }
+.agent-archive-action:hover { background: var(--fill-ghost-hover); }
+.agent-archive-action:disabled { opacity: .5; cursor: default; }
+.agent-archive-action.is-saved { border-color: transparent; background: transparent; padding: 0; height: auto; color: var(--accent-hover); }
+.agent-archive-status { display: inline-flex; align-items: center; gap: 6px; font-size: calc(12 / 16 * 1rem); color: var(--foreground-secondary); }
+.agent-archive-status a, .agent-archive-receipt a { color: var(--accent-hover); }
+.agent-archive-receipt { display: flex; align-items: flex-start; gap: 8px; margin: 0; font-size: calc(12.5 / 16 * 1rem); color: var(--foreground-secondary); overflow-wrap: anywhere; }
+.agent-archive-receipt > svg { flex-shrink: 0; margin-top: 3px; color: var(--accent-hover); }
+.agent-archive-list { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
+/* 「太卜正在查看」：跟随进行中的任务时，模型的焦点落到一处，那一格由内向外闪两下，读者的视线跟着落过去；
+   定位图标随之呼吸，焦点说明与位置标签淡入。焦点每换一次，新亮起的格子重新播放。
+   回看已结束的任务、切换标签重新挂载时只静态高亮，不再闪。 */
+@keyframes agent-look-ping { from { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent); } to { box-shadow: inset 0 0 0 14px transparent; } }
+@keyframes agent-look-breathe { 50% { opacity: .4; } }
+.agent-interactive-chart[data-live] .agent-canonical-chart:not(.agent-canonical-chart--bazi) [data-chart-selected=true],
+.agent-interactive-chart[data-live] .agent-canonical-chart--bazi .chart-cell-button[aria-pressed=true] { animation: agent-look-ping .9s var(--ease-out) 2; }
+.agent-board-focus[data-live] .agent-board-focus-label > svg { animation: agent-look-breathe 1.6s var(--ease-out) infinite; }
+.agent-board-focus[data-live]:not(.is-empty) { animation: motion-fade-up var(--duration-base) var(--ease-out) backwards; }
+.agent-board-focus[data-live] .agent-board-chips > li { animation: motion-pop-in var(--duration-snap) var(--ease-snap) backwards; }
+@media (prefers-reduced-motion: reduce) { .agent-board-focus[data-live] .agent-board-focus-label > svg { animation: none; } }

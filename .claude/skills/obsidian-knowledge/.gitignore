@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.DS_Store
+.worktrees/
+.new-feature/
+site/
+*.local.toml
+# Coverage artifacts (pytest-cov)
+.coverage
+.coverage.*
+htmlcov/
+# Generated index cache (created by reindex CLI and indexer tests)
+tests/fixtures/sample_vault/.config/
+coverage.json

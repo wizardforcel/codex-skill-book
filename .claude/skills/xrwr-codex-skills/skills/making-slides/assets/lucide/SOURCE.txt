@@ -1,0 +1,4 @@
+Lucide icons, lucide-static 1.66.0 (ISC License, see LICENSE).
+Source: https://www.npmjs.com/package/lucide-static/v/1.66.0
+Files: icon-nodes.json (shape data), tags.json (search keywords).
+Retrieved: 2026-11-16

@@ -1,0 +1,383 @@
+"""门面工具输入：dispatch / hecan、导出与知识库、玄史、agent 指引、记忆、报告、技法依据报告。"""
+from __future__ import annotations
+
+from typing import Any, ClassVar, Literal
+
+from pydantic import Field, field_validator, model_validator
+
+from horosa_skill.schemas.tools.astro import RelativePartyInput
+from horosa_skill.schemas.tools.base import BirthInput, FlexibleModel
+from horosa_skill.schemas.tools.cn_divination import LiuRengGodsInput
+from horosa_skill.schemas.tools.cn_mingli import (
+    BaZiBirthInput,
+    NongliTimeInput,
+    ZiWeiBirthInput,
+)
+
+
+class PlanetInfoSettingInput(FlexibleModel):
+    showHouse: int | bool | None = 1
+    showRuler: int | bool | None = 1
+
+
+class AstroMeaningSettingInput(FlexibleModel):
+    enabled: int | bool | None = 0
+
+
+class XuanshiInput(FlexibleModel):
+    # 玄史（中国玄学史知识库）：runtime 自带两个只读 SQLite bundle（玄学事件 7900+ / 天象记录 27000+ /
+    # 地名 / 人物图 2200+ 节点），由 python chart 服务的 /xuanshi/* 只读端点提供检索与结构视图。
+    # 纯检索工具，无结果敏感设置。action 决定查哪个面：
+    #   search（默认）= q 全文检索玄学事件；events/event = 多维过滤列表 / 单事件全档
+    #   （原文+白话+解读+流程+结局+引证）；celestial/celestial_event = 天象记录；
+    #   figures/figure = 人物；dynasties/dynasty = 朝代；techniques/technique = 术数门类；
+    #   terms/term/term_profile = 天象名词；timeline = 宏观时间线（带 macro 下钻）；
+    #   map = 地理点位；graph = 人物共现网络；stories/story = 专题故事；channels = 频道；
+    #   daily = 今日推送；summary = 全库统计；microchronology / decade_omens / facets /
+    #   events_meta = 编年细化 / 十年灾异 / 分面计数 / 列表页元数据。
+    # 其余五个检索工具的检索词都叫 query：写成 query 曾被静默忽略、回「命中 0 条」（审计 S-18）。照收、不进广告层。
+    ADVERTISE_HIDDEN: ClassVar[frozenset[str]] = frozenset({"query"})
+
+    action: str | None = "search"
+    q: str | None = Field(default=None, description="全文检索词（事件/人物/术数名皆可）。")
+    query: str | None = Field(default=None, description="同 q（其余检索工具的检索词叫 query）；两个都给时按 q。")
+    id: str | None = Field(default=None, description="详情键：事件 id（XTS-027）/ 编辑层 slug（fig-laozi）。")
+    tradition: str | None = Field(default=None, description="传统过滤：正史 / 野载。")
+    dynasty: str | None = Field(default=None, description="朝代过滤（如 唐 / 南北朝 / 志怪笔记）。")
+    technique: str | None = Field(default=None, description="术数门类过滤（如 占星 / 相术 / 卜筮）。")
+    history: str | None = Field(default=None, description="史书过滤（如 新唐书 / 晋书）。")
+    evidence: str | None = Field(default=None, description="证据等级过滤。")
+    omen: str | None = Field(default=None, description="天象类（日食/彗孛/流星…）：celestial/term_profile/microchronology。")
+    source: str | None = Field(default=None, description="天象出处过滤（celestial 用）。")
+    year_from: int | None = Field(default=None, description="天象起始公历年（可负=公元前）。")
+    year_to: int | None = Field(default=None, description="天象结束公历年。")
+    macro: str | None = Field(default=None, description="timeline 宏观段下钻键。")
+    period: str | None = Field(default=None, description="map 的时期过滤。")
+    date_key: str | None = Field(default=None, description="daily 的日期键（YYYY-MM-DD，缺省今日）。")
+    page: int | None = Field(default=None, description="列表页码（1 起）。")
+    page_size: int | None = Field(default=None, description="每页条数（默认 30）。")
+    limit: int | None = Field(default=None, description="条数上限。")
+    decade: int | None = Field(default=None, description="microchronology 十年期。")
+    has_crosswalk: bool | None = Field(default=None, description="celestial：有无交叉对照。")
+    in_chapter: bool | None = Field(default=None, description="celestial：in_chapter。")
+    top_n: int | None = Field(default=None, description="graph 节点上限（默认 70）。")
+    min_weight: int | None = Field(default=None, description="graph 边最小权重（默认 2）。")
+
+    @model_validator(mode="after")
+    def _query_is_q(self) -> "XuanshiInput":
+        if (self.q is None or not str(self.q).strip()) and self.query and str(self.query).strip():
+            self.q = self.query
+        return self
+
+
+class TechniqueReportInput(FlexibleModel):
+    # 技法依据报告：确定性的「这次用了什么技法、什么口径、谁算的」，**不需要 AI 正文**
+    # （那是 horosa_report_render 的活，两种文档不混）。
+    # run_id 或 group_id 二选一；都不给则取最近一次有技法卡的运行。
+    run_id: str | None = None
+    group_id: str | None = None
+    format: str = "markdown"
+    title: str | None = None
+    output_path: str | None = Field(default=None, description="须在报告输出目录内（相对路径按它解析）")
+    overwrite: bool = Field(default=False, description="同名文件已在时：false=另存「名字-2」（缺省）；true=替换星阙写过的同名报告")
+    # 是否把每个技法的产出段目录写进报告（默认写；关掉可得到极短的一页）。
+    include_sections: bool | None = True
+    # 都不给 run_id / group_id 时：缺省拒绝并列出最近几条（审计 PF-09）；CLI 不带 id 时传 latest=true 取最近一条。
+    latest: bool | None = Field(default=None, json_schema_extra={"x-horosa-hidden": True})
+
+
+class DispatchSubjectInput(FlexibleModel):
+    name: str | None = None
+    birth: BirthInput | ZiWeiBirthInput | BaZiBirthInput | LiuRengGodsInput | NongliTimeInput | None = None
+    inner: RelativePartyInput | None = None
+    outer: RelativePartyInput | None = None
+    gua_names: list[str] | None = None
+    year: int | str | None = None
+
+
+# dispatch / hecan 自身的顶层字段；其余顶层键在「没给 birth / subject 却给了 date」时视为出生/起课信息。
+_DISPATCH_OWN_FIELDS = frozenset({
+    "query", "subject", "birth", "context", "preferences", "save_result", "tools", "max_tools", "request",
+    "agent_confirmed_settings", "defaults_accepted", "clarification_notes", "knowledge",
+})
+
+
+class DispatchInput(FlexibleModel):
+    query: str
+    subject: DispatchSubjectInput | None = None
+    birth: BirthInput | ZiWeiBirthInput | BaZiBirthInput | LiuRengGodsInput | NongliTimeInput | None = None
+    context: dict[str, Any] = Field(default_factory=dict)
+    preferences: dict[str, Any] = Field(default_factory=dict)
+    save_result: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def _lift_flat_birth(cls, data: Any) -> Any:
+        """顶层平铺的出生信息（技法工具的写法）收进 `birth`。
+
+        技法工具收平铺的 date/time/zone/lat/lon，dispatch / hecan 却要 `{"birth": {...}}`。agent 照技法工具的
+        习惯平铺传过来时，旧行为是 FlexibleModel 把这些键当额外字段收下、路由却看不见 → 被选中的技法报缺 date，
+        而追问文本让用户「请提供出生日期、时间和地点（城市即可）」——用户明明给过。显式给了 birth / subject 时不动。
+        """
+        if not isinstance(data, dict) or data.get("birth") is not None or data.get("subject") is not None:
+            return data
+        if data.get("date") in (None, ""):
+            return data
+        lifted = {key: value for key, value in data.items() if key not in _DISPATCH_OWN_FIELDS}
+        kept = {key: value for key, value in data.items() if key in _DISPATCH_OWN_FIELDS}
+        return {**kept, "birth": lifted}
+
+
+class HecanInput(DispatchInput):
+    # 合参（v0.28.0）：一问多技法交叉印证。入参 = dispatch 全形（query + birth/subject + 确认字段），
+    # 另加 tools 显式指定技法与 max_tools 上限。tools 里可混写此前运行的 run_id（复用存档结果，不重算；v0.50.0）；
+    # 不给 tools 时按问题领域缺省配一对（engine/hecan_select.py），不借 dispatch 的单技法路由。产出不是终稿而是**合参模板**
+    # （ai_fillable：各技法结论槽 + 相互印证/分歧槽），分歧必须披露、不许平均——AI 填完即合参报告。
+    tools: list[str] | None = None
+    max_tools: int | None = 5
+    # 审计 surface 待决项 3：节选先放这些段（段名或段名的一部分，如「大运」「用神」）；不给 = 按问题的意图类选段。
+    evidence_sections: list[str] | None = None
+
+    @field_validator("tools", mode="before")
+    @classmethod
+    def _technique_names(cls, value: Any) -> Any:
+        """v0.50.0（IN-15）：`tools` 也收逗号串（"bazi_birth,ziwei_birth" / "八字、紫微"）与中文技法名（按技法同义词表解析），
+        认不出的名字报错并给最接近的技法名——以前逗号串是 list_type 错误，中文名是 tool.unknown。"""
+        from horosa_skill.input_fields import field_validator_for
+
+        return field_validator_for(resolve_technique_names, "tools")(value)
+
+
+def resolve_technique_names(value: Any) -> Any:
+    """技法名列表 / 逗号串 → 注册表键列表（注册表键、MCP 名、中英文同义词都认）。"""
+    import difflib
+    import re as _re
+
+    from horosa_skill.engine.hecan_select import is_run_id
+    from horosa_skill.engine.registry import TOOL_DEFINITIONS, resolve_tool_name
+    from horosa_skill.engine.synonyms import TOOL_SYNONYMS
+    from horosa_skill.input_fields import FieldIssue, Parsed, clean_text
+    from horosa_skill.textscript import fold_to_simplified
+
+    items = [part for part in _re.split(r"[,，、;；\s]+", value) if part] if isinstance(value, str) else value
+    if not isinstance(items, list):
+        raise FieldIssue("tool.invalid_option", f"tools 要是技法名列表或逗号串，收到 {value!r}。", f"tools must be a list or a comma-separated string; got {value!r}.",
+                         expected_zh="技法名列表，如 [\"bazi_birth\", \"ziwei_birth\"] 或 \"八字,紫微\"", expected_en="technique names, e.g. [\"bazi_birth\", \"ziwei_birth\"]",
+                         example=["bazi_birth", "ziwei_birth"])
+    by_word: dict[str, str] = {}
+    for name, words in TOOL_SYNONYMS.items():
+        if name in TOOL_DEFINITIONS:
+            for word in words:
+                by_word.setdefault(fold_to_simplified(word).lower(), name)
+    resolved: list[str] = []
+    notes: list[str] = []
+    for item in items:
+        text = clean_text(item)
+        if is_run_id(text):
+            # 合参复用此前的运行（v0.50.0）：run_id 原样保留（小写），由合参从存档里取结果、不重算。
+            if text.lower() not in resolved:
+                resolved.append(text.lower())
+            continue
+        hit = resolve_tool_name(text) or by_word.get(fold_to_simplified(text).lower())
+        if hit is None:
+            close = difflib.get_close_matches(text, [*TOOL_DEFINITIONS, *by_word], n=3, cutoff=0.5)
+            options = list(dict.fromkeys(by_word.get(c, c) for c in close))
+            raise FieldIssue("tool.invalid_option", f"认不出技法名 {item!r}" + (f"（是不是 {' / '.join(options)}？）" if options else "。"),
+                             f"Unknown technique name {item!r}" + (f" (did you mean {' / '.join(options)}?)" if options else "."),
+                             expected_zh="技法注册名（如 bazi_birth）、MCP 名或中文名（八字、紫微…）", expected_en="a technique name (bazi_birth), MCP name or Chinese name",
+                             example="bazi_birth", options=options)
+        if hit != text:
+            notes.append(f"{item}→{hit}")
+        if hit not in resolved:
+            resolved.append(hit)
+    if notes or isinstance(value, str):
+        return Parsed(resolved, "tools 按技法名读：" + "、".join(notes or resolved) + "。", "tools were read as: " + ", ".join(notes or resolved) + ".")
+    return Parsed(resolved)
+
+
+class ExportRegistryInput(FlexibleModel):
+    technique: str | None = None
+
+
+class ExportParseInput(FlexibleModel):
+    technique: str
+    content: str
+    selected_sections: list[str] | None = None
+    planet_info: PlanetInfoSettingInput | None = None
+    astro_meaning: AstroMeaningSettingInput | None = None
+
+
+class KnowledgeRegistryInput(FlexibleModel):
+    domain: str | None = None
+
+
+class KnowledgeReadInput(FlexibleModel):
+    # query 模式（v0.30.0）：给 `query` 即跨域全文检索，domain 变可选过滤器、category 不用；
+    # 不给 `query` 走精读老路（domain 必填，category 手册域可缺省首类）。
+    domain: str = ""
+    category: str = ""
+    key: str | None = None
+    query: str | None = None
+    limit: int | None = None
+    offset: int | None = Field(default=None, description="Skip this many search matches (legacy query mode; page with next_offset).")
+    # domain="user"（自备知识库）按原文件行号翻页（v0.45.0）；行号与检索结果 / 计算时带入段落的「第几行」一致。
+    from_line: int | None = Field(default=None, description='domain="user" only: first line to read, as a line number of the original file (search hits give it in read.from_line).')
+    max_lines: int | None = Field(default=None, description='domain="user" only: at most this many lines; the result says next_from_line when more remain.')
+    aspect_degree: int | str | None = None
+    object_a: str | None = None
+    object_b: str | None = None
+    jiang_name: str | None = None
+    tian_branch: str | None = None
+    di_branch: str | None = None
+
+
+class KnowledgeSearchInput(FlexibleModel):
+    """horosa_knowledge_search（v0.45.0）：检索与精读分开（qmd query→get、OpenAI search→fetch、Context7 两步式）。"""
+
+    query: str = Field(description="Words separated by spaces, e.g. 七杀 羊刃; two-character Chinese terms work and 繁/简 match each other.")
+    domain: str = Field(default="", description='Empty = bundled knowledge AND the user\'s notes; "user" = only the user\'s notes; or one bundled domain.')
+    limit: int | None = Field(default=None, description="Matches per page (default 8, max 20).")
+    offset: int | None = Field(default=None, description="Skip this many matches; pass the previous result's next_offset.")
+    # 检索不过澄清闸：基类的三个闸门字段对它没有意义，不进广告层（照样能传，不报错）。
+    agent_confirmed_settings: bool | None = Field(default=None, json_schema_extra={"x-horosa-hidden": True})
+    defaults_accepted: bool | None = Field(default=None, json_schema_extra={"x-horosa-hidden": True})
+    clarification_notes: str | None = Field(default=None, json_schema_extra={"x-horosa-hidden": True})
+
+
+class ProfileInput(FlexibleModel):
+    """horosa_profile：命主档案（profiles.py）。广告层只有四个键 + request（tools/list 余量 ~1.9 KB）。"""
+
+    action: Literal["save", "get", "list", "delete", "rename", "export", "import"] = Field(description="save/get/list/delete/rename/export/import")
+    name: str | None = Field(default=None, description="档案名（save/get/delete 必填）")
+    data: dict[str, Any] | None = Field(
+        default=None,
+        description="save：date/time/zone/lat/lon/gender/ad/timeAlg + aliases/place/notes；按名合并，null 删字段；rename：new_name；"
+                    "import：path / overwrite / confirm_token",
+    )
+    detail: bool | None = Field(default=None, description="list 时连出生信息一起给")
+    # 档案不过澄清闸（不起盘）：基类的闸门三键不进广告层。
+    agent_confirmed_settings: bool | None = Field(default=None, json_schema_extra={"x-horosa-hidden": True})
+    defaults_accepted: bool | None = Field(default=None, json_schema_extra={"x-horosa-hidden": True})
+    clarification_notes: str | None = Field(default=None, json_schema_extra={"x-horosa-hidden": True})
+
+
+class PlaceSearchInput(FlexibleModel):
+    """horosa_place_search（v0.48.0）：离线地名 → 坐标 + 当日时区，与星阙选点 / AI 地名解析同一条上游管线。"""
+
+    query: str = Field(description="简体/繁體/pinyin/English")
+    date: str | None = Field(default=None, description="YYYY-MM-DD, default today")
+    time: str | None = Field(default=None, description="HH:mm")
+    limit: int | None = Field(default=None, description="default 5, max 10")
+    # 上游北京时间统一的退出口（同 BirthInput.cnUnifiedZone）；与三个闸门字段一样不进广告层。
+    cnUnifiedZone: bool | None = Field(default=None, json_schema_extra={"x-horosa-hidden": True})
+    agent_confirmed_settings: bool | None = Field(default=None, json_schema_extra={"x-horosa-hidden": True})
+    defaults_accepted: bool | None = Field(default=None, json_schema_extra={"x-horosa-hidden": True})
+    clarification_notes: str | None = Field(default=None, json_schema_extra={"x-horosa-hidden": True})
+
+
+class AgentGuidanceInput(FlexibleModel):
+    tool_name: str | None = None
+    intent: str | None = None
+    include_all: bool = False
+
+
+class MemoryAnswerInput(FlexibleModel):
+    run_id: str
+    # 不传 = 沿用已存的问题（此前会被重置成原始 query）。
+    user_question: str | None = None
+    # 读取面（memory_query / show）一直叫 ai_answer_text；写入面此前叫 ai_answer。新名为准，旧名再收一个版本（v0.50 起隐藏）。
+    ai_answer_text: str | None = Field(default=None, description="The answer to store (required). A different earlier answer is kept in answer_history.")
+    ai_answer: str | None = Field(default=None, json_schema_extra={"x-horosa-hidden": True})
+    ai_answer_structured: dict[str, Any] | list[Any] | None = None
+    answer_meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryQueryInput(FlexibleModel):
+    run_id: str | None = Field(default=None, description="One known run (to check it exists / see its row); to read it in full use horosa_memory_show.")
+    group_id: str | None = Field(default=None, description="Only runs of one session.")
+    tool: str | None = None
+    entity: str | None = None
+    text: str | None = None
+    artifact_kind: str | None = None
+    after: str | None = None
+    before: str | None = None
+    # 只给日期时按哪个时区的一天（+08:00 / Asia/Shanghai）；不给 = 本机时区，结果的 applied_filters.time 说用了哪个。
+    zone: str | None = Field(default=None, description="Zone of date-only bounds")
+    # 上限 100（service/api/memory.py QUERY_LIMIT_MAX）：超了按上限回并在 summary 里说。
+    limit: int = 20
+    # 分页偏移：跳过前 N 条命中（与 limit 搭配翻页）。
+    offset: int = 0
+    # 缺省只回摘要（run_id、问题、技法、产物路径）；要全量用 horosa_memory_show，或显式传 true。
+    include_payload: bool = False
+
+
+class MemoryManageInput(FlexibleModel):
+    """horosa_memory_manage（审计待决项 6）：本机存档的删除 / 放回 / 导出 / 用量。删除第一次永远是预演。"""
+
+    action: Literal["delete", "restore", "export", "usage"] = Field(description="delete/restore/export/usage")
+    run_ids: list[str] | None = Field(default=None, description="delete/export：要处理的 run")
+    entity: str | None = Field(default=None, description="delete/export：这个人的全部 run（档案名 / 别名都算）")
+    before: str | None = Field(default=None, description="delete：早于这个日期 / 时刻创建的 run")
+    keep_reports: bool = Field(default=False, description="delete：留下报告文件")
+    permanent: bool = Field(default=False, description="delete：直接抹除（缺省进回收站，30 天内可 restore）")
+    confirm_token: str | None = Field(default=None, description="delete：预演结果里的令牌（用户确认后才带）")
+    trash_id: str | None = Field(default=None, description="restore：回收站批次（不给 = 列出回收站）")
+    agent_confirmed_settings: bool | None = Field(default=None, json_schema_extra={"x-horosa-hidden": True})
+    defaults_accepted: bool | None = Field(default=None, json_schema_extra={"x-horosa-hidden": True})
+    clarification_notes: str | None = Field(default=None, json_schema_extra={"x-horosa-hidden": True})
+
+
+class MemoryShowInput(FlexibleModel):
+    run_id: str
+    include_payload: bool = True
+    # 以下几个只在 MCP 面生效（horosa_skill/result_view.py，进工具之前取走）：读回存档时按段翻页、full 超预算时取子树。
+    response_view: str | None = Field(default=None, description="reading/sections/titles/full")
+    response_tool: str | None = Field(default=None, description="技法名")
+    response_sections: list[int | str] | None = Field(default=None, description="段序号或标题")
+    response_offset: int | None = Field(default=None, description="续读起点（字）")
+    response_path: str | None = Field(default=None, description="full 超预算时取的子树（如 data.export_snapshot）")
+
+
+class ReportTemplateInput(FlexibleModel):
+    run_id: str
+    tool_name: str | None = None
+    language: str | None = None
+    include_text: bool = Field(default=False, description="附上盘面全文（缺省只给取全文的调用）")
+
+
+class ReportRenderInput(FlexibleModel):
+    run_id: str
+    tool_name: str | None = None
+    format: str = "pdf"  # pdf / docx / json；png = 盘图、ics = 日历（只含引擎数据，不要 ai_report）
+    style: str = Field(
+        default="analysis",
+        description="analysis=AI 解盘报告（缺省）；chart=完整排盘报告，无需 AI 解读",
+        json_schema_extra={"enum": ["analysis", "chart"]},   # 审计 S-29：以前没有 enum；校验仍由 report.invalid_style 给可读错误
+    )
+    language: str | None = None
+    title: str | None = None
+    ai_report: dict[str, Any] = Field(default_factory=dict)
+    ai_answer_text: str | None = None
+    include_answer: bool | None = Field(default=None, description="chart 样式是否附上这条记录已存的解读（缺省不附）")
+    include_raw_json: bool = False
+    output_path: str | None = Field(default=None, description="须在报告输出目录内（相对路径按它解析）")
+    overwrite: bool = Field(default=False, description="同名文件已在时：false=另存「名字-2」（缺省）；true=替换星阙写过的同名报告")
+
+
+class ReportFromToolInput(FlexibleModel):
+    tool_name: str
+    payload: dict[str, Any]
+    format: str = "pdf"  # pdf / docx / json；png = 盘图、ics = 日历（只含引擎数据，不要 ai_report）
+    style: str = Field(
+        default="analysis",
+        description="analysis=AI 解盘报告（缺省）；chart=完整排盘报告，无需 AI 解读",
+        json_schema_extra={"enum": ["analysis", "chart"]},   # 审计 S-29：以前没有 enum；校验仍由 report.invalid_style 给可读错误
+    )
+    language: str | None = None
+    title: str | None = None
+    question: str | None = None
+    ai_report: dict[str, Any] = Field(default_factory=dict)
+    ai_answer_text: str | None = None
+    include_raw_json: bool = False
+    output_path: str | None = Field(default=None, description="须在报告输出目录内（相对路径按它解析）")
+    overwrite: bool = Field(default=False, description="同名文件已在时：false=另存「名字-2」（缺省）；true=替换星阙写过的同名报告")

@@ -1,0 +1,1842 @@
+"""Local-tool tests.
+
+qimen / taiyi / jinkou are computed by the Horosa "ken" backend (kinqimen / kintaiyi /
+kinjinkou) on the Python chart service, then reformatted into 星阙 aiExport.js sections by
+the headless JS layer. Because that pipeline needs the live runtime (Java :9999 + Python
+chart :8899), those four are integration tests that skip when the services aren't running.
+liureng (headless layout) is exercised with a mocked client, and tongshefa has no ken
+engine and runs as a pure headless JS tool.
+"""
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import socket
+from urllib.parse import urlsplit
+
+import pytest
+
+from horosa_skill.config import Settings
+from horosa_skill.engine.client import HorosaApiClient
+from horosa_skill.errors import ToolValidationError
+from horosa_skill.exports.registry import AI_EXPORT_SETTINGS_VERSION
+from horosa_skill.memory.store import MemoryStore
+from horosa_skill.service import HorosaSkillService
+
+# Honor the same env overrides as Settings.from_env so the live suite can be pointed at an
+# alternate backend instance (e.g. one started from vendor/runtime-source on a free port).
+#
+# 🔴 live 门禁只认**显式点名**的实例（v0.27.0 收紧）。以前 env 缺省时会静默探默认 :8899/:9999——
+# 而默认端口上恰好在跑的东西来源完全不可知：可能是陈旧实例，也可能**根本不是本仓的树**
+# （v0.27.0 审计当天实测过一次，靠人偶然查 lsof 才发现）。从它那里读回来的任何值都不可信，
+# 所以 env 未设时 live 测试一律 skip 并给出起法指引，连 TCP 都不去碰默认端口。
+# 起本仓 vendored 实例：`bash scripts/start_vendored_instance.sh`（打印可直接粘贴的 export 行）。
+_CHART_EXPLICIT = bool(os.environ.get("HOROSA_CHART_SERVER_ROOT"))
+_JAVA_EXPLICIT = bool(os.environ.get("HOROSA_SERVER_ROOT"))
+_EXPLICIT_HINT = (
+    "[no-runtime] live gates only run against an explicitly named instance — "
+    "export HOROSA_CHART_SERVER_ROOT / HOROSA_SERVER_ROOT (boot one with "
+    "scripts/start_vendored_instance.sh); default-port stacks are untrusted (AGENTS §8)"
+)
+CHART_SERVER_ROOT = os.environ.get("HOROSA_CHART_SERVER_ROOT") or "http://127.0.0.1:8899"
+JAVA_SERVER_ROOT = os.environ.get("HOROSA_SERVER_ROOT") or "http://127.0.0.1:9999"
+
+
+def _root_host_port(root: str, default_port: int) -> tuple[str, int]:
+    parts = urlsplit(root)
+    return parts.hostname or "127.0.0.1", parts.port or default_port
+
+
+def _server_up(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def _java_routes_alive(root: str) -> bool:
+    """Java 层「在听」不等于「能用」。
+
+    🔴 `_server_up` 只做 TCP connect。Java 聚合层有两种「listening 但业务全死」的形态实测都见过：
+    app 注册读不到（ResultCode 9999，注册信息在 Mongo 里）与参数校验失败（200001）。两种情况下
+    `RUNTIME_UP` 照样为 True，于是该跳过的 live 测试**跑起来然后红**，把环境问题伪装成回归。
+    探针打 `/nongli/time` 而不是 `/common/time` —— 后者正是那条「其余全死它还绿」的路由。
+    """
+    try:
+        from horosa_skill.engine.client import HorosaApiClient
+
+        data = HorosaApiClient(root, timeout=5.0).call(
+            "/nongli/time",
+            {"date": "2000-01-01", "time": "12:00:00", "zone": "+08:00", "lon": "121e28", "lat": "31n13"},
+        )
+        return isinstance(data, dict) and bool(data)
+    except Exception:
+        return False
+
+
+_CHART_HOST_PORT = _root_host_port(CHART_SERVER_ROOT, 8899)
+_JAVA_HOST_PORT = _root_host_port(JAVA_SERVER_ROOT, 9999)
+# env 未显式给出 → 不探端口（短路在 and 左侧）：对一个来源不明的栈连「它在不在听」都不该问。
+_JAVA_LISTENING = _JAVA_EXPLICIT and _server_up(*_JAVA_HOST_PORT)
+_JAVA_USABLE = _JAVA_LISTENING and _java_routes_alive(JAVA_SERVER_ROOT)
+CHART_UP = _CHART_EXPLICIT and _server_up(*_CHART_HOST_PORT)
+RUNTIME_UP = CHART_UP and _JAVA_USABLE
+
+
+def installed_runtime_registry_version(runtime_root: pathlib.Path) -> int | None:
+    """`export_registry_version` stamped into the runtime payload installed under `runtime_root`.
+
+    None when there is no installed payload or the manifest is unreadable (an external vendored instance,
+    for example) — unknown must never turn into a skip.
+    """
+    manifest = runtime_root / "current" / "runtime-manifest.json"
+    try:
+        value = json.loads(manifest.read_text(encoding="utf-8")).get("export_registry_version")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def runtime_contract_is_stale(installed: int | None, tree: int) -> bool:
+    """The live engines were built from a skill older than this tree's export contract — version skew, not a regression."""
+    return installed is not None and installed < tree
+
+
+_INSTALLED_REGISTRY = installed_runtime_registry_version(Settings.from_env().runtime_root)
+# Live tests that pin behaviour shipped by an upstream sync (sync311 goldens, castSeed replay, 地点 line, the
+# vendored 三式合一 snapshot's `kook`) only hold against a runtime built from this contract or newer. Against
+# an older installed payload they must SKIP with the skew spelled out, not fail: the weekly matrix runs
+# main × the public latest release (2026-09-24, Windows maintainer lane: 6 red on v0.39.0 = registry 14 < 15).
+requires_current_runtime_contract = pytest.mark.skipif(
+    runtime_contract_is_stale(_INSTALLED_REGISTRY, AI_EXPORT_SETTINGS_VERSION),
+    reason=(
+        f"[version-skew] installed runtime payload export_registry_version={_INSTALLED_REGISTRY} < this tree's "
+        f"AI_EXPORT_SETTINGS_VERSION={AI_EXPORT_SETTINGS_VERSION}: the engines predate the upstream sync these "
+        "assertions pin (version skew, not a regression)"
+    ),
+)
+
+
+def _runtime_skip_reason() -> str:
+    if not (_CHART_EXPLICIT and _JAVA_EXPLICIT):
+        return _EXPLICIT_HINT
+    return (
+        f"[no-runtime] Horosa runtime unusable — chart {CHART_SERVER_ROOT}, Java {JAVA_SERVER_ROOT} "
+        f"({'java_routes_dead' if _JAVA_LISTENING and not _JAVA_USABLE else 'not_listening'})"
+    )
+
+
+requires_runtime = pytest.mark.skipif(not RUNTIME_UP, reason=_runtime_skip_reason())
+# Chart-only gate: harmonic / agepoint / distributions are pure Python chart-service computations
+# (/astroextra/*, /predict/*) and do NOT need the Java backend on :9999. Gating them on the chart
+# service alone lets them run whenever the chart service is up, not only when the full stack is.
+requires_chart = pytest.mark.skipif(
+    not CHART_UP,
+    reason=(
+        _EXPLICIT_HINT if not _CHART_EXPLICIT
+        else f"[no-runtime] Horosa chart service not listening on {CHART_SERVER_ROOT}"
+    ),
+)
+
+
+class FakeLocalClient(HorosaApiClient):
+    def __init__(self) -> None:
+        super().__init__("http://fake")
+
+    def probe(self, endpoint: str = "/common/time", payload: dict | None = None) -> bool:
+        return True
+
+    def call(self, endpoint: str, payload: dict) -> dict:
+        if endpoint == "/nongli/time":
+            return {
+                "Result": {
+                    "yearJieqi": "丙午",
+                    "year": "丙午",
+                    "monthGanZi": "庚寅",
+                    "dayGanZi": "壬戌",
+                    "jieqi": "立春",
+                    "jiedelta": "立春后第14天",
+                    "birth": f"{payload['date']} {payload['time']}",
+                    "month": "正月",
+                    "day": "初一",
+                    "leap": False,
+                    "yearGanZi": "丙午",
+                    "monthInt": 1,
+                    "dayInt": 1,
+                    "time": "辛亥",
+                }
+            }
+        if endpoint == "/jieqi/year":
+            return {"Result": {"jieqi24": []}}
+        if endpoint == "/liureng/gods":
+            return {
+                "Result": {
+                    "liureng": {
+                        "nongli": {"dayGanZi": "甲辰", "time": "申时", "monthGanZi": "丙申"},
+                        "fourColumns": {"month": {"ganzi": "丙申"}},
+                        "xun": {"旬空": "寅卯", "旬首": "甲辰"},
+                        "season": {"金": "囚", "木": "旺", "水": "休", "火": "相", "土": "死"},
+                        "gods": {},
+                        "godsGan": {},
+                        "godsMonth": {},
+                        "godsZi": {},
+                        "godsYear": {"taisui1": {}},
+                    }
+                }
+            }
+        raise AssertionError(f"Unexpected endpoint: {endpoint}")
+
+
+class LiuRengParityLocalClient(FakeLocalClient):
+    def call(self, endpoint: str, payload: dict) -> dict:
+        if endpoint == "/liureng/gods":
+            return {
+                "Result": {
+                    "liureng": {
+                        "nongli": {"dayGanZi": "戊申", "time": "癸巳", "birth": "2028-04-06 09:35:18"},
+                        "fourColumns": {
+                            "year": {"ganzi": "戊申"},
+                            "month": {"ganzi": "丙辰"},
+                            "day": {"ganzi": "戊申"},
+                            "time": {"ganzi": "癸巳"},
+                        },
+                        "xun": {"旬空": "寅卯", "旬首": "甲辰"},
+                        "season": {},
+                        "gods": {},
+                        "godsGan": {},
+                        "godsMonth": {},
+                        "godsZi": {},
+                        "godsYear": {"taisui1": {}},
+                    }
+                }
+            }
+        if endpoint in {"/chart", "/"}:
+            return {
+                "Result": {
+                    "chart": {
+                        "isDiurnal": True,
+                        "nongli": {"dayGanZi": "戊申", "time": "癸巳"},
+                        "objects": [{"id": "Sun", "sign": "Aries"}],
+                    }
+                }
+            }
+        return super().call(endpoint, payload)
+
+
+def make_service(tmp_path, client: HorosaApiClient | None = None) -> HorosaSkillService:
+    settings = Settings(
+        server_root=JAVA_SERVER_ROOT,
+        chart_server_root=CHART_SERVER_ROOT,
+        runtime_root=tmp_path / "runtime",
+        db_path=tmp_path / "memory.db",
+        output_dir=tmp_path / "runs",
+    )
+    # client=None -> real clients (used by the @requires_runtime ken integration tests);
+    # a fake client is injected for the mocked liureng test.
+    return HorosaSkillService(settings, client=client, store=MemoryStore(settings))
+
+
+def _assert_clean_export(result) -> None:
+    export = result.data.get("export_snapshot")
+    assert export is not None
+    assert export.get("missing_selected_sections") == []
+    assert export.get("unknown_detected_sections") == []
+
+
+@requires_runtime
+def test_qimen_runs_via_ken_backend(tmp_path) -> None:
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "qimen",
+        {"date": "1998-02-20", "time": "20:48:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "options": {"qijuMethod": "chaibu"}},
+        save_result=False,
+    )
+    assert result.ok is True
+    pan = result.data["pan"]
+    assert pan.get("source") == "kinqimen"
+    assert pan.get("juText")
+    assert isinstance(pan.get("cells"), list) and pan["cells"]
+    assert "[起盘信息]" in result.data["snapshot_text"]
+    assert "[九宫方盘]" in result.data["snapshot_text"]
+    # 全局速览：九遁/三奇得使/吉凶格/六害分布/值符值使落宫一览（v3.3.1）。
+    assert "[全局速览]" in result.data["snapshot_text"]
+    assert "值符落宫：" in result.data["snapshot_text"]
+    # 旺相休囚死·月令能量：以月令五行定各宫 星/门/宫 的旺相休囚死（当令者旺…）。
+    assert "[旺相休囚死·月令能量]" in result.data["snapshot_text"]
+    assert "月令：" in result.data["snapshot_text"]
+    # 法奇门叠加层 (星阙 v-next)：六害/化解/八门化气大阵/用神分论/七要/孤辰寡宿。
+    for header in ("[六害总览]", "[化解方案]", "[八门化气大阵]", "[用神分论]", "[财富七要]", "[孤辰寡宿]"):
+        assert header in result.data["snapshot_text"], header
+    _assert_clean_export(result)
+
+
+@requires_runtime
+def test_qimen_fa_related_people_year_gan_rows(tmp_path) -> None:
+    """法奇门「相关人员」(星阙 相关人员批)：faRelatedPeople 提供后 [八门化气大阵] 段逐人出
+    「生年干·姓名」保护行；birth 经 /nongli/time yearJieqi 按立春界解析年干（1991-02-03 在
+    1991 立春前 → 归 1990 庚午年 → 庚）；不提供则不出「生年干·」行（段表不变）。"""
+    service = make_service(tmp_path)
+    base = {
+        "date": "1998-02-20",
+        "time": "20:48:00",
+        "zone": "+08:00",
+        "lat": "31n13",
+        "lon": "121e28",
+        "options": {"qijuMethod": "chaibu"},
+    }
+    with_people = service.run_tool(
+        "qimen",
+        {
+            **base,
+            "faRelatedPeople": [
+                {"name": "甲方", "yearGan": "庚"},
+                {"name": "乙方", "birth": "1991-02-03"},
+            ],
+        },
+        save_result=False,
+    )
+    assert with_people.ok is True, with_people.error
+    text = with_people.data["snapshot_text"]
+    assert "生年干·甲方" in text
+    assert "生年干·乙方" in text
+    yifang_line = next(line for line in text.splitlines() if "生年干·乙方" in line)
+    assert "庚" in yifang_line
+    _assert_clean_export(with_people)
+
+    without = service.run_tool("qimen", base, save_result=False)
+    assert without.ok is True
+    assert "生年干·" not in without.data["snapshot_text"]
+
+
+@requires_runtime
+def test_taiyi_runs_via_ken_backend(tmp_path) -> None:
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "taiyi",
+        {"date": "2026-02-17", "time": "21:50:07", "zone": "+08:00", "lat": "31n14", "lon": "121e28", "options": {"style": 3, "tn": 0, "sex": "男"}},
+        save_result=False,
+    )
+    assert result.ok is True
+    pan = result.data["pan"]
+    assert pan.get("source") == "kintaiyi"
+    assert pan.get("zhao")
+    kook = pan.get("kook")
+    assert (kook.get("text") if isinstance(kook, dict) else kook)
+    snapshot = result.data["snapshot_text"]
+    assert "[太乙盘]" in snapshot
+    # 星阙 v2.6.x: the kintaiyi backend's rich 太乙 reading sections now surface (previously stripped).
+    for header in ("[太乙诸神]", "[风游]", "[主客定算]", "[八门与宿曜]", "[断法]", "[七大兵法]"):
+        assert header in snapshot, header
+    # 上游 v50 起 [起盘] 是后端透传的**正式**段（已在 taiyi preset 里），与 builder 的 [起盘信息]
+    # 并存不是「重复」——旧断言 `"[起盘]" not in snapshot` 是 v50 段级回填前的遗留，会误报。
+    assert "[起盘信息]" in snapshot
+    assert "[起盘]" in snapshot
+    _assert_clean_export(result)
+
+
+@requires_runtime
+def test_jinkou_runs_via_ken_backend(tmp_path) -> None:
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "jinkou",
+        {"date": "2026-02-17", "time": "21:50:07", "zone": "+08:00", "lat": "31n14", "lon": "121e28", "options": {"diFen": "午"}},
+        save_result=False,
+    )
+    assert result.ok is True
+    jinkou = result.data["jinkou"]
+    assert jinkou.get("source") == "kinjinkou"
+    assert isinstance(jinkou.get("rows"), list) and jinkou["rows"]
+    assert "[金口诀速览]" in result.data["snapshot_text"]
+    _assert_clean_export(result)
+
+
+@requires_current_runtime_contract
+@requires_runtime
+def test_sanshiunited_combines_ken_qimen_taiyi(tmp_path) -> None:
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "sanshiunited",
+        # gameTheory=1：【太乙博弈】只在 ken 回博弈段时产（上游挑段「有正文才出」；v3.11.x wave-3 前 skill 给缺段填占位）。
+        {"date": "1998-02-20", "time": "20:48:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "qimen_options": {"qijuMethod": "chaibu"}, "taiyi_options": {"style": 3, "gameTheory": 1}},
+        save_result=False,
+    )
+    assert result.ok is True
+    assert result.data["qimen"].get("juText")
+    assert result.data["taiyi"].get("kook")
+    snap = result.data["snapshot_text"]
+    # 快照 = vendored 上游 buildSanShiUnitedSnapshotText（appendSection 段头【】）。
+    assert "【起盘信息】" in snap
+    # 对齐独立页：复用三独立技法富化段——太乙 pan.sections（加「太乙」前缀）、六壬断卦层、奇门派生。
+    for header in ("【太乙断法】", "【太乙博弈】", "【十二盘式】", "【课体结构】", "【奇门九宫方盘】", "【奇门用神分论】"):
+        assert header in snap, header
+    # 三家恒产段必须是真实引擎输出而非占位（占位文案=「本盘未产出」）。
+    for always_on in ("主客定算", "十二盘式", "九宫方盘"):
+        assert f"（本盘未产出「{always_on}」）" not in snap, always_on
+    _assert_clean_export(result)
+
+
+def test_liureng_defaults_to_xingque_astrology_guiren_system(tmp_path) -> None:
+    service = make_service(tmp_path, client=LiuRengParityLocalClient())
+
+    result = service.run_tool(
+        "liureng_gods",
+        {
+            "date": "2028-04-06",
+            "time": "09:33:00",
+            "zone": "+08:00",
+            "lat": "31n13",
+            "lon": "121e28",
+        },
+        save_result=False,
+    )
+
+    assert result.ok is True
+    layout = result.data["headless_liureng"]["layout"]
+    assert layout["guirengType"] == 2
+    assert layout["guirengLabel"] == "星占法贵人"
+    assert layout["guizi"] == "午"
+    assert "贵人体系：星占法贵人" in result.data["snapshot_text"]
+    assert "MongoDB" not in result.data["snapshot_text"]
+    # 六壬 Phase 4 (星阙 v2.5.x)：常用神煞段按日干支补算 + 入课传标记。
+    assert "[常用神煞]" in result.data["snapshot_text"]
+
+
+class JinKouLocalClient(LiuRengParityLocalClient):
+    def call(self, endpoint: str, payload: dict) -> dict:
+        if endpoint == "/jinkou/pan":
+            # 无 rows → runJinkou 走本地 buildJinKouData fallback，驱动真实 JS 解读层。
+            return {"Result": {"source": "kinjinkou"}}
+        return super().call(endpoint, payload)
+
+
+def test_jinkou_local_emits_interpretation_layer(tmp_path) -> None:
+    # 金口诀解读层 (星阙 v2.5.x)：真实 JS buildJinKouSnapshotText 出 20 段含解读层。
+    service = make_service(tmp_path, client=JinKouLocalClient())
+    result = service.run_tool(
+        "jinkou",
+        {"date": "1998-03-02", "time": "08:18:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "options": {"diFen": "午"}},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    text = result.data["snapshot_text"]
+    # 段名 分类用神·求财 → 分类用神：旧 vendored JinKouDoc 的 JINKOU_CATEGORY_RULES 只有「求财」
+    # 一条，段头被写死；重 vendor 到上游 13 类后回归上游段名。新增段一并断言，防解读层再被截断。
+    for header in (
+        "[金口诀三盘]", "[用神强弱]", "[四位生克]", "[应期]", "[地支关系]", "[相关神煞]",
+        "[分类用神]", "[十二长生]",
+        "[发用·五动三动]", "[格局]", "[太岁月建]", "[四象所属]", "[四象五行]",
+        "[方位神煞]", "[合占扣题与内外]", "[二遁与次客]", "[贵神月将象意]", "[数理]",
+    ):
+        assert header in text, header
+    _assert_clean_export(result)
+
+
+def test_tongshefa_local_tool_runs_headless_engine(tmp_path) -> None:
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "tongshefa",
+        {"taiyin": "巽", "taiyang": "坤", "shaoyang": "震", "shaoyin": "震"},
+        save_result=False,
+    )
+    assert result.ok is True
+    assert result.data["tongshefa"]["baseLeft"]["name"]
+    assert result.data["export_snapshot"] is not None
+
+
+def test_tongshefa_uses_jingfang_palace_element_not_upper_trigram(tmp_path) -> None:
+    # Alignment regression: 统摄法 takes a hexagram's element from its 京房本宫 palace, not its upper
+    # trigram. left=风雷益 (巽/震, palace 巽宫 木), right=火地晋 (离/坤, palace 乾宫 金 — upper trigram
+    # would wrongly give 火). 星阙 expects right_elem=金 and main_relation=实克思.
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "tongshefa",
+        {"taiyin": "巽", "taiyang": "离", "shaoyang": "震", "shaoyin": "坤"},
+        save_result=False,
+    )
+    assert result.ok is True
+    data = result.data["tongshefa"]
+    assert data["baseLeft"]["name"] == "风雷益"
+    assert data["baseRight"]["name"] == "火地晋"
+    assert data["left_elem"] == "木"
+    assert data["right_elem"] == "金"  # palace 乾宫, NOT upper trigram 离/火
+    assert data["main_relation"] == "实克思"
+
+
+def test_canping_local_tool_runs_headless_engine(tmp_path) -> None:
+    # canping (邵子参评数 / 金锁银匙) is a 原生·非 ken tool: the four pillars are computed in-process by
+    # the vendored bazi chain (lunar-javascript), then canpingLocal does the 金锁银匙 起数 + 条文 lookup.
+    # No live runtime needed (like tongshefa). Pillars for this case are 丙午/庚寅/壬戌/辛亥 → 水部.
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "canping",
+        {"date": "2026-02-17", "time": "21:50:07", "zone": "+08:00", "lon": "120e00", "gender": 1, "timeAlg": 1, "method": "ming"},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    data = result.data["canping"]
+    assert data["element"] == "水"
+    assert data["partName"] == "水部"
+    assert data["dayPalaceBranch"] == "亥"
+    assert data["mingGong"] == "卯"
+    assert data["benming"]["verses"]["numShun"] == 2152
+    assert data["benming"]["verses"]["numNi"] == 3352
+    assert len(data["dayun"]) == 9
+    # The accurate per-year 流年 table lives in series (1–120) AND now feeds the snapshot.
+    assert len(data["series"]["rows"]) == 120
+    snapshot = result.data["snapshot_text"]
+    assert "[起盘]" in snapshot
+    assert "[本命]" in snapshot
+    assert "[大运·歲運]" in snapshot
+    # 全生涯流年表（liunianRows）喂入快照 → [流年·歲運] 段逐岁产出（120 行）。
+    assert "[流年·歲運]" in snapshot
+    assert "120岁" in snapshot
+    # Export contract is clean: 歲運 labels legacy-map to 大运/流年, matching the 4-section preset.
+    _assert_clean_export(result)
+
+
+def test_canping_method_gu_changes_day_palace(tmp_path) -> None:
+    # 明法 takes the day-palace branch from the month branch reversed (寅→亥); 古法 takes it from the
+    # bazi day branch (壬戌→戌). Same birth input, different 取法 ⇒ different 日宫支.
+    service = make_service(tmp_path)
+    base = {"date": "2026-02-17", "time": "21:50:07", "zone": "+08:00", "lon": "120e00", "gender": 1, "timeAlg": 1}
+    ming = service.run_tool("canping", {**base, "method": "ming"}, save_result=False)
+    gu = service.run_tool("canping", {**base, "method": "gu"}, save_result=False)
+    assert ming.data["canping"]["dayPalaceBranch"] == "亥"
+    assert gu.data["canping"]["dayPalaceBranch"] == "戌"
+
+
+def test_canping_heluo_late_zi_switches_thread(tmp_path) -> None:
+    # 晚子时双开关（after23NewDay 日柱 / lateZiHourUseNextDay 时干）全链穿透 canping/heluo（AGENTS §10 残余缺口）。
+    # 2026-05-27 23:30 子时段：after23=1 日柱进次日；lateZi 移时干。heluo 用全干支起卦故两开关皆可见；
+    # canping 只用时支（子恒定），故 after23 移日支、lateZi 对其为 no-op —— 但两开关均已 verbatim 透传。
+    service = make_service(tmp_path)
+    base = {"date": "2026-05-27", "time": "23:30:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "gender": 1, "timeAlg": 1}
+
+    def heluo_pillars(a23, lz):
+        r = service.run_tool("heluo", {**base, "after23NewDay": a23, "lateZiHourUseNextDay": lz}, save_result=False)
+        assert r.ok is True, r.error
+        return r.data["heluo"]["fourPillars"]
+
+    # after23NewDay 移日柱（辛丑 → 壬寅）；lateZiHourUseNextDay 移时干（戊子 → 庚子，时支恒子）。
+    assert heluo_pillars(0, 1)["day"] != heluo_pillars(1, 1)["day"]
+    assert heluo_pillars(1, 0)["hour"] != heluo_pillars(1, 1)["hour"]
+    assert heluo_pillars(1, 0)["hour"].endswith("子") and heluo_pillars(1, 1)["hour"].endswith("子")
+
+    # canping：after23 移日支（丑→寅）。
+    def canping_day(a23):
+        r = service.run_tool("canping", {**base, "after23NewDay": a23}, save_result=False)
+        assert r.ok is True, r.error
+        return r.data["canping"]["fourPillars"]["dayBranch"]
+
+    assert canping_day(0) != canping_day(1)
+
+
+def test_heluo_local_tool_runs_headless_engine(tmp_path) -> None:
+    # heluo (河洛理数) is a 原生·非 ken tool: pillars come from the vendored bazi chain, then heluoLocal
+    # does 起命/先天/后天/命运篇/大限. The 命运篇 needs the real 节气 (lunar-javascript JieQi table), so
+    # the formatter ports HeLuoMain.solarTerm. For this birth: 先天 火風鼎 → 后天 水火既濟.
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "heluo",
+        {"date": "2026-02-17", "time": "21:50:07", "zone": "+08:00", "lon": "120e00", "gender": 1, "timeAlg": 1},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    data = result.data["heluo"]
+    assert data["chart"]["xian"]["name"] == "火風鼎"
+    assert data["chart"]["hou"]["name"] == "水火既濟"
+    assert data["chart"]["tian"] == 19
+    assert data["chart"]["di"] == 44
+    assert isinstance(data["dayun"]["all"], list) and data["dayun"]["all"]
+    assert data["solarTerm"]["term"] == "立春"  # 命运篇 depends on this
+    snapshot = result.data["snapshot_text"]
+    assert "[起命]" in snapshot
+    # 段名静态化：先天/后天元堂爻辞不再带卦名（卦名在段内正文），另新增全生涯流年与断验（十吉）。
+    assert "[先天卦·元堂爻辞]" in snapshot
+    assert "火風鼎" in snapshot
+    assert "[后天卦·元堂爻辞]" in snapshot
+    assert "[命运篇]" in snapshot
+    assert "[大限·岁运]" in snapshot
+    assert "[流年·岁运]" in snapshot
+    assert "[断验]" in snapshot and "十吉" in snapshot
+    # 元堂爻辞/岁运段名 legacy-map 到 先天卦/后天卦/大限/流年 ⇒ clean export.
+    _assert_clean_export(result)
+
+
+@requires_chart
+def test_relative_score_sections_via_chart_service(tmp_path) -> None:
+    # 合盘关系量化（v3.3.1）：/modern/relative 比较盘 + /astroextra/relative 打分 → [关系量化]/
+    # [顺畅连接]/[张力连接]。契合分数 0–100，highlights/challenges 逐条相位。
+    service = make_service(tmp_path)
+    inner = {"date": "1990-05-15", "time": "08:30:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28"}
+    outer = {"date": "1988-11-20", "time": "14:00:00", "zone": "+08:00", "lat": "39n54", "lon": "116e23"}
+    result = service.run_tool("relative", {"inner": inner, "outer": outer, "hsys": 0, "zodiacal": 0}, save_result=False)
+    assert result.ok is True, result.error
+    snap = result.data["snapshot_text"]
+    assert "[关系起盘信息]" in snap  # 既有比较盘段
+    assert "[关系量化]" in snap and "契合分数：" in snap
+    _assert_clean_export(result)
+
+
+@requires_chart
+def test_acg_lines_via_chart_service(tmp_path) -> None:
+    # 占星地图：/location/acg 精算行星地理投影线；MC/IC 恒定经度 + 天顶点 + 偕升/交点。
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "acg",
+        {"date": "1998-02-20", "time": "20:48:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28"},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    acg = result.data["acg"]
+    planets = acg.get("planets") or {}
+    assert "Sun" in planets and "Moon" in planets
+    sun_lines = planets["Sun"].get("lines") or {}
+    assert isinstance((sun_lines.get("mc") or {}).get("lon"), (int, float))
+    snapshot = result.data["snapshot_text"]
+    assert "[起盘信息]" in snapshot
+    # 上游 v50 起旧段名 [行星线经度] 已并入单段 [占星地图]（见 registry.map_legacy_section_title）。
+    assert "[占星地图]" in snapshot
+    # v0.40.0：段正文改 vendored 上游 [占星地图] builder（口径行 + 「主要行星角化线」逐星 MC/IC/ASC/DSC 经度），旧自拟「MC线经度」标签不再有。
+    assert "主要行星角化线" in snapshot
+    assert any(line.startswith("- 太阳:MC ") and " / IC " in line for line in snapshot.split("\n")), "太阳角化线行"
+    # 线交点若产出，角色标签必须落地（源返回键 aAngle/bAngle；曾误读 av/aEvent 致标签恒空）。
+    crossings = acg.get("crossings") or []
+    if crossings and "[线交点]" in snapshot:
+        assert ("·mc" in snapshot or "·ic" in snapshot)
+        assert ("·asc" in snapshot or "·desc" in snapshot)
+    _assert_clean_export(result)
+
+
+ASTRODATA_DB_PRESENT = (
+    pathlib.Path(__file__).resolve().parents[2]
+    / "vendor" / "runtime-source" / "Horosa-Web" / "astrostudyui" / "dist-file" / "astrodata" / "astrodata-aa.sqlite.gz"
+).is_file()
+
+
+@pytest.mark.skipif(not ASTRODATA_DB_PRESENT, reason="[upstream-checkout] astrodata sqlite not vendored in this checkout")
+def test_astrodata_search_and_person_detail(tmp_path) -> None:
+    # 名人星盘库：FTS 检索 → 单人详情（含可直接排盘的出生数据）。纯本地 sqlite，只读。
+    service = make_service(tmp_path)
+    hits = service.run_tool("astrodata", {"query": "Einstein", "limit": 5}, save_result=False)
+    assert hits.ok is True, hits.error
+    data = hits.data["astrodata"]
+    assert data["available"] is True and data["total"] >= 1
+    title = data["results"][0]["title"]
+    snapshot = hits.data["snapshot_text"]
+    assert "[检索条件]" in snapshot and "[命中列表]" in snapshot
+    _assert_clean_export(hits)
+
+    detail = service.run_tool("astrodata", {"personTitle": title}, save_result=False)
+    assert detail.ok is True, detail.error
+    person = detail.data["astrodata"]["person"]
+    assert person and person["birthDate"] and person["zone"]
+    dsnap = detail.data["snapshot_text"]
+    assert "[名人详情]" in dsnap and "排盘入参：" in dsnap
+    assert "[数据来源]" in dsnap and "Astro-Databank" in dsnap
+    _assert_clean_export(detail)
+
+    # 检索式特殊字符不再使工具整体失败（多列 LIKE，转义 %/_；曾裸 FTS MATCH → OperationalError → ok=False）。
+    for bad in ('6"', "*", "NEAR", "(rock", 'a OR b', "-x", "100%"):
+        r = service.run_tool("astrodata", {"query": bad, "limit": 3}, save_result=False)
+        assert r.ok is True, f"query {bad!r} -> {r.error}"
+        assert r.data["astrodata"].get("available") is True
+
+    # v3.3.2 中文化：中文名/中文地点/中文分类均可检索（多列 LIKE name_zh/pos_zh + category_zh JOIN），
+    # 英文名仍可（曾走英文-only FTS → 中文查询静默返回空）。
+    zh_name = service.run_tool("astrodata", {"query": "爱因斯坦", "limit": 3}, save_result=False)
+    assert zh_name.ok is True and zh_name.data["astrodata"]["total"] >= 1
+    en_name = service.run_tool("astrodata", {"query": "Einstein", "limit": 3}, save_result=False)
+    assert en_name.ok is True and en_name.data["astrodata"]["total"] >= 1
+    zh_cat = service.run_tool("astrodata", {"category": "水瓶座", "limit": 3}, save_result=False)
+    assert zh_cat.ok is True and zh_cat.data["astrodata"]["total"] >= 1
+
+
+def test_yizhangjing_local_tool_runs_headless_engine(tmp_path) -> None:
+    # 一掌经：原生·非 ken 工具，进程内纯函数排盘（农历/四柱来自 vendored bazi 链）。
+    # 岁首=正月初一（异八字）；此生日：生年支寅(虎)、农历1月24日、时支戌。
+    service = make_service(tmp_path)
+    payload = {"date": "1998-02-20", "time": "20:48:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "gender": 1}
+    result = service.run_tool("yizhangjing", payload, save_result=False)
+    assert result.ok is True, result.error
+    data = result.data["yizhangjing"]
+    assert data["input"]["yearBranch"] == "寅"
+    assert data["input"]["month"] == 1 and data["input"]["day"] == 24
+    assert data["input"]["hourBranch"] == "戌"
+    assert data["mingGong"]["branch"] and data["mingGong"]["star"]
+    assert isinstance(data["dayun"], list) and data["dayun"]
+    snapshot = result.data["snapshot_text"]
+    for header in (
+        "[起盘信息]", "[四柱四宫断语]", "[命宫与人事十二宫]", "[格局判定]",
+        "[大限]", "[小限与流年十二神]",
+    ):
+        assert header in snapshot, header
+    # 神煞合参层缺省随上游出厂档关（KinAstroMain.js yizhangjingShensha def false）→ 缺省不出该段。
+    assert "[神煞合参]" not in snapshot
+    assert "生年支：寅(虎)" in snapshot
+    # 确定性：同输入同快照。
+    again = service.run_tool("yizhangjing", payload, save_result=False)
+    assert again.data["snapshot_text"] == snapshot
+
+
+def test_xiaoliuren_local_tool_runs_headless_engine(tmp_path) -> None:
+    # 小六壬（上游 v3.5.0）：三数起三传，纯函数进程内计算，零后端。显式 nums=[月,日,时] 冻结起课。
+    # 道门九宫含五行生克 + 拜解；主流六宫无生克（段如实标注）。
+    service = make_service(tmp_path)
+    dao = service.run_tool("xiaoliuren", {"nums": [5, 20, 7], "school": "dao", "askEvent": "求财"}, save_result=False)
+    assert dao.ok is True, dao.error
+    snap = dao.data["snapshot_text"]
+    for header in ("[问事]", "[起课]", "[三传]", "[生克]", "[九神]", "[化解]"):
+        assert header in snap, header
+    assert dao.data["xiaoliuren"]["chuan"] == ["小吉", "空亡", "速喜"]
+    assert "道门九宫" in snap and "拜" in snap  # 拜解化解
+    export = dao.data.get("export_snapshot") or {}
+    assert export.get("missing_selected_sections") == []
+    assert export.get("unknown_detected_sections") == []
+    # 主流六宫：无五行生克，如实标注。
+    main = service.run_tool("xiaoliuren", {"nums": [5, 20, 7], "school": "main", "askEvent": "求财"}, save_result=False)
+    assert "主流六宫不调取五行生克" in main.data["snapshot_text"]
+    # 起课冻结：同三数同盘。
+    again = service.run_tool("xiaoliuren", {"nums": [5, 20, 7], "school": "dao", "askEvent": "求财"}, save_result=False)
+    assert again.data["snapshot_text"] == snap
+
+
+@requires_runtime  # 打 /nongli/time → 走 Java，不是 chart-only
+def test_xiaoliuren_time_cast_derives_nums_from_nongli(tmp_path) -> None:
+    # 占时起课：缺 nums → 前置 /nongli/time 派生 农历月/日/时支序三数（JS 不发 HTTP）。
+    service = make_service(tmp_path)
+    r = service.run_tool("xiaoliuren", {"date": "2026-05-20", "time": "12:30:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "school": "dao", "askEvent": "问事"}, save_result=False)
+    assert r.ok is True, r.error
+    assert len(r.data["xiaoliuren"]["nums"]) == 3
+    assert "起卦时间:2026-05-20" in r.data["snapshot_text"]
+
+
+def test_feigong_local_tool_runs_headless_engine(tmp_path) -> None:
+    # 飞宫小奇门（上游 v3.5.0）：时上起青龙飞九宫，纯函数进程内计算，零后端。手工起支+日干支冻结定局。
+    service = make_service(tmp_path)
+    r = service.run_tool(
+        "feigong",
+        {"qiMode": "manualZhi", "zhi": "午", "dayGan": "甲", "dayZhi": "子", "mingAge": 35, "mingGender": "male", "liuYueMonth": 1, "askEvent": "求财"},
+        save_result=False,
+    )
+    assert r.ok is True, r.error
+    snap = r.data["snapshot_text"]
+    for header in ("[问事]", "[起局]", "[干支]", "[命宫]", "[宫位]", "[运气]", "[应期]"):
+        assert header in snap, header
+    assert r.data["feigong"]["qiZhi"] == "午"
+    assert "甲乘龙飞九宫" in snap and "青龙(甲)落 9 宫" in snap
+    export = r.data.get("export_snapshot") or {}
+    assert export.get("missing_selected_sections") == []
+    assert export.get("unknown_detected_sections") == []
+    # 局冻结：同起支同盘。
+    again = service.run_tool("feigong", {"qiMode": "manualZhi", "zhi": "午", "dayGan": "甲", "dayZhi": "子", "mingAge": 35, "mingGender": "male", "liuYueMonth": 1, "askEvent": "求财"}, save_result=False)
+    assert again.data["snapshot_text"] == snap
+
+
+@requires_runtime  # 打 /nongli/time → 走 Java，不是 chart-only
+def test_feigong_time_cast_derives_ganzhi_from_nongli(tmp_path) -> None:
+    # 占时起局：缺 dayGan/dayZhi → 前置 /nongli/time 派生 时支（起支）+ 日干支（JS 不发 HTTP）。
+    service = make_service(tmp_path)
+    r = service.run_tool("feigong", {"date": "2026-05-20", "time": "12:30:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "mingAge": 35, "askEvent": "问出行"}, save_result=False)
+    assert r.ok is True, r.error
+    assert r.data["feigong"]["qiZhi"]
+    assert "起卦时间:2026-05-20" in r.data["snapshot_text"]
+
+
+def test_xiaochengtu_local_tool_runs_headless_engine(tmp_path) -> None:
+    # 小成图（上游 v3.5.0）：洛书九宫佈局，纯函数进程内计算，零后端。手动上下卦 + 动爻冻结起卦。
+    service = make_service(tmp_path)
+    manual = service.run_tool("xiaochengtu", {"qiguaFa": "manual", "up": "乾", "lo": "兑", "dongYaos": [3], "yongGong": 1, "askEvent": "求财"}, save_result=False)
+    assert manual.ok is True, manual.error
+    snap = manual.data["snapshot_text"]
+    for header in ("[问事]", "[起卦]", "[佈局]", "[推导]", "[四象]", "[应期]"):
+        assert header in snap, header
+    assert "[股市]" not in snap  # 非 stock 模式不出（条件段，非误缺）
+    assert manual.data["xiaochengtu"]["ben"] == "天泽履"
+    export = manual.data.get("export_snapshot") or {}
+    assert export.get("missing_selected_sections") == [] and export.get("unknown_detected_sections") == []
+    # stock 模式出 [股市]。
+    stock = service.run_tool("xiaochengtu", {"qiguaFa": "stock", "open": "1563.60", "close": "1571.10", "yongGong": 1}, save_result=False)
+    assert "[股市]" in stock.data["snapshot_text"]
+    # 大衍须显式 seed：缺则结构化拒绝，不静默随机。
+    dayan_no_seed = service.run_tool("xiaochengtu", {"qiguaFa": "dayan"}, save_result=False)
+    assert dayan_no_seed.ok is False and dayan_no_seed.error.code == "tool.xiaochengtu_dayan_seed_required"
+    # 大衍同 seed 同盘。
+    a = service.run_tool("xiaochengtu", {"qiguaFa": "dayan", "seed": 12345}, save_result=False)
+    b = service.run_tool("xiaochengtu", {"qiguaFa": "dayan", "seed": 12345}, save_result=False)
+    assert a.data["snapshot_text"] == b.data["snapshot_text"]
+
+
+def test_guice_local_tool_runs_headless_engine(tmp_path) -> None:
+    # 皇极轨策（上游 v3.5.0）：十二法起卦·演数四位·卦变断法，纯函数进程内计算、零后端。
+    # 报数法 baoshu 显式 nums + 显式 ctx（免占时后端）冻结起卦。
+    service = make_service(tmp_path)
+    r = service.run_tool(
+        "guice",
+        {"qiguaFa": "baoshu", "nums": [7, 9], "hourZhi": "午", "yearZhi": "午", "monthZhi": "巳",
+         "lunarMonth": 4, "lunarDay": 5, "year": 2026, "dayGan": "甲",
+         "pillars": ["丙午", "癸巳", "甲子", "庚午"], "askEvent": "问事业"},
+        save_result=False,
+    )
+    assert r.ok is True, r.error
+    snap = r.data["snapshot_text"]
+    for header in ("[占事直断]", "[起卦]", "[演数]", "[四位]", "[卦变]", "[断法]"):
+        assert header in snap, header
+    assert r.data["guice"]["gua"]["ben"] == "山天大畜"
+    assert "策数" in snap
+    export = r.data.get("export_snapshot") or {}
+    assert export.get("missing_selected_sections") == [] and export.get("unknown_detected_sections") == []
+    # 卦冻结：同起卦输入同盘。
+    again = service.run_tool("guice", {"qiguaFa": "baoshu", "nums": [7, 9], "hourZhi": "午", "yearZhi": "午", "monthZhi": "巳", "lunarMonth": 4, "lunarDay": 5, "year": 2026, "dayGan": "甲", "pillars": ["丙午", "癸巳", "甲子", "庚午"], "askEvent": "问事业"}, save_result=False)
+    assert again.data["snapshot_text"] == snap
+    # 缺 ctx.year → [元会运世] 优雅缺席（不误报 missing）。
+    no_year = service.run_tool("guice", {"qiguaFa": "baoshu", "nums": [7, 9], "hourZhi": "午"}, save_result=False)
+    assert no_year.ok is True, no_year.error
+    assert (no_year.data.get("export_snapshot") or {}).get("unknown_detected_sections") == []
+
+
+def test_zhengchuan_xinyi_query_layer_needs_no_birth(tmp_path) -> None:
+    # 神数正传·铁算心易（查询层）：不需生辰四柱、不打 /nongli/time，纯 node 离线可跑。
+    service = make_service(tmp_path)
+    r = service.run_tool("zhengchuan", {"school": "xinyi", "item": "财", "gong": "乾"}, save_result=False)
+    assert r.ok is True, r.error
+    assert "[起盘信息]" in r.data["snapshot_text"]
+    assert r.data["zhengchuan"]["school"] == "xinyi"
+    export = r.data.get("export_snapshot") or {}
+    assert export.get("unknown_detected_sections") == []
+
+
+@requires_runtime  # 打 /nongli/time → 走 Java，不是 chart-only
+def test_zhengchuan_tieban_derives_pillars_and_links_verses(tmp_path) -> None:
+    # 神数正传·铁板：四柱走 /nongli/time 权威口径；条文正文库异步载入（本命条文段带真条文）。
+    service = make_service(tmp_path)
+    r = service.run_tool("zhengchuan", {"school": "tieban", "date": "1998-02-20", "time": "20:48:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "gender": 1}, save_result=False)
+    assert r.ok is True, r.error
+    snap = r.data["snapshot_text"]
+    assert "[起盘信息]" in snap and "[本命条文]" in snap
+    assert len(r.data["zhengchuan"]["pillars"]) == 4
+    export = r.data.get("export_snapshot") or {}
+    assert export.get("missing_selected_sections") == [] and export.get("unknown_detected_sections") == []
+
+
+@requires_runtime  # 打 /nongli/time → 走 Java，不是 chart-only
+def test_zhengchuan_dading_uses_bazi_direction_table(tmp_path) -> None:
+    # 大定流派：四柱=权威柱；小运/大运/岁君取自 vendored bazi 推运表（pillar_source_note 标注双源）。
+    service = make_service(tmp_path)
+    r = service.run_tool("zhengchuan", {"school": "dading", "date": "1998-02-20", "time": "20:48:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "gender": 1, "dadingYear": 2026}, save_result=False)
+    assert r.ok is True, r.error
+    assert "[起盘信息]" in r.data["snapshot_text"]
+    assert r.data["zhengchuan"].get("pillar_source_note")
+
+
+@requires_chart
+def test_harmonic_runs_via_chart_service(tmp_path) -> None:
+    # 调波盘 is a backend chart-extra on the Python chart service (/astroextra/harmonic). 星阙 has no
+    # aiExport contract for it, so the skill returns structured positions/conjunctions + a readable
+    # snapshot_text but no formal export technique (harmonic is not in TOOL_EXPORT_TECHNIQUE_MAP).
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "harmonic",
+        {"date": "1998-02-20", "time": "20:48:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "harmonic": 9, "orb": 2},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    data = result.data
+    assert data["harmonic"] == 9
+    assert isinstance(data["positions"], list) and data["positions"]
+    assert all(isinstance(p, dict) and "natalLon" in p and "sign" in p for p in data["positions"])
+    assert isinstance(data["conjunctions"], list)
+    assert data.get("chart")  # full chart obj (same shape as /chart) for downstream rendering
+    assert "[起盘信息]" in data["snapshot_text"]
+    assert "[调波位置]" in data["snapshot_text"]
+
+
+@requires_chart
+def test_agepoint_runs_via_chart_service(tmp_path) -> None:
+    # 年龄推进点 (Age Point / Huber): backend /predict/agepoint computes the Koch-house age cycle.
+    # 星阙 v2.4.0 西占技法. Needs only the chart service (:8899), not the Java backend.
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "agepoint",
+        {"date": "1998-02-20", "time": "20:48:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "hsys": 1, "predictive": 1},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    data = result.data
+    assert isinstance(data["points"], list) and data["points"]
+    assert all(isinstance(p, dict) and "age" in p and "house" in p for p in data["points"])
+    assert "[年龄推进点（Age Point / Huber）]" in data["snapshot_text"]
+    _assert_clean_export(result)
+
+
+@requires_chart
+def test_distributions_runs_via_chart_service(tmp_path) -> None:
+    # 界推运 (Distributions / 分配法): backend /predict/dist — Asc through the Egyptian bounds.
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "distributions",
+        {"date": "1998-02-20", "time": "20:48:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "hsys": 1, "predictive": 1},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    rows = result.data["distributions"]
+    assert isinstance(rows, list) and rows
+    assert all(isinstance(r, dict) and "distributor" in r and "startDate" in r for r in rows)
+    assert "[界推运（分配法 / Distributions）]" in result.data["snapshot_text"]
+    _assert_clean_export(result)
+
+
+@requires_runtime
+def test_ziwei_patterns_and_enriched_overview(tmp_path) -> None:
+    # 星阙 v2.6.x 紫微 P0–P2：起盘信息补 命主/身主/五行局/斗君；宫位总览分 主/辅/煞/杂曜 + 大限/小限；
+    # 新增「命中格局」段（随 jar 的 patterns：流派四化/新格局/天伤天使安星）。需 Java :9999。
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "ziwei_birth",
+        {"date": "1985-11-07", "time": "23:30:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "gender": True},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    snap = result.data["snapshot_text"]
+    # v0.40 F8：快照改由 vendored buildZiWeiSnapshotText 出（上游 ZiWeiMain.js）——起盘信息是「命局：阴男 土五局」
+    # （旧 Python port 写「五行局：」）；宫位总览是上游 GFM 表，主/辅/煞/杂曜同列（旧 port 分「主星：/杂曜：」行）。
+    assert "命主：" in snap and "命局：" in snap and "斗君：" in snap  # 起盘信息 enriched
+    assert "| 宫位 | 干支 | 大限 | 星曜（四化括注） |" in snap and "天德" in snap  # 宫位总览（杂曜天德补显）
+    assert "[命中格局]" in snap
+    # 至少一条命中格局带断语；该盘已知含「府相朝垣」
+    assert "府相朝垣" in snap
+    patterns = result.data.get("patterns")
+    assert isinstance(patterns, list) and patterns
+    _assert_clean_export(result)
+
+
+@requires_chart
+def test_guolao_zhengyu_patterns(tmp_path) -> None:
+    # 星阙 v2.6.x 七政四余 政余格局 (Moira DSL)：vendored buildLocalMoiraPatterns 评估盘面物象格局。
+    # 1985-03-21 固定盘命中喜格「金水相涵」+ 忌格「孛犯太阳」(盘面物象，不依赖 七政神煞)。
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "guolao_chart",
+        {"date": "1985-03-21", "time": "10:00:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28"},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    snap = result.data["snapshot_text"]
+    assert "[政余格局]" in snap
+    assert "金水相涵" in snap and "孛犯太阳" in snap
+    assert "喜格：" in snap and "忌格：" in snap
+    names = [p.get("name") for p in (result.data.get("guolaoPatterns") or [])]
+    assert "金水相涵" in names and "孛犯太阳" in names
+    _assert_clean_export(result)
+
+
+@requires_chart
+def test_chart_carries_v240_natal_extras(tmp_path) -> None:
+    # 星阙 v2.4.0 西占: the astrochart export now carries 12分度 / 主宰星链 / 寿命格局, computed by the
+    # vendored JS astroextra formatter (Ptolemy hyleg engine) from the /chart response. (可能性 is data-
+    # dependent and intentionally not asserted.)
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "chart",
+        {"date": "1998-02-20", "time": "20:48:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "hsys": 1, "tradition": False, "predictive": 0},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    snapshot = result.data["snapshot_text"]
+    for section in ("[12分度]", "[主宰星链]", "[寿命格局]"):
+        assert section in snapshot, section
+    # 寿命格局 must carry the Hyleg/Alcocoden lines from the vendored lifespan engine.
+    assert "生命主(Hyleg)" in snapshot
+    assert "寿主星(Alcocoden)" in snapshot
+    detected = (result.data.get("export_snapshot") or {}).get("section_titles_detected") or []
+    assert "12分度" in detected and "主宰星链" in detected and "寿命格局" in detected
+
+
+@requires_chart
+def test_chart_carries_v267_classical(tmp_path) -> None:
+    # 星阙 v2.6.7 古典占星: astrochart 导出新增 [古典] (buildClassicalSection — 逐曜古典状态/上升宿/围攻/围绕/
+    # Melothesia) 与 [古典格局] (buildClassicalAnalysisSection ← /astroextra/analysis — 护卫/优势相位/传光/
+    # 逐题主星/偶然尊贵/Almuten/分布/气质…)。两段均由 vendored 公式从 /chart + analyze_chart 派生。
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "chart",
+        {"date": "1998-02-20", "time": "20:48:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "hsys": 1, "tradition": False, "predictive": 0},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    snapshot = result.data["snapshot_text"]
+    assert "[古典]" in snapshot and "[古典格局]" in snapshot
+    # [古典]: 逐曜古典状态 + 身体部位(Melothesia) 对任一有效本命盘恒在。
+    assert "逐曜古典状态" in snapshot
+    assert "身体部位(Melothesia)" in snapshot
+    # [古典格局]: 逐题主星 / 偶然尊贵 / Almuten 总主 由 analyze_chart 对全盘逐题逐曜评估，恒在。
+    assert "逐题主星" in snapshot
+    assert "偶然尊贵" in snapshot
+    assert "Almuten 总主" in snapshot
+    # 格局速览行（心性·智识·职业·行事·木星·后天凶星，派生自活盘对象 + 主宰星链）对任一本命盘恒在；v0.40.0 起随上游
+    # buildClassicalSection 放在 [古典] 段的「古典格局」子块（子块标题行紧接首条「心性(月)：」行），不再有「格局速览」标题。
+    assert "\n古典格局\n心性(月)：" in snapshot
+    for marker in ("心性(月)：", "智识(水)：", "职业(月第一西没)：", "行事(日第一西没)：", "木星：", "后天凶星："):
+        assert marker in snapshot, marker
+    detected = (result.data.get("export_snapshot") or {}).get("section_titles_detected") or []
+    assert "古典" in detected and "古典格局" in detected
+    # 两段均已登记 preset → 不算 unknown（可能性 data-dependent，本盘可缺，故不查 missing）。
+    assert (result.data.get("export_snapshot") or {}).get("unknown_detected_sections") == []
+
+
+@requires_runtime
+def test_liureng_bifa_and_zhanduan(tmp_path) -> None:
+    # 星阙 v2.5.x 六壬 Phase4：buildLiuRengReferenceContext(~75 字段) + matchBiFa(100法) verbatim 抽取，
+    # 概览后接 [毕法（已命中）]；指定占类(zhanCategory) 时再出 [占断向导]。需 Java :9999 + chart :8899。
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "liureng_gods",
+        {"date": "2026-04-04", "time": "21:18:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28",
+         "gpsLat": 31.22, "gpsLon": 121.48, "guirengType": 2, "zhanCategory": "hunyin"},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    snap = result.data["snapshot_text"]
+    assert "[常用神煞]" in snap
+    # 断卦层（六壬全流派）：年月神煞/三传旺衰 对有效盘恒出（其余空亡/旬空/陷空/遁干/课体/年命 按盘面条件）。
+    assert "[年月神煞]" in snap
+    assert "[三传旺衰]" in snap
+    assert "[毕法（已命中）]" in snap
+    # 至少命中 1 条编号毕法（释/依据成对）
+    import re as _re
+
+    assert _re.search(r"\n\d+\.\s.+：", snap), "no numbered 毕法 entry"
+    assert "[占断向导]" in snap and "占事：婚姻" in snap
+    # 毕法/占断 已登记 preset+optional → 导出干净
+    _assert_clean_export(result)
+
+
+@requires_runtime
+def test_sixyao_carries_liuyao_struct(tmp_path) -> None:
+    # 六爻断卦结构（core-js analyzeLiuyao 引擎）：纳甲/世应/六亲/用神/旺衰/飞伏/六神/动变。
+    # 未手动摇卦(lines 空) → 以时起卦；[断卦结构] 由引擎派生，插于 六爻与动爻 与 卦辞与断语 之间。
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "sixyao",
+        {"date": "2026-06-30", "time": "14:00:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "question": "事业"},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    snap = result.data["snapshot_text"]
+    assert "[断卦结构]" in snap
+    # wave 3：[断卦结构] 由 vendored 上游 liuyaoStructLines 产出 —— 逐爻是 GFM 表（GuaZhanMain.js:168-181），
+    # 不再是旧手抄行式「逐爻(初→上)：…/第N爻：…(世)」。
+    assert "卦序：" in snap and "| 爻 | 六神 | 地支 | 五行 | 六亲 | 世应 | 旺衰 | 状态 | 伏神 | 神煞 |" in snap
+    import re as _re
+
+    # 逐爻含纳甲六亲(子孙/妻财/官鬼/父母/兄弟 之一)，且标出世/应
+    assert _re.search(r"第[1-6]爻：.*(子孙|妻财|官鬼|父母|兄弟)", snap)
+    assert _re.search(r"^\| 第[1-6]爻 \|.*\| 世 \|", snap, _re.M) and _re.search(r"^\| 第[1-6]爻 \|.*\| 应 \|", snap, _re.M)
+    _assert_clean_export(result)
+
+
+@requires_runtime
+def test_bazi_carries_geju_sections(tmp_path) -> None:
+    # 八字格局（core-js baziGeju 引擎，从后端 fourColumns 派生·与 [四柱与三元] 同源）：
+    # [五行力量]/[格局·用神]/[盲派结构]，插于 神煞 与 大运 之间。
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "bazi_birth",
+        {"date": "1990-07-15", "time": "14:30:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "gender": 1},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    snap = result.data["snapshot_text"]
+    for header in ("[五行力量]", "[格局·用神]", "[盲派结构]"):
+        assert header in snap, header
+    # v0.40 F9：[五行力量] 改由 vendored buildBaziSnapshotText 出（上游 BaZi.js GFM 表「| 五行 | 占比 |」，
+    # 旧 baziGeju 引擎的「分布：」行不再出现）。
+    assert "| 五行 | 占比 |" in snap and "宾主：" in snap
+    export = result.data.get("export_snapshot") or {}
+    assert export.get("unknown_detected_sections") == []
+    # 导出文本不因条件段回退而暴涨（_pick_section_data 兜底 dump 守卫）：合理上限。
+    # v0.40 F9：上游 [大运] 含逐年小运/流年表（BaZi.js:537-569，约百行），本盘实出 217 行 → 上限放到 300。
+    assert len((export.get("export_text") or "").splitlines()) < 300
+
+
+@requires_chart
+def test_geomancy_deterministic_cast_and_sections(tmp_path) -> None:
+    # 天文地占（后端 /geomancy/reading，以起卦时刻确定性起卦）：[起卦信息]/[判定]/[十二宫·图形入宫]/[十六图形]。
+    # v3.5.1 地占大改版：十二宫/十六图形改 markdown 表；解读技法/转宫派生/定局落星 随条件出。
+    service = make_service(tmp_path)
+    base = {"date": "2026-06-30", "time": "14:00:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "question": "事业能否升迁", "questionType": "career"}
+    r1 = service.run_tool("geomancy", base, save_result=False)
+    r2 = service.run_tool("geomancy", base, save_result=False)
+    assert r1.ok is True, r1.error
+    # 以时起卦确定性：同刻同盘
+    assert r1.data["snapshot_text"] == r2.data["snapshot_text"]
+    snap = r1.data["snapshot_text"]
+    for header in ("[起卦信息]", "[判定]", "[十二宫·图形入宫]", "[十六图形]"):
+        assert header in snap, header
+    assert "判官：" in snap and "| 母一 |" in snap  # 十六图形现为 markdown 表
+    export = r1.data.get("export_snapshot") or {}
+    assert export.get("unknown_detected_sections") == []
+    assert len((export.get("export_text") or "").splitlines()) < 200
+
+
+def test_geomancy_rejects_ifa_structural_only(tmp_path) -> None:
+    # ifa（西非同族）为结构对照模式、不产占断：skill 明确拒绝，给结构化错误 + 文化声明，绝不静默出空盘。
+    # 拒绝发生在 runner 首行、调后端前 → 无需 live，离线可跑。
+    service = make_service(tmp_path)
+    base = {"date": "2026-06-30", "time": "14:00:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "question": "x", "profile": "ifa"}
+    r = service.run_tool("geomancy", base, save_result=False)
+    assert r.ok is False
+    assert r.error and r.error.code == "tool.geomancy_structural_only_unsupported"
+    assert "cultural_notice" in (r.error.details or {})
+
+
+@requires_runtime
+def test_tarot_deterministic_draw_and_sections(tmp_path) -> None:
+    # 塔罗（core-js tarot 引擎，SHA-256种子洗牌确定性抽牌）：引擎直接产出独占段头
+    # [牌阵综览]/[逐牌详解]/[综合断语]/[定局]/([生命牌] 仅传 birth 时)。
+    service = make_service(tmp_path)
+    base = {"date": "2026-06-30", "time": "14:00:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "question": "事业能否升迁", "spread": "three"}
+    r1 = service.run_tool("tarot", base, save_result=False)
+    r2 = service.run_tool("tarot", base, save_result=False)
+    assert r1.ok is True, r1.error
+    # 以时抽牌确定性：同刻同牌
+    assert r1.data["snapshot_text"] == r2.data["snapshot_text"]
+    snap = r1.data["snapshot_text"]
+    for header in ("[牌阵综览]", "[逐牌详解]", "[综合断语]", "[定局]"):
+        assert header in snap, header
+    # 逐位含牌 + Yes/No 定局
+    assert "位置" in snap and "Yes/No=" in snap
+    # 无 birth → 不出生命牌段（条件段，非误缺）
+    assert "[生命牌]" not in snap
+    export = r1.data.get("export_snapshot") or {}
+    assert export.get("unknown_detected_sections") == []
+    assert len((export.get("export_text") or "").splitlines()) < 200
+
+    # 传 birth → 产出[生命牌]段（人格·灵魂）。
+    born = service.run_tool("tarot", {**base, "birth": {"year": 1990, "month": 5, "day": 15}}, save_result=False)
+    assert born.ok is True, born.error
+    bsnap = born.data["snapshot_text"]
+    assert "[生命牌]" in bsnap and "人格" in bsnap
+    assert (born.data.get("export_snapshot") or {}).get("unknown_detected_sections") == []
+
+
+@requires_chart
+def test_chart_sidereal_ayanamsa_and_nakshatra(tmp_path) -> None:
+    # 星阙 v2.6.4 恒星黄道 47 岁差 + 西洋月宿 nakshatra：sidereal 盘(zodiacal=1) 按 siderealAyanamsa
+    # 真实标注岁差名（Raman ≠ Lahiri，修原 '岁差:Lahiri' 硬编码 bug），并按 chart.nakshatras 出「月宿」段。
+    service = make_service(tmp_path)
+    base = {"date": "1998-02-20", "time": "20:48:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "hsys": 1}
+
+    raman = service.run_tool("chart", {**base, "zodiacal": 1, "siderealAyanamsa": "raman"}, save_result=False)
+    assert raman.ok is True, raman.error
+    rsnap = raman.data["snapshot_text"]
+    # v0.40.0：[起盘信息] 黄道行按上游 zodiacalDisplayText（astroAiSnapshot.js）「恒星黄道·<岁差名>，<宫制>」；宫制按请求 hsys=1（Alcabitus）。
+    assert "恒星黄道·Raman，Alcabitus" in rsnap  # 真实岁差，非硬编码 Lahiri
+    assert "[月宿]" in rsnap and "宿主" in rsnap
+    rexp = raman.data["export_snapshot"]
+    assert rexp["unknown_detected_sections"] == []  # 月宿 已登记，不算 unknown
+    assert "月宿" not in rexp["missing_selected_sections"]  # 已产出，不算 missing
+    assert "月宿" in (rexp.get("section_titles_detected") or [])
+
+    # 缺省恒星黄道：请求无 siderealAyanamsa、后端回显亦空 → 上游 zodiacalDisplayText 只写「恒星黄道」（岁差名只在显式给制时出现，
+    # 上一断言已证 Raman 真标注、非硬编码）；不再有 skill 旧自拟的「恒星黄道岁差：Lahiri」行。
+    lahiri = service.run_tool("chart", {**base, "zodiacal": 1}, save_result=False)
+    assert lahiri.ok is True, lahiri.error
+    assert "恒星黄道，Alcabitus" in lahiri.data["snapshot_text"] and "恒星黄道·" not in lahiri.data["snapshot_text"]
+
+    # 回归黄道 → 无岁差行、无月宿段
+    trop = service.run_tool("chart", {**base}, save_result=False)
+    assert trop.ok is True, trop.error
+    tsnap = trop.data["snapshot_text"]
+    assert "回归黄道，Alcabitus" in tsnap and "恒星黄道" not in tsnap
+    assert "[月宿]" not in tsnap
+    assert "月宿" not in (trop.data["export_snapshot"].get("section_titles_detected") or [])
+
+
+def _india_sun_lon(result) -> float:
+    objs = (result.data.get("chart") or {}).get("objects") or []
+    sun = next((o for o in objs if o.get("id") == "Sun"), {})
+    return float(sun.get("lon"))
+
+
+@requires_chart
+def test_india_chart_houses_and_ayanamsa(tmp_path) -> None:
+    # 星阙 v2.6.4 印占全补齐：分宫制 4→24(indiaHsys 0–24) + 黄道岁差 6→47(indiaAyanamsa)。
+    # Golden = ayanāṃśa 差是稳定天文常数：Raman 比 Lahiri 落后约 1.446°，Lahiri 比 Fagan 约 +0.88°。
+    service = make_service(tmp_path)
+    base = {"date": "1998-02-20", "time": "20:48:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28"}
+
+    lahiri = service.run_tool("india_chart", {**base, "indiaHsys": 0, "indiaAyanamsa": "lahiri"}, save_result=False)
+    raman = service.run_tool("india_chart", {**base, "indiaHsys": 0, "indiaAyanamsa": "raman"}, save_result=False)
+    fagan = service.run_tool("india_chart", {**base, "indiaHsys": 0, "indiaAyanamsa": "fagan_bradley"}, save_result=False)
+    assert lahiri.ok and raman.ok and fagan.ok, (lahiri.error, raman.error, fagan.error)
+
+    # ayanāṃśa 真实生效：Sun 黄经按制位移（Raman−Lahiri≈+1.446°，Lahiri−Fagan≈+0.88°）
+    assert abs((_india_sun_lon(raman) - _india_sun_lon(lahiri)) - 1.446) < 0.05
+    assert abs((_india_sun_lon(lahiri) - _india_sun_lon(fagan)) - 0.88) < 0.10
+
+    # 岁差名按制标注（非硬编码 Lahiri）
+    # v0.40.0：印占 [起盘信息] 首条黄道行 = 上游 indiaCalibreLine（IndiaChart.js:1113-1123）「恒星黄道·<岁差名>，<印占分宫制名>」。
+    assert "恒星黄道·Raman，整宫制 Whole Sign" in raman.data["snapshot_text"]
+    assert "恒星黄道·Fagan/Bradley，整宫制 Whole Sign" in fagan.data["snapshot_text"]
+    assert "恒星黄道·Lahiri / Chitrapaksha，整宫制 Whole Sign" in lahiri.data["snapshot_text"]
+
+    # 分宫制 24 制可选：不同 hsys → 不同宫头（整宫 vs KP/Placidus）
+    whole = lahiri  # indiaHsys=0 整宫
+    kp = service.run_tool("india_chart", {**base, "indiaHsys": 3, "indiaAyanamsa": "lahiri"}, save_result=False)
+    campanus = service.run_tool("india_chart", {**base, "indiaHsys": 10, "indiaAyanamsa": "lahiri"}, save_result=False)
+    assert kp.ok and campanus.ok, (kp.error, campanus.error)
+
+    def _cusp1(r):
+        houses = (r.data.get("chart") or {}).get("houses") or []
+        return float(houses[0].get("lon")) if houses else None
+
+    # 象限宫制(KP/Campanus)的一宫宫头 ≠ 整宫制（整宫制宫头落星座 0°），且 KP≠Campanus
+    assert _cusp1(kp) is not None and _cusp1(campanus) is not None
+    assert abs(_cusp1(kp) - _cusp1(whole)) > 1.0 or abs(_cusp1(campanus) - _cusp1(whole)) > 1.0
+    assert "恒星黄道·Lahiri / Chitrapaksha，KP / Placidus" in kp.data["snapshot_text"]
+    assert "恒星黄道·Lahiri / Chitrapaksha，Campanus" in campanus.data["snapshot_text"]
+    # 印占盘 export 干净（月宿在 optional，可能性数据相关）
+    assert (raman.data.get("export_snapshot") or {}).get("unknown_detected_sections") == []
+    # Vimshottari 大运 [大运Dasha]（后端 jyotish.dasha.vimshottari）：系统/月宿/首运/大运序列 由出生唯一确定，恒在。
+    dasha_snap = lahiri.data["snapshot_text"]
+    assert "[大运Dasha]" in dasha_snap
+    assert "系统：Vimshottari（120 年周期）" in dasha_snap
+    for marker in ("月宿：", "首运：已历", "当前大运（Mahadasha）：", "大运序列："):
+        assert marker in dasha_snap, marker
+
+
+@requires_chart
+def test_mundane_ingress_chart(tmp_path) -> None:
+    # 世俗入宫盘 (mundane ingress, 星阙 v2.4.0): (1) /jieqi/year → the precise 春分 ingress moment,
+    # (2) /chart at that moment, (3) natal extras, (4) a [世俗入宫] head prepended to the astro snapshot.
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "mundane",
+        {"year": 2025, "ingressTerm": "春分", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "gpsLat": 31.2167, "gpsLon": 121.4667, "hsys": 1},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    data = result.data
+    assert data["ingressTerm"] == "春分"
+    assert data["ingressMoment"]  # the precise solar-term ingress timestamp
+    snapshot = data["snapshot_text"]
+    assert "[世俗入宫]" in snapshot
+    assert "入宫节气：春分" in snapshot
+    # The body reuses the astrochart snapshot with the v2.4.0 natal extras.
+    assert "[起盘信息]" in snapshot
+    assert "[寿命格局]" in snapshot
+    # 子盘群：新月/满月/日月食/地区盘/行星周期 + 世俗宫义/定局/入境骨架/地理分野/地区盘推运，
+    # 各由后端精算端点无头编排（朔望/食时长/慢星周期/四季入宫）。
+    for header in (
+        "[新月图]", "[满月图]", "[日食图]", "[月食图]", "[地区盘]", "[行星周期]",
+        "[世俗宫义]", "[定局·年主/盘主]", "[入境骨架]", "[地理分野]", "[地区盘推运]",
+    ):
+        assert header in snapshot, header
+    # 朔望时刻、木土大合相、四季入宫等确定性事实应现于对应子盘。朔/望必须**成对真实产出**
+    # （回溯探针取首相前一日，杜绝首相时刻秒级舍入把同一相重捕、另一相丢失的抖动）。
+    assert "朔（新月·日月合）时刻：" in snapshot
+    assert "望（满月·日月冲）时刻：" in snapshot
+    assert "木土大合相" in snapshot
+    assert "夏至入宫：" in snapshot
+    # 地区盘按格林尼治（0°经线 51°29′N）定盘；定局段给出入宫图效力定则。
+    assert "格林尼治" in snapshot
+    # v0.40.0：定局段改由 vendored 上游 buildMundaneAiSnapshotParts 产出（[定局·年主/盘主] 首行「年主星：…；取点 …」），旧自拟「定局：」行不再有。
+    assert "年主星：" in snapshot and "；取点 太阳 / 月亮 / 上升 / 福点 / 产前朔望" in snapshot
+    detected = (data.get("export_snapshot") or {}).get("section_titles_detected") or []
+    assert "世俗入宫" in detected
+    # 世俗盘为非推运入宫盘，[可能性] 恒缺属预期（可选段）→ 导出仍应干净。
+    _assert_clean_export(result)
+
+
+@requires_chart
+def test_jaynesprog_runs_via_chart_service(tmp_path) -> None:
+    # Jayne 赤纬推运 (v2.5.0): secondary progression + declination parallels (/astroextra/jaynesprog).
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "jaynesprog",
+        {"date": "1998-02-20", "time": "20:48:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "hsys": 1, "predictive": 1, "targetDate": "2028-04-06"},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    snap = result.data["snapshot_text"]
+    assert "[赤纬推运（Declination）]" in snap
+    assert "[时段盘 赤纬平行/反平行]" in snap
+    _assert_clean_export(result)
+
+
+@requires_chart
+def test_vedicprog_runs_via_chart_service(tmp_path) -> None:
+    # 恒星推运 Vedic (v2.5.0): progressions under the sidereal zodiac (/astroextra/progressions).
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "vedicprog",
+        {"date": "1998-02-20", "time": "20:48:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "hsys": 1, "predictive": 1, "targetDate": "2028-04-06"},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    assert "[恒星推运（Vedic Sidereal）]" in result.data["snapshot_text"]
+    _assert_clean_export(result)
+
+
+@requires_chart
+def test_planetaryarc_runs_via_chart_service(tmp_path) -> None:
+    # 行星弧 (v2.5.0): whole chart directed by arcSource's secondary arc (/predict/planetaryarc).
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "planetaryarc",
+        {"date": "1998-02-20", "time": "20:48:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "hsys": 1, "predictive": 1, "datetime": "2028-04-06"},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    assert "[行星弧（Planetary Arc）]" in result.data["snapshot_text"]
+    _assert_clean_export(result)
+
+
+@requires_chart
+def test_planetaryages_runs_via_chart_service(tmp_path) -> None:
+    # 行星年龄 (v2.5.0): Ptolemy seven ages — reads the natal chart, marks the current band.
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "planetaryages",
+        {"date": "1998-02-20", "time": "20:48:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "hsys": 1, "asOf": "2028-04-06"},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    snapshot = result.data["snapshot_text"]
+    assert "[行星年龄（Ages of Man）]" in snapshot
+    assert "年龄带" in snapshot
+    _assert_clean_export(result)
+
+
+@requires_chart
+def test_balbillus_runs_via_chart_service(tmp_path) -> None:
+    # Balbillus 129年系统 (v2.5.0): 旺距削减主限 — vendored JS builder via horosa-core-js (progextra).
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "balbillus",
+        {"date": "1998-02-20", "time": "20:48:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "hsys": 1, "predictive": 0},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    snapshot = result.data["snapshot_text"]
+    assert "[Balbillus]" in snapshot
+    assert "旺距削减" in snapshot
+    assert "| 主限 | 子限 |" in snapshot
+    _assert_clean_export(result)
+
+
+@requires_chart
+def test_triplicityrulers_runs_via_chart_service(tmp_path) -> None:
+    # 三分主星推运 (星阙 v2.6.x): sect light's triplicity rulers split life into stages — vendored
+    # frontend builder via progextra (needs AstroConst.SignsProp closure).
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "triplicityrulers",
+        {"date": "1990-04-06", "time": "09:33:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28"},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    snapshot = result.data["snapshot_text"]
+    assert "[三分主星推运]" in snapshot
+    assert ("昼生盘" in snapshot or "夜生盘" in snapshot)
+    assert "三分主星" in snapshot
+    _assert_clean_export(result)
+
+
+@requires_chart
+def test_keypoints_runs_via_chart_service(tmp_path) -> None:
+    # 数字相位推运 (星阙 v2.6.x): period-numbers + release-point sign distances activate planets by year.
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "keypoints",
+        {"date": "1990-04-06", "time": "09:33:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28"},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    snapshot = result.data["snapshot_text"]
+    assert "[数字相位推运]" in snapshot
+    assert "释放点" in snapshot
+    _assert_clean_export(result)
+
+
+@requires_chart
+def test_extrareturns_runs_via_chart_service(tmp_path) -> None:
+    # 多重回归 (星阙 v2.6.x): Saturn/Jupiter/Node returns — Python loops /astroextra/planetreturn per body.
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "extrareturns",
+        {"date": "1990-04-06", "time": "09:33:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28"},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    snapshot = result.data["snapshot_text"]
+    assert "[多重回归]" in snapshot
+    assert "土星返照" in snapshot and "第1回" in snapshot
+    _assert_clean_export(result)
+
+
+@requires_chart
+def test_lunationphase_runs_via_chart_service(tmp_path) -> None:
+    # 月相推运 (星阙 v2.6.x): natal Sun-Moon elongation advanced by the secondary rate → 8-phase timeline.
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "lunationphase",
+        {"date": "1990-04-06", "time": "09:33:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28"},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    snapshot = result.data["snapshot_text"]
+    assert "[月相推运]" in snapshot
+    assert "本命月相" in snapshot
+    _assert_clean_export(result)
+
+
+@requires_chart
+def test_yearsystem129_runs_via_chart_service(tmp_path) -> None:
+    # 129年系统：上游 v3.13.0 起由前端 utils/yearSystem129.js 计算（vendored，progextra）；本命盘仍取 chart 服务。
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "yearsystem129",
+        {"date": "1998-02-20", "time": "20:48:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "hsys": 1},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    snapshot = result.data["snapshot_text"]
+    assert "[129年系统表格]" in snapshot
+    assert "合 129 年）。起始星=日、" in snapshot
+    assert "| 日(19.00年,起 1998-02-20) | 日 | 1998-02-20 | 2.44 |" in snapshot
+    _assert_clean_export(result)
+
+
+@requires_chart
+def test_persiandirected_runs_via_chart_service(tmp_path) -> None:
+    # 波斯向运 (v2.5.0): symbolic 1°/year direction — pure arithmetic off the natal chart objects/houses.
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "persiandirected",
+        {"date": "1998-02-20", "time": "20:48:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "hsys": 1, "predictive": 0},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    snapshot = result.data["snapshot_text"]
+    assert "[波斯向运（Persian Directed）]" in snapshot
+    assert "1°/年" in snapshot
+    assert "| 年龄 | 日期 |" in snapshot
+    _assert_clean_export(result)
+
+
+@requires_chart
+def test_horary_runs_via_chart_service(tmp_path) -> None:
+    # 卜卦 (horary): traditional chart at the question moment → vendored 星阙 horary engine
+    # (runHorary + buildHorarySnapshot). category drives the quesited house.
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "horary",
+        {"date": "2026-06-02", "time": "14:30:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "gpsLat": 31.2167, "gpsLon": 121.4667, "hsys": 0, "tradition": 1, "category": "marriage"},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    snapshot = result.data["snapshot_text"]
+    for section in ("[起卦信息]", "[根本性]", "[征象星指派]", "[裁决]"):
+        assert section in snapshot, section
+    assert result.data["category"] == "marriage"
+    detected = (result.data.get("export_snapshot") or {}).get("section_titles_detected") or []
+    assert "起卦信息" in detected and "裁决" in detected
+    _assert_clean_export(result)
+
+
+def test_horary_unknown_category_is_refused_with_the_choices(tmp_path) -> None:
+    # v0.50.0（深审西占批）：认不出的问类不再静默按 general 起卦（旧测试钉的正是那个缺陷），而是拒绝并列出可选值；不碰引擎。
+    service = make_service(tmp_path)
+    with pytest.raises(ToolValidationError) as caught:
+        service.run_tool(
+            "horary",
+            {"date": "2026-06-02", "time": "14:30:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "gpsLat": 31.2167, "gpsLon": 121.4667, "hsys": 0, "tradition": 1, "category": "no_such_category"},
+            save_result=False,
+        )
+    assert caught.value.code == "tool.invalid_option"
+    assert "general" in repr(caught.value.details)
+
+
+@requires_chart
+def test_election_runs_via_chart_service(tmp_path) -> None:
+    # 择日 (electional): traditional chart at a candidate moment → vendored 星阙 election engine
+    # (runElection + buildElectionSnapshot). topicId drives the rule pack + hard flags + scoring.
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "election",
+        {"date": "2026-06-02", "time": "14:30:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "gpsLat": 31.2167, "gpsLon": 121.4667, "hsys": 0, "tradition": 1, "topicId": "surgery"},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    snapshot = result.data["snapshot_text"]
+    for section in ("[起盘信息]", "[总评]", "[红线]", "[建议]"):
+        assert section in snapshot, section
+    assert result.data["topicId"] == "surgery"
+    overall = result.data["judgment"]["overall"]
+    assert isinstance(overall, dict) and "score" in overall
+    export = result.data.get("export_snapshot") or {}
+    detected = export.get("section_titles_detected") or []
+    assert "总评" in detected
+    # 用事专属 (conditional) + 应期 (never emitted) are now declared optional in the export registry, so
+    # the export reads clean (P1-1) — no missing/unknown sections.
+    _assert_clean_export(result)
+
+
+def test_election_unknown_topic_is_refused_with_the_choices(tmp_path) -> None:
+    # v0.50.0（深审西占批）：认不出的用事不再静默按 marriage 择日（旧测试钉的正是那个缺陷），而是拒绝并列出可选值；不碰引擎。
+    service = make_service(tmp_path)
+    with pytest.raises(ToolValidationError) as caught:
+        service.run_tool(
+            "election",
+            {"date": "2026-06-02", "time": "14:30:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "gpsLat": 31.2167, "gpsLon": 121.4667, "hsys": 0, "tradition": 1, "topicId": "no_such_topic"},
+            save_result=False,
+        )
+    assert caught.value.code == "tool.invalid_option"
+    assert "marriage" in repr(caught.value.details)
+
+
+# All 14 神数: (first section, a reliably-emitted later section). The 5 standalone work against any
+# recent chart service; the 9 kinastro-* (shaozi…qizhengkin) only emit a snapshot on a current build —
+# an OLDER live app returns no snapshot, which now surfaces as a clean transport error (see P0-3), and
+# the test SKIPS that technique rather than failing (so it greens on the user's old :8899 yet really
+# exercises the engine on the bundled v0.11.0 runtime).
+_SHENSHU_EXPECTED = {
+    # 5 standalone engines
+    "wangji": ("[起盘]", "[心易发微]"),
+    "wuzhao": ("[起盘]", "[特殊标记]"),
+    "taixuan": ("[起盘]", "[表]"),
+    "jingjue": ("[起课]", "[十六卦]"),
+    "shenyishu": ("[起盘]", "[吉凶]"),
+    # 9 kinastro-* engines
+    "shaozi": ("[起盘]", "[条文]"),
+    "tieban": ("[起盘]", "[条文]"),
+    "fendjing": ("[起盘]", "[六段断语]"),
+    "beiji": ("[起盘]", "[大运]"),
+    "nanji": ("[起盘]", "[密码]"),
+    "chunzi": ("[起盘]", "[候选条文]"),
+    "xianqin": ("[起盘]", "[吞啖合战]"),
+    "cetian": ("[起盘]", "[农历与命身]"),
+    "qizhengkin": ("[起盘]", "[星曜]"),
+}
+
+# kinastro-* need gender (+ place for cetian/qizhengkin/xianqin) to compute a full chart.
+_SHENSHU_PAYLOAD_EXTRA = {
+    # v0.50.0 深审余项：读时区的神数缺 zone 拒（不再悄悄按东八区算）。
+    "fendjing": {"zone": "+08:00"},
+    "taixuan": {"zone": "+08:00"},
+    "shaozi": {"gender": 1},
+    # v0.50.0：北极 / 南极 / 淳子缺性别也拒（与闸门同一份名单；实测北极 / 南极的大运条文随性别变）。
+    "beiji": {"gender": 1, "zone": "+08:00"},
+    "nanji": {"gender": 1, "zone": "+08:00"},
+    "chunzi": {"gender": 1, "zone": "+08:00"},
+    "tieban": {"gender": 1},
+    "xianqin": {"gender": 1, "lat": "31n13", "lon": "121e28", "gpsLat": 31.2167, "gpsLon": 121.4667, "zone": "+08:00"},
+    "cetian": {"gender": 1, "lat": "31n13", "lon": "121e28", "gpsLat": 31.2167, "gpsLon": 121.4667, "zone": "+08:00"},
+    "qizhengkin": {"gender": 1, "lat": "31n13", "lon": "121e28", "gpsLat": 31.2167, "gpsLon": 121.4667, "zone": "+08:00"},
+}
+
+
+@requires_chart
+@pytest.mark.parametrize("technique", sorted(_SHENSHU_EXPECTED))
+def test_shenshu_runs_via_chart_service(tmp_path, technique) -> None:
+    # 神数 family: kentang engines mounted on the chart service (:8899) that return a backend-built
+    # `snapshot` whose [小节] headers already match the export preset.
+    service = make_service(tmp_path)
+    payload = {"date": "1998-02-20", "time": "20:48:00", "after23NewDay": 1, **_SHENSHU_PAYLOAD_EXTRA.get(technique, {})}
+    result = service.run_tool(technique, payload, save_result=False)
+    if not result.ok and result.error and result.error.code == "transport.shenshu_snapshot_unavailable" \
+            and runtime_contract_is_stale(_INSTALLED_REGISTRY, AI_EXPORT_SETTINGS_VERSION):
+        # 只有已装 payload 早于本树时才是「偏斜」；当前 runtime 还拿不到快照就是回归，不许跳（C-18 第 2 项）。
+        pytest.skip(f"[version-skew] chart service build too old to emit a {technique} snapshot")
+    assert result.ok is True, result.error
+    snapshot = result.data["snapshot_text"]
+    assert snapshot, f"{technique} returned an empty snapshot"
+    first, last = _SHENSHU_EXPECTED[technique]
+    assert first in snapshot and last in snapshot, f"{technique}: {first}/{last} missing"
+    _assert_clean_export(result)
+
+
+def test_cli_coerces_null_or_scalar_payload_instead_of_crashing(tmp_path) -> None:
+    """Regression: a null / scalar payload (stdin literally `null`) used to null-deref-crash the JS
+    tools (`payload.liureng` / `normalizeDateTimeInput(null)`). cli.mjs now coerces it to {}, so a
+    no-backend formatter like liureng degrades to a structured result instead of throwing."""
+    service = make_service(tmp_path)
+    # json.dumps(None) -> "null" on stdin; must return a dict (ok=true), not raise ToolTransportError.
+    result = service.js_client.run("liureng", None)
+    assert isinstance(result, dict)
+    assert isinstance(result.get("data"), dict)
+
+
+@requires_runtime
+def test_india_chart_builds_clean_export_despite_empty_western_aspects(tmp_path) -> None:
+    """Regression: india_chart returns normalAsp/immediateAsp/signAsp as empty LISTS (Indian charts
+    have no Western aspects). `_build_aspect_section` used to crash with `'list' object has no
+    attribute 'get'`; india_chart must now produce a clean ok=True envelope with an export contract."""
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "india_chart",
+        {"date": "2028-04-06", "time": "09:33:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "gpsLat": 31.2167, "gpsLon": 121.4667},
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    assert isinstance(result.data.get("export_snapshot"), dict)
+    assert isinstance(result.data.get("export_snapshot"), dict)
+
+
+def _pd_live_payload(**overrides):
+    payload = {
+        "date": "1990-04-06",
+        "time": "09:33:00",
+        "zone": "+08:00",
+        "lat": "31n13",
+        "lon": "121e28",
+        "pdtype": 0,
+        "pdMethod": "core_alchabitius",
+        "pdTimeKey": "Ptolemy",
+        "pdaspects": [0, 90, 180],
+    }
+    payload.update(overrides)
+    return payload
+
+
+# 主限法引擎同源版本：取 vendored 上游 astrostudy/helper.py 的 PD_SYNC_REV——重同步上游即随之推进，与 AGENTS.md §8 的防陈旧闸同源；
+# vendored 树缺席（CI / 发版矩阵 lane）时退回 PD_SYNC_REV_FALLBACK。v0.51.0 发版矩阵三 lane 全红在此：上游 v3.14.0 已推到 v28、
+# 回退值仍是 v26；本机有 vendored 树、CI 没有 chart 服务（这条跳过），只有 lane（无 vendored 树、有真 chart 服务）走回退。
+# test_pd_sync_rev_fallback_tracks_the_vendored_engine 在 vendored 树在场时把二者钉成相等，re-vendor 漏推进当场红。
+PD_SYNC_REV_FALLBACK = "pd_method_sync_v28"   # 上游星阙 v3.14.0（Horosa-Public e55c3a66）
+
+
+def _vendored_helper_pd_sync_rev() -> str | None:
+    import re
+
+    helper = pathlib.Path(__file__).resolve().parents[2] / "vendor" / "runtime-source" / "Horosa-Web" / "astropy" / "astrostudy" / "helper.py"
+    if helper.is_file():
+        m = re.search(r"^PD_SYNC_REV = '([^']+)'", helper.read_text(encoding="utf-8"), re.M)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _vendored_pd_sync_rev() -> str:
+    return _vendored_helper_pd_sync_rev() or PD_SYNC_REV_FALLBACK
+
+
+PD_SYNC_REV = _vendored_pd_sync_rev()
+
+
+def test_pd_sync_rev_fallback_tracks_the_vendored_engine() -> None:
+    """发版矩阵 lane 没有 vendored 树，只认 PD_SYNC_REV_FALLBACK；它落后于 vendored 引擎 = lane 上主限法同源闸必红（v0.51.0 踩过）。"""
+    vendored = _vendored_helper_pd_sync_rev()
+    if vendored is None:
+        pytest.skip("[upstream-checkout] vendor/runtime-source absent — nothing to compare the fallback against")
+    assert PD_SYNC_REV_FALLBACK == vendored, (
+        f"PD_SYNC_REV_FALLBACK={PD_SYNC_REV_FALLBACK} 落后于 vendored helper.py 的 {vendored}：re-vendor 后把回退值一并推进"
+    )
+
+
+@requires_chart
+def test_pd_v12_engine_rev_and_core5_fallback(tmp_path) -> None:
+    """主限法引擎同源闸 (星阙 v3.6.0 / pd_method_sync_v15)：
+
+    (1) 服务心跳回显当前 `pdSyncRev`——防陈旧进程跑旧引擎（旧引擎会把未知时间钥匙静默按 Ptolemy 算）。
+    (2) **v3.6.0 起 placidus 是真方位法，不再回退**：方位法从「核 5 + legacy」开放到全谱 13 法，
+        实测 placidus 与 core_alchabitius 行集不同（114 vs 64 行）。此前本用例断言二者逐位一致，
+        那是 v12 时代「未核验值回退 core_alchabitius」的语义；引擎语义变了，断言随之改为「两法都
+        产出真行集且彼此不同」，否则这条闸会在引擎真的回退时反而变绿。
+    pd 行结构: [arc, prom, sig, type, date]。"""
+    import httpx
+
+    heartbeat = httpx.get(f"{CHART_SERVER_ROOT}/", timeout=10).json()
+    assert heartbeat.get("pdSyncRev") == PD_SYNC_REV, (
+        f"chart 服务的 pdSyncRev={heartbeat.get('pdSyncRev')} != 期望 {PD_SYNC_REV}；"
+        "多半是打到了默认端口上的陈旧常驻实例，而不是仓内 vendored 引擎（AGENTS.md §8）。"
+    )
+
+    service = make_service(tmp_path)
+    core = service.run_tool("pd", _pd_live_payload(), save_result=False)
+    placidus = service.run_tool("pd", _pd_live_payload(pdMethod="placidus"), save_result=False)
+    assert core.ok is True, core.error
+    assert placidus.ok is True, placidus.error
+    core_rows = [tuple(row) for row in core.data.get("pd") or []]
+    placidus_rows = [tuple(row) for row in placidus.data.get("pd") or []]
+    assert core_rows and placidus_rows, "两个方位法都必须产出真行集"
+    assert core_rows != placidus_rows, (
+        "placidus 与 core_alchabitius 行集逐位相同 —— 说明引擎把 placidus 当未知值回退了（v12 语义），"
+        "而 v3.6.0 起它是全谱 13 法之一。多半是 vendored 引擎陈旧。"
+    )
+
+
+@requires_chart
+def test_pd_v12_per_chart_time_key_diverges_from_ptolemy(tmp_path) -> None:
+    """v12 时间钥匙防吞门（注记坑#6）：Kepler（每盘真算·本命太阳日速）与 Ptolemy 同弧行但日期分叉。
+    若引擎陈旧、未知键被静默按 Ptolemy 标度换算，日期将逐行相同——此测试必红。"""
+    service = make_service(tmp_path)
+    ptolemy = service.run_tool("pd", _pd_live_payload(), save_result=False)
+    kepler = service.run_tool("pd", _pd_live_payload(pdTimeKey="Kepler"), save_result=False)
+    assert ptolemy.ok is True and kepler.ok is True
+    p_dates = {(row[1], row[2], round(float(row[0]), 6)): row[4] for row in ptolemy.data.get("pd") or []}
+    k_dates = {(row[1], row[2], round(float(row[0]), 6)): row[4] for row in kepler.data.get("pd") or []}
+    common = [key for key in p_dates if key in k_dates]
+    assert common
+    assert any(p_dates[key] != k_dates[key] for key in common)
+
+
+@requires_chart
+def test_pd_v12_pdyears_3000_emits_per_revolution_rows(tmp_path) -> None:
+    """v12 pdYears 上限 360→3000：>360 年应出多圈复发行（同迫星/应星对弧值 +360°×n 重现，
+    经 _extendCorePdRecurrences），且最大弧远超 360°。"""
+    service = make_service(tmp_path)
+    result = service.run_tool("pd", _pd_live_payload(pdYears=3000, pdaspects=[0]), save_result=False)
+    assert result.ok is True, result.error
+    rows = result.data.get("pd") or []
+    assert rows
+    arcs_by_pair: dict[tuple, list[float]] = {}
+    for row in rows:
+        arcs_by_pair.setdefault((row[1], row[2]), []).append(float(row[0]))
+    assert any(
+        abs(later - earlier - 360.0) < 1e-6
+        for arcs in arcs_by_pair.values()
+        for earlier in arcs
+        for later in arcs
+    )
+    assert max(float(row[0]) for row in rows) > 360.0
+
+
+@requires_chart
+def test_pd_v12_vertex_significator_rows_in_zodiaco(tmp_path) -> None:
+    """v12 宿命点应星：In-Zodiaco 下出 N_Vertex_0 应星行，快照渲染为「宿命点」。"""
+    service = make_service(tmp_path)
+    result = service.run_tool("pd", _pd_live_payload(), save_result=False)
+    assert result.ok is True, result.error
+    rows = result.data.get("pd") or []
+    assert any("Vertex" in str(row[2]) for row in rows)
+    assert "宿命点" in result.data["snapshot_text"]
+
+
+@requires_runtime
+def test_late_zi_switch_matrix_changes_bazi_pillars(tmp_path) -> None:
+    # 晚子时/日界开关 live 矩阵（23:30 用例）：三象限日柱/时柱逐字断言，证明开关真实抵达引擎。
+    # (after23, lateZi)=(1,1)→壬寅日庚子时；(0,1)→辛丑日庚子时；(0,0)→辛丑日戊子时。
+    service = make_service(tmp_path)
+    base = {"date": "2026-05-27", "time": "23:30:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "gender": True}
+
+    def pillars(payload):
+        result = service.run_tool("bazi_direct", payload, save_result=False)
+        assert result.ok is True, result.error
+        columns = result.data["bazi"]["fourColumns"]
+        day = columns["day"]["ganzi"] if isinstance(columns["day"], dict) else columns["day"]
+        hour = columns["time"]["ganzi"] if isinstance(columns["time"], dict) else columns["time"]
+        return str(day), str(hour)
+
+    assert pillars({**base, "after23NewDay": 1, "lateZiHourUseNextDay": 1}) == ("壬寅", "庚子")
+    assert pillars({**base, "after23NewDay": 0, "lateZiHourUseNextDay": 1}) == ("辛丑", "庚子")
+    assert pillars({**base, "after23NewDay": 0, "lateZiHourUseNextDay": 0}) == ("辛丑", "戊子")
+
+
+def test_lingqi_local_tool_runs_headless_engine(tmp_path) -> None:
+    """灵棋经（上游 v3.9.0）：纯 headless JS，无后端依赖 —— 七段恒出 + 导出契约干净。
+
+    与 tongshefa 同档，不挂 @requires_runtime：它只需要 node + vendored 引擎，CI 已 `npm ci --omit=dev`。
+    """
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "lingqi",
+        {
+            "date": "2028-04-06",
+            "time": "09:33:00",
+            "zone": "+08:00",
+            # lat/lon 是 BirthInput 必填：灵棋经本身不用地点，但六戊日提示要打 /nongli/time，
+            # 而它缺 lat 会在冷年份直接 500（v0.26.1 占时五工具那条教训）——所以一并要齐。
+            "lat": "31n13",
+            "lon": "121e28",
+            "question": "事业能否升迁",
+            "category": "career",
+            "agent_confirmed_settings": True,
+            "clarification_notes": "test fixture",
+        },
+        save_result=False,
+    )
+    assert result.ok is True, result.error
+    text = result.data["snapshot_text"]
+    for header in ("[起盘信息]", "[棋势]", "[卦象]", "[繇辞]", "[诸家注]", "[课断]", "[断诗]"):
+        assert header in text, header
+    counts = result.data["counts"]
+    assert isinstance(counts, list) and len(counts) == 3 and all(0 <= n <= 4 for n in counts), counts
+    _assert_clean_export(result)
+
+
+def test_lingqi_is_deterministic_per_query_moment_and_honours_frozen_counts(tmp_path) -> None:
+    """古法「不可再擲」：同一占时必须同卦；给了 counts 就复排，绝不重掷。
+
+    这条同时挡住一个很容易犯的实现错误 —— 上游 random 档读 `window.crypto`，headless 无 window 会
+    落到 `Math.random()`，于是同一时刻两次调用得到不同卦。skill 侧只走占时种子，正是为了这个。
+    """
+    service = make_service(tmp_path)
+    payload = {
+        "date": "2028-04-06", "time": "09:33:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28",
+        "question": "事业", "agent_confirmed_settings": True, "clarification_notes": "test fixture",
+    }
+    first = service.run_tool("lingqi", payload, save_result=False)
+    second = service.run_tool("lingqi", dict(payload), save_result=False)
+    assert first.data["counts"] == second.data["counts"]
+    assert first.data["snapshot_text"] == second.data["snapshot_text"], "同刻同卦必须字节幂等"
+
+    later = service.run_tool("lingqi", {**payload, "time": "10:33:00"}, save_result=False)
+    assert later.ok is True
+    assert later.data["seed"] != first.data["seed"], "换了占时就该换种子（否则占时是死输入）"
+
+    frozen = service.run_tool("lingqi", {**payload, "counts": [4, 0, 2]}, save_result=False)
+    assert frozen.data["counts"] == [4, 0, 2], "冻结卦必须原样复排"
+    assert frozen.data["snapshot_text"] != first.data["snapshot_text"]
+
+
+# ---- v0.36.0 A4：半成品收官——schema 声明的旋钮必须真的改变结果（值金标在 selfcheck.mjs，这里守 Python 面）----
+def test_heluo_liunian_step2_and_zishu_mode_reach_engine(tmp_path) -> None:
+    service = make_service(tmp_path)
+    base = {"date": "2026-02-17", "time": "21:50:07", "zone": "+08:00", "lon": "120e00", "gender": 1, "timeAlg": 1}
+    ying = service.run_tool("heluo", base, save_result=False)
+    seq = service.run_tool("heluo", {**base, "liunianStep2": "sequential"}, save_result=False)
+    assert ying.ok and seq.ok, (ying.error, seq.error)
+
+    def row(result):
+        return next(line for line in result.data["snapshot_text"].splitlines() if line.startswith("| 2岁 |"))
+
+    assert "雷風恆" in row(ying) and "山風蠱" in row(seq)
+    # 此前 tools/heluo.js 发的是死键 step2 → 引擎永远应爻法：同名错键现在必须仍不生效（负向对照）
+    dead = service.run_tool("heluo", {**base, "step2": "sequential"}, save_result=False)
+    assert row(dead) == row(ying)
+    single = service.run_tool("heluo", {**base, "ziShuMode": "single"}, save_result=False)
+    assert single.data["heluo"]["chart"]["xian"]["name"] == "山風蠱"
+    assert ying.data["heluo"]["chart"]["xian"]["name"] == "火風鼎"
+
+
+def test_yizhangjing_grade_set_and_leap_rule_reach_engine(tmp_path) -> None:
+    service = make_service(tmp_path)
+    base = {"date": "1998-02-20", "time": "20:48:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28", "gender": 1}
+    std = service.run_tool("yizhangjing", base, save_result=False)
+    variant = service.run_tool("yizhangjing", {**base, "gradeSet": "variant"}, save_result=False)
+    assert std.ok and variant.ok, (std.error, variant.error)
+    cell = lambda result: next(r for r in result.data["yizhangjing"]["renshi"] if r["palace"] == "迁移")  # noqa: E731
+    assert cell(std)["grade"] == "中品" and cell(variant)["grade"] == "下品"
+    leap = {**base, "date": "2023-04-05", "time": "00:30:00"}  # 闰二月十五 00:30
+    half = service.run_tool("yizhangjing", leap, save_result=False)
+    midnight = service.run_tool("yizhangjing", {**leap, "leapRule": "midnight"}, save_result=False)
+    assert half.data["yizhangjing"]["input"]["month"] == 2
+    assert midnight.data["yizhangjing"]["input"]["month"] == 3
+
+
+def test_tongshefa_exposes_najia_lines_and_yao_changes(tmp_path) -> None:
+    service = make_service(tmp_path)
+    result = service.run_tool(
+        "tongshefa", {"taiyin": "巽", "taiyang": "离", "shaoyang": "震", "shaoyin": "坤"}, save_result=False
+    )
+    assert result.ok, result.error
+    data = result.data["tongshefa"]
+    assert "".join(line["branch"] for line in data["leftLines"]) == "子寅辰未巳卯"
+    assert data["leftLines"][2]["shiYing"] == "世" and data["leftLines"][5]["shiYing"] == "应"
+    assert [y["line"] for y in data["yaoChanges"] if y["changed"]] == [5, 4, 1]
+    assert data["main_relation_label"] == "实践改造思想"

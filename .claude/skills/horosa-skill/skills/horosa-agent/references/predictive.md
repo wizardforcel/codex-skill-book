@@ -1,0 +1,100 @@
+# Predictive astrology contracts
+
+> 读者：AI 客户端。何时读：调用 推运/返照/时运/主限 类工具前。策略总纲：[`../SKILL.md`](../SKILL.md)。
+
+**Do not call predictive tools with natal data alone.** They need a target and, for return / directed charts, where
+the person is at that target.
+
+- **Target** `datetime`: `"2026"` or `"year": 2026` = that year's birthday moment (stated in `warnings`);
+  `"2026-05-03 08:00"` (ISO `T` works too). 「今年」 = the current year from your own context — say which year you used.
+- **Where** `dirZone` / `dirLat` / `dirLon`: the place defaults to the birthplace (as 星阙). The target clock time is read in
+  the zone that place has **on the target date** (so a China 1986–1991 summer birth at +09:00 gets +08:00 for a winter
+  target; stated in `warnings`); with `dirLat` / `dirLon`, that place's zone. Pass `dirZone` to read it differently.
+  Through `horosa_dispatch`, a target taken from `context` uses the context's zone.
+
+```call
+horosa_predict_solarreturn {"date": "1990-05-03", "time": "08:00", "place": "上海", "datetime": "2026", "dirZone": "+08:00", "defaults_accepted": true, "clarification_notes": "用户要 2026 年太阳返照，人在上海，其余按默认"}
+```
+
+Minimum real-call contracts:
+
+| Tool | Required beyond birth data | Output must include |
+| --- | --- | --- |
+| `solarreturn` / `lunarreturn` | `datetime` (+ `dirZone` / `dirLat` / `dirLon` when not the birth place / zone) | natal chart + return chart + return aspects |
+| `givenyear` | `datetime` (+ `dirZone` / `dirLat` / `dirLon` as above) | natal chart + given-year chart + aspects |
+| `solararc` / `profection` | `datetime` + `dirZone` | natal chart + progressed/profection chart + aspects |
+| `pd` | `pdtype` + `pdMethod` + `pdTimeKey` + `pdaspects` | real primary-direction table rows |
+| `pdchart` | `datetime` + `dirZone` + PD method settings | primary-direction chart table + aspects |
+| `zr` / `firdaria` / `decennials` | confirmed/default timeline settings | timeline rows |
+| `agepoint` / `distributions` / `triplicityrulers` / `keypoints` / `lunationphase` / `extrareturns` and the v2.5.0 progressions | confirmed/default method settings (ask when result-changing) | technique table/sections |
+| `ephemeris` (星历) | `startDate` + `endDate` (window ≤ 732 days; longer windows are truncated and say so) | ingress / station / lunation / eclipse tables + transits to natal (`includeTransits`, `eclipseTimeMode`) |
+| `returntimeline` (回归轴) | `startYear` + `count` (1–40) | yearly solar/lunar return table |
+| `prenatalsyzygy` (产前朔望) | birth data only | the prenatal new/full moon, its degree and chart |
+| `prog` (回归黄道二次推运) | `targetDate` (default = today, like 星阙) + optional `targetTime` / `minorVariant` | secondary / tertiary / minor progression tables; sidereal → use `vedicprog` |
+| `neroman` / `bezzafigure` / `jayprofection` (演进推运 / 推运图 / 周日小限) | `targetDate` (default = today in the chart's zone) + optional `targetTime` (12:00:00) | [演进位置]/[演进对本命相位]/[天顶与上升过本命点] · [推运图位置]/[推运图接触] · [当前小限]/[逐年小限] |
+| `michon` (双黄道) | birth data only (no target date) | [叠合] (12 superpositions) + [互动] (pairs with a harmonic family) |
+| `timelords` (时主轮转) | `tlMethod` (which of the twelve methods — ask, do not default) + `targetDate` (default = today in the chart's zone; 月亮日 ignores it) | [时主轮转] (method + the settings it used) + [当前时段] (current period and sub-periods, or the latest event) + [后续] (next 8); 月亮日 lists three moments only |
+
+**Upstream defaults the tools mirror (v0.40.0)** — ask only if the user cares, otherwise say the default was used:
+
+- `jaynesprog` / `vedicprog` / `prog`: `targetDate` = today; `minorVariant` = `synodic` (朔望月/年; `sidereal` / `engine` also).
+- `planetaryarc`: `datetime` = tomorrow at this time; `arcSource` = Moon.
+- 推运图族（上游 v3.13.0 之后）: `neroman` `nerK` 273.18 / `nerT0` 0.75 / `nerKeepDec` false (按黄经度数) / `nerOrb` 1;
+  `bezzafigure` `bezzaOrb` 1 (0.5 / 1 / 2 / 3 / 5); `jayprofection` `jayFrom` -1 (= current 12-year round; 0 / 12 … 120);
+  `michon` `michonOrb` 1 (0.5 / 1 / 1.5 / 2), `michonSwap` false (modern rulers; true = 水金互换), `michonEqual` false (chart houses; true = equal houses).
+  All four compute on the tropical zodiac only (`zodiacal` = 1 only changes the [起盘信息] header text). Out-of-range values are rejected (`tool.predictive_invalid_option`).
+- 时主轮转 `timelords`（上游 v3.14.0）: `tlMethod` picks the table — period tables `turn` 轮主 / `orb` 轨主 / `annual` 年度分配 /
+  `quarters` 月相四分 / `monomoiria` 月亮单度主 / `moonnine` 月亮九年 / `nineparts` 九分主; event tables `moving` 匀速点 / `devages` 发展年龄 /
+  `diurnal` 周日象限 / `lifetime` 对数时标 / `moondays` 月亮日. The Chinese names are accepted too. Each method reads only its own settings
+  (`horosa_agent_guidance(tool_name="timelords").options_keys.tlMethod` lists them): `tlYearType` solar (匀速点 reads `tlMovingYear`, default sidereal;
+  年度分配 / 对数时标 / 月亮日 use no year length), `tlTurnStart` asc / `tlTurnOrder` zodiac, `tlOrbMode` single, `tlAnnualDays` tableA / `tlAnnualOrder` natal,
+  `tlReleaser` Moon, `tlVariant` improved (classic = the traditional tables), `tlNineTime` degree / `tlNineReverse` false, `tlRateKind` condition /
+  `tlMovingStart` Asc, `tlDevBasis` sign, `tlDiurnalMode` five. A setting the chosen method does not read is not sent and comes back in
+  `data.settings_ignored` with a warning. Inside the polar circle 九分主's `ascension` time falls back to degrees and the text says so
+  (「极圈内斜升不单调,上升时档不成立,已改按度数」). Tropical zodiac only. Unknown values are rejected (`tool.invalid_option`).
+- `persiandirected`: `rateKey` = persian (1°/年; `prophected` / `naibod` / `periodic` 周期律 — the ten planets each move through one of their own
+  periods: 月 4 · 金 8 · 水 10 · 木 12 · 火 15 · 日 19 · 土 30 · 天 84 · 海 165 · 冥 248 years, nodes and lots do not move), `direction` = direct,
+  `maxYears` = 90, `persianYear` = solar (`sidereal` / `hellenistic` 360 日 / `bija` / `bijaClassic`; sets the hit dates and the current directed age).
+- Year lengths shared by `balbillus` `yearType` / `yearsystem129` `ys129YearType` / `timelords` `tlYearType`: `bija` is 365.2588 days since 星阙 v3.14.0
+  (it was 366.2564); the old value is `bijaClassic`.
+- `zr`: `basePoint` = Pars Fortuna; output depth `aiMode` (`l1_all` default … `l4_in_l3`, with `aiL1Idx`–`aiL3Idx`).
+- `profection`: [小限摘要] grain `profGrain` y/m/d, start `profStart` asc/sect/fortune/moon/mc.
+- `balbillus`: `startPlanet` Sun, `yearType` solar, `mode` nearest. `keypoints`: `mode` soul (Moon) / body (Asc).
+- `triplicityrulers`: `system` follows the chart's triplicity, `division` thirds, `lifespan` 75.
+- `solarreturn` / `lunarreturn`: default target = this year's birthday.
+- chart family: `lifespanMethod` (ptolemy default / alcabitius / dorotheus) for [寿命格局].
+- 星阙's AI mount can also scan a datetime *range* (`datetimeEnd` / `scanStep`, one segment per point); the skill does
+  not implement that yet — call the tool once per target date.
+
+The same contracts come from `horosa_agent_guidance {"tool_name": "solarreturn"}` (CLI `horosa-skill agent guidance
+--tool solarreturn`). 「看今年运势」 names no technique: ask which one (dispatch answers it with
+`dispatch.technique_choice_required`), and ask where the person lives if it may differ from the birth place.
+
+## Primary directions (`pd` / `pdchart`) engine surface — 星阙 v3.13.0 parity
+
+- **Direction type `pdtype`** (integer): `0` In Zodiaco (default) / `1` In Mundo / `4` Field Plane. `2`/`3` are
+  backend-internal term-distribution values and are rejected.
+- **Two orthogonal axes**: `pdProjection` (arc algorithm, 14: `ptolemy` default / `placidus` / `regiomontanus` /
+  `campanus` / `topocentric` / `zodiacal` / `ra_direct` / `in_zodiaco_lon` / `in_zodiaco_abs` / `horosa_legacy` /
+  `placidus_under_pole` / `morinus` / `horizontal` / `koch`) × `pdFrame` (chart houses, 12, only moves cusps).
+  The legacy single key `pdMethod` (13 named combinations) only decides what you did not pass explicitly; when you
+  pass `pdProjection`, [主限法设置] drops the 「推运方法」 line (the two axis lines say it).
+- **38 time keys** `pdTimeKey`, incl. per-chart Simmonite / 生日黄经日行 / Kepler / Brahe, dynamic
+  TrueSolarArc / VanDam / SymbolicSolarArc, Ascendant-arc / Vertical-arc timing, and `*Classic` variants (the
+  traditional programs' mean-obliquity / day-after-birth / truncated constants).
+- **Settings registry** (10 keys, all default-off = upstream default request): `pdGeometry` improved/classic (only
+  some direction × arc combinations differ — the arc line then reads 「（改进）/（经典）」), `pdAspectSide`,
+  `pdTradConverse`, `pdIgnoreSigLat`, `pdIgnorePromLat`, `pdLunarParallax`, `pdTruePosition`,
+  `pdSolarArcRegressive`, `pdYearDays`, `pdPromAspectLat`. Every value is echoed as one line in [主限法设置];
+  `pdchart` echoes 日期年长 (it changes how the chosen moment maps to an arc). Values the upstream panel cannot
+  express are rejected, not silently defaulted.
+- **Honest baseline notes**: In Mundo / Field Plane combinations without a dedicated kernel are labelled
+  「（世界主限下走核内基线）」/「（Field Plane 下走核内基线）」 — several choices can produce identical rows.
+- Row ids: fixed-star promissors are `FS_<star>_0|180` / `FSD_<star>_θ` (dexter) / `FSS_<star>_θ` (sinister) and
+  render as 「恒星 X的θ度右/左相位处」. In Mundo the engine adds axis significators 下降 / 天底 / 宿命点 (Vertex) /
+  反宿命点 (Antivertex); under the default `pdMethod=core_alchabitius` display rule only core bodies are kept (upstream
+  same), so pick another method to see those rows.
+- `pdchart` [主限法盘设置]: 弧算法（主限法表用）/ 盘面宫制（外圈宫头）/ 度数换算 / 向运方向 / 日期年长 / 当前Arc —
+  the outer ring is the whole sky advanced along RA by the arc, so only `pdFrame` changes it.
+- `pdYears` up to **3000** with per-revolution recurrence rows (same promissor/significator pair at
+  arc + 360°×n). Term (界) promissor row id = `T_<ruler>_<sign-name>`.

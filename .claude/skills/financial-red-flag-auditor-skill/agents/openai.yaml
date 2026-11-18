@@ -1,0 +1,5 @@
+interface:
+  display_name: "Financial Report Red Flag Auditor"
+  short_description: "Audit annual reports for financial red flags"
+  brand_color: "#8A3D3D"
+  default_prompt: "Use $annual-report-red-flag-auditor to analyze this listed company annual report for financial red flags and produce a polished HTML report."

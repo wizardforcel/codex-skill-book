@@ -1,0 +1,460 @@
+"""Unit tests for the upstream-sync guard (scripts/verify_upstream_sync.py).
+
+Two defects this pins, both of which shipped in v0.25.0:
+
+1. **Version equality cannot detect a new upstream technique.** Upstream adds technique keys without
+   moving either version gate ("新技法键只加键、两把版本闸恒不动", upstream aiExport.js:306). `tianxing`
+   (v3.7.0) and `qimenzeri` (v3.7.1) both arrived under an unchanged `AI_EXPORT_SETTINGS_VERSION = 50`,
+   so check 1 stayed green while a whole technique was missing. Only the preset-key-set diff sees it.
+2. **`--write-state` wrote provenance before the failure raise.** A record claiming "最近一次核对过的
+   上游状态" written by a red run launders a failure into a durable claim of currency — strictly worse
+   than no record at all.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import re
+from pathlib import Path
+
+import pytest
+
+_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "verify_upstream_sync.py"
+_spec = importlib.util.spec_from_file_location("verify_upstream_sync", _SCRIPT)
+guard = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(guard)
+
+
+# --- defect 1: new-key arrival under an unchanged version gate ---------------------------------
+
+
+def test_new_upstream_key_is_detected_even_when_version_is_identical() -> None:
+    """The exact v3.7.x scenario: same version number, extra key."""
+    before = {"qimen", "bazi", "horary"}
+    after = before | {"tianxing", "qimenzeri"}
+    gained, lost = guard.diff_preset_keys(after, before)
+    assert gained == ["qimenzeri", "tianxing"]
+    assert lost == []
+
+
+def test_removed_upstream_key_is_reported() -> None:
+    gained, lost = guard.diff_preset_keys({"qimen"}, {"qimen", "retired"})
+    assert gained == []
+    assert lost == ["retired"]
+
+
+def test_identical_key_sets_produce_no_signal() -> None:
+    assert guard.diff_preset_keys({"a", "b"}, {"b", "a"}) == ([], [])
+
+
+def test_version_equality_alone_would_have_missed_it() -> None:
+    """Documents *why* check 1b exists: both texts declare v50, only one has the key."""
+    from _upstream_preset import parse_preset_sections, read_settings_version  # noqa: PLC0415
+
+    old = "const AI_EXPORT_SETTINGS_VERSION = 50;\nconst AI_EXPORT_PRESET_SECTIONS = {\n\tqimen: ['a'],\n};\n"
+    new = old + "AI_EXPORT_PRESET_SECTIONS.qimenzeri = [...AI_EXPORT_PRESET_SECTIONS.qimen, 'b'];\n"
+    assert read_settings_version(old) == read_settings_version(new) == 50, "version gate is blind by design"
+    gained, _ = guard.diff_preset_keys(set(parse_preset_sections(new)), set(parse_preset_sections(old)))
+    assert gained == ["qimenzeri"], "the key-set diff is the only thing that sees it"
+
+
+# --- defect 2: provenance must never be written by a failing run --------------------------------
+
+
+def test_write_state_block_runs_after_the_failure_raise() -> None:
+    source = _SCRIPT.read_text(encoding="utf-8")
+    raise_at = source.index('raise SystemExit("upstream-sync: FAIL\\n- "')
+    write_at = source.index("if args.write_state:")
+    assert write_at > raise_at, (
+        "--write-state must be gated behind the failure raise; writing provenance on a red run turns a "
+        "failure into a durable claim of currency (v0.25.0 shipped exactly that)"
+    )
+
+
+# --- provenance shape ---------------------------------------------------------------------------
+
+
+def test_provenance_file_is_present_and_well_formed() -> None:
+    data = json.loads(guard.PROVENANCE.read_text(encoding="utf-8"))
+    for field in ("upstream_git_sha", "upstream_app_version", "aiexport_settings_version", "upstream_preset_keys"):
+        assert field in data, f"provenance must carry {field} — 'which upstream is this?' has to be machine-answerable"
+    assert isinstance(data["upstream_preset_keys"], list) and data["upstream_preset_keys"], "key set must be recorded"
+    assert data["upstream_preset_keys"] == sorted(data["upstream_preset_keys"]), "keys are stored sorted for stable diffs"
+
+
+def test_retired_sync_state_file_is_gone() -> None:
+    legacy = guard.PROVENANCE.parent / "vendor_sync_state.json"
+    assert not legacy.exists(), "vendor_sync_state.json is superseded by upstream_provenance.json"
+
+
+def test_load_provenance_tolerates_missing_and_malformed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(guard, "PROVENANCE", tmp_path / "nope.json")
+    assert guard.load_provenance() == {}
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(guard, "PROVENANCE", bad)
+    assert guard.load_provenance() == {}, "a corrupt record must degrade to 'no record', never crash the guard"
+
+
+# --- defect 3: point sentinels can never cover whole engine trees ------------------------------
+
+
+def test_sentinel_trees_cover_the_ken_engine_directory() -> None:
+    """v0.26.0: `kintaiyi/jieqi.py` 的全年份域修复卡在 vendored 树里没人发现——7 个哨兵一个都不在
+    ken 引擎目录下，而 verify_vendor_runtime_sources 只查 REQUIRED_PATHS 是否**存在**。"""
+    assert "Horosa-Web/vendor" in guard.SENTINEL_TREES, "ken 引擎树必须整棵比对，不能只靠点哨兵"
+    # 记录「为什么需要子树比对」：点哨兵里唯一在 vendor/ 下的是根级共享件 kin_year_domain.py，
+    # **引擎目录内部**（kintaiyi/… 等）一个都没有 —— jieqi.py 正是这么漏掉的。
+    inside_engine_dirs = [
+        s for s in guard.SENTINELS
+        if s.startswith("Horosa-Web/vendor/") and s.count("/") > 2
+    ]
+    assert inside_engine_dirs == [], f"若已给引擎目录加点哨兵，请更新本测试的叙述: {inside_engine_dirs}"
+
+
+def test_tree_file_walk_honours_the_sync_scripts_exclusions(tmp_path: Path) -> None:
+    """比对口径必须等于同步口径，否则守卫会对着「本就故意没拷」的文件恒红。"""
+    root = tmp_path / "t"
+    (root / "kinastro" / "astro").mkdir(parents=True)
+    (root / "kinastro" / "astro" / "engine.py").write_text("x", encoding="utf-8")
+    for junk in [
+        root / "kinastro" / "tools" / "cities.py",      # sync 脚本裁掉（~26MB 地理编码库）
+        root / "kinastro" / "tests" / "test_x.py",
+        root / "kinastro" / ".github" / "workflows" / "ci.yml",
+        root / "kinastro" / "astro" / "__pycache__" / "engine.cpython-312.pyc",
+        # SQLite 日志侧车：上游进程打开过库就留在磁盘、git 不跟踪；v0.35.0 preflight 对着干净 clone
+        # 比对时它们恒报「not in upstream」，而对着脏工作树又恒绿——两边口径一起排除。
+        root / "kinastro" / "astro" / "editorial.sqlite-wal",
+        root / "kinastro" / "astro" / "editorial.sqlite-shm",
+        root / "kinastro" / "astro" / "editorial.sqlite-journal",
+    ]:
+        junk.parent.mkdir(parents=True, exist_ok=True)
+        junk.write_text("x", encoding="utf-8")
+    (root / "kinastro" / "astro" / "stale.pyc").write_text("x", encoding="utf-8")
+
+    found = set(guard._tree_files(root))
+    assert found == {"kinastro/astro/engine.py"}, f"排除口径与 sync 脚本不一致: {sorted(found)}"
+
+
+def test_tree_walk_returns_empty_for_a_missing_root(tmp_path: Path) -> None:
+    assert guard._tree_files(tmp_path / "nope") == {}
+
+
+def test_kinastro_only_exclusions_do_not_apply_to_other_trees(tmp_path: Path) -> None:
+    """排除口径按**树**限定，不按名字全局限定。
+
+    `tools/ui/tests/docs/scripts/…` 是 sync 脚本**只**加在 kinastro 那一条 rsync 上的
+    `--exclude`。曾经它们是全局排除的，等于「任何树下叫 tests/scripts 的目录都不比对」——
+    astrostudy/websrv 下同名目录里的真漂移会整片溜过（当前上游恰好没有这种目录，所以是个
+    还没爆的哑弹，不是没子弹）。
+    """
+    root = tmp_path / "astrostudy"
+    for rel in ["geomancy/reading.py", "tests/test_geomancy.py", "scripts/gen.py", "docs/notes.md"]:
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x", encoding="utf-8")
+    found = set(guard._tree_files(root))
+    assert found == {"geomancy/reading.py", "tests/test_geomancy.py", "scripts/gen.py", "docs/notes.md"}, (
+        f"kinastro 专属排除泄漏到了别的树: {sorted(found)}"
+    )
+
+
+# --- defect 4: check 2b silently dropped every upstream-only ROOT-LEVEL file --------------------
+
+
+def test_upstream_only_root_level_file_is_reported_in_a_wholesale_tree() -> None:
+    """v0.26.1 之后的真实事故形状：6 个上游引擎模块对**所有**守卫隐形。
+
+    旧实现 `vendored_tops = {n.split("/",1)[0] for n in vendored_files}` 对根级文件求出的 top 就是
+    文件名自己，于是上游新增的根级文件永远匹配不上任何已 vendor 的顶层目录 → 整类丢弃；
+    配套的「新增顶层目录」检查又要求 `"/" in n`，两头都漏。实测漏掉
+    `cetian_yiyu{,_data,_texts}.py` + `wuzhao_{classics,duanci,leizhan}.py`，共 5,512 行。
+    """
+    missing, notices = guard.missing_upstream_files(
+        upstream_names={"geomancy/reading.py", "cetian_yiyu.py", "wuzhao_classics.py"},
+        vendored_names={"geomancy/reading.py"},
+        copy_mode="whole",
+        root_files=set(),
+    )
+    assert missing == ["cetian_yiyu.py", "wuzhao_classics.py"], "整棵 rsync 的树里，根级文件缺失就是缺口"
+    assert notices == []
+
+
+def test_per_dir_tree_only_fails_on_the_root_files_the_sync_script_names() -> None:
+    """`Horosa-Web/vendor` 是逐引擎目录拷 + 点名两个根级文件——比对口径必须等于同步口径。
+
+    点名内的缺失是硬缺口（v3.5.0 的 kin_year_domain.py：16 个引擎懒 import 它，漏拷 = 全线 500）；
+    点名外的（README.md）只报 notice，否则守卫对着「本就故意没拷」的文件恒红。
+    """
+    missing, notices = guard.missing_upstream_files(
+        upstream_names={"kinqimen/qimen.py", "kin_year_domain.py", "README.md"},
+        vendored_names={"kinqimen/qimen.py"},
+        copy_mode="per-dir",
+        root_files={"kin_year_domain.py", "test_month_pillar_boundary.py"},
+    )
+    assert missing == ["kin_year_domain.py"]
+    assert notices == ["README.md"], "清单外的根级新增要可见，但不阻断"
+
+
+def test_files_inside_an_entirely_new_upstream_directory_are_not_listed_one_by_one() -> None:
+    """整个新增的目录由 new_tops 报一行；逐文件展开会让一棵新引擎树刷出几百行。"""
+    missing, notices = guard.missing_upstream_files(
+        upstream_names={"newengine/a.py", "newengine/b.py", "kinqimen/qimen.py"},
+        vendored_names={"kinqimen/qimen.py"},
+        copy_mode="whole",
+        root_files=set(),
+    )
+    assert missing == [] and notices == []
+
+
+def test_sentinel_trees_declare_a_copy_mode_matching_the_sync_script() -> None:
+    assert guard.SENTINEL_TREES["Horosa-Web/vendor"]["copy"] == "per-dir"
+    assert guard.SENTINEL_TREES["Horosa-Web/astropy"]["copy"] == "whole"
+    assert guard.SENTINEL_TREES["Horosa-Web/flatlib-ctrad2"]["copy"] == "whole"
+    sync = (Path(guard.__file__).resolve().parent / "sync_vendored_runtime_sources.sh").read_text(encoding="utf-8")
+    for named in guard.SENTINEL_TREES["Horosa-Web/vendor"]["root_files"]:
+        assert named in sync, f"{named} 声明为点名拷贝，但 sync 脚本里没有它 —— 两边口径必须锁步"
+
+
+# --- defect 8: sync copied whole trees the guard never compared -------------------------------
+
+
+def test_every_tree_the_sync_script_rsyncs_wholesale_is_a_sentinel_tree() -> None:
+    """v3.9.3 实况：上游改了 flatlib 的 aspects.py / chart.py / ephem/swe.py，sync 脚本整棵拷它，
+    守卫却一个字都不看——而 perchart.push_classical_request 硬 import flatlib 的新 API，少拷等于
+    每个 /chart 请求 ImportError。astropy 同病：只比 astrostudy/websrv 两个子树，tests/ 里上游
+    自 v3.9.3 起的 11 个校准套件、resources/ 与根级文件全在盲区。守卫树集合必须等于 sync 脚本里
+    整棵 rsync 的树集合，少一棵就是一片静默漂移区。"""
+    sync = (Path(guard.__file__).resolve().parent / "sync_vendored_runtime_sources.sh").read_text(encoding="utf-8")
+    wholesale = re.findall(r'rsync -a "\$\{RSYNC_FILTERS\[@\]\}" "\$\{SOURCE_ROOT\}/(Horosa-Web/(?:astropy|flatlib-ctrad2))" ', sync)
+    assert set(wholesale) == {"Horosa-Web/astropy", "Horosa-Web/flatlib-ctrad2"}, (
+        f"sync 脚本整棵拷的树变了，请同步 SENTINEL_TREES 与本测试: {wholesale}"
+    )
+    for tree in wholesale:
+        assert guard.SENTINEL_TREES.get(tree, {}).get("copy") == "whole", f"{tree} 被整棵 rsync 却不在守卫树集合里"
+    # 子树粒度是盲区的来源：整棵树在集合里时，不许再用它的子树替代（子树外的文件会重新失守）。
+    assert not [k for k in guard.SENTINEL_TREES if k.startswith("Horosa-Web/astropy/")], "astropy 必须整棵比对，不许退回子树"
+
+
+# --- defect 5: truncated FAIL output made a large drift look small ------------------------------
+
+
+def test_drift_block_states_the_total_and_what_it_hid() -> None:
+    text = guard._drift_block("things drifted", [f"f{i}.py" for i in range(56)], limit=15, full=False)
+    assert "56 条" in text, "总数必须在标题里——56 条和 16 条不能长得一样"
+    assert "另有 41 条未显示" in text
+    assert guard._drift_block("x", ["a", "b"], limit=15, full=False).count("…") == 0
+
+
+def test_drift_block_full_prints_everything() -> None:
+    text = guard._drift_block("x", [f"f{i}" for i in range(56)], limit=15, full=True)
+    assert "未显示" not in text and "f55" in text
+
+
+# --- defect 6: the no-upstream path claimed currency it had not verified ------------------------
+
+
+def test_no_upstream_path_never_claims_the_state_is_current(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """这条路径没做任何跨树比对，就不许说 current。
+
+    旧文案是 "state current (mirror v50; last cross-tree check against upstream 3.7.3 …)"——
+    本仓落后上游 4 个 release、少一个整技法时，它照样这么印。
+    """
+    record = tmp_path / "prov.json"
+    record.write_text(
+        json.dumps({"skill_mirrored_version": 50, "upstream_git_sha": "f8275b32d393", "upstream_app_version": "3.7.3"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(guard, "PROVENANCE", record)
+    monkeypatch.setattr(guard, "_skill_mirror_version", lambda: 50)
+    guard._report_state_currency()
+    out = capsys.readouterr().out
+    assert "state current" not in out
+    assert "unverified" in out and "3.7.3" in out
+
+
+# --- defect 7: `--require-upstream --write-state` 自锁 -------------------------------------------
+
+
+def test_write_state_is_not_blocked_by_the_staleness_it_exists_to_fix() -> None:
+    """staleness 的补救动作就是 --write-state，所以两者同时在场时它不能是 blocking failure。
+
+    preflight_release.py 用的正是 `--require-upstream --write-state`。旧逻辑下，「刚重同步到新上游」
+    这个**最常见**的发布前状态会自锁：check 4 先 raise，写记录的代码块在 raise 之后，于是那句
+    「re-record with --write-state」在它自己的参数组合下永远做不到。
+    """
+    source = _SCRIPT.read_text(encoding="utf-8")
+    assert "if args.require_upstream and not args.write_state:" in source, (
+        "staleness 在 --write-state 在场时必须降级为 notice"
+    )
+    # 但「红着写记录」仍必须不可能——写记录只发生在全部检查通过之后。
+    raise_at = source.index('raise SystemExit("upstream-sync: FAIL\\n- "')
+    write_at = source.index("if args.write_state:")
+    assert write_at > raise_at
+
+
+def test_preflight_uses_the_flag_combination_this_guard_supports() -> None:
+    preflight = (_SCRIPT.parent / "preflight_release.py").read_text(encoding="utf-8")
+    assert '"--require-upstream", "--write-state"' in preflight, (
+        "preflight 的跨树闸必须同时带这两个参数：前者让它做真，后者留下 git 可见的核对证据"
+    )
+
+
+def test_skill_only_key_demoted_upstream_is_a_notice_not_a_retirement(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """v3.9.2 实况：上游把 `generic` 从 preset 键降为运行时兜底 context。它在 skill 侧本就是
+    DIVERGENCE_WHITELIST 里的 skill-only 键——上游撤它不构成任何镜像内容的 retirement。
+    不减这层时 lost 检查会自锁：红 → --write-state 拒写 → recorded 永含旧键 → 永远红。"""
+    source = _SCRIPT.read_text(encoding="utf-8")
+    assert "_skill_only_keys()" in source and "whitelisted_lost" in source
+    assert "generic" in guard._skill_only_keys(), "generic 必须在 skill-only 集里（mirror 白名单单源）"
+
+
+# --- v0.40.1: --write-state must never record an upstream commit the public cannot fetch ------------------
+# preflight 原先先查「旧 pin 在公开远端」，随后 --write-state 把本地上游 HEAD（未推送的 ecd742f6，只改了
+# Horosa_Desktop_Installer/scripts/）写进 pin，收尾还提示「提交它」。现在：HEAD 已推送 → 记 HEAD；未推送且没碰
+# 本仓任何输入 → 记最近的已推送祖先；碰了输入（或输入路径上有未提交改动）→ 拒写。
+
+import os
+import subprocess
+
+
+def _g(cwd: Path, *args: str) -> str:
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid", "GIT_CONFIG_GLOBAL": os.devnull}
+    return subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def _commit(repo: Path, rel: str, text: str, message: str) -> str:
+    target = repo / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    _g(repo, "add", rel)
+    _g(repo, "commit", "-q", "-m", message)
+    return _g(repo, "rev-parse", "HEAD")
+
+
+@pytest.fixture()
+def upstream_repo(tmp_path: Path) -> tuple[Path, str]:
+    """一个「公开远端」（裸仓）+ 上游工作仓；A 已推送。"""
+    public = tmp_path / "public.git"
+    _g(tmp_path, "init", "-q", "--bare", "-b", "main", str(public))
+    up = tmp_path / "up"
+    _g(tmp_path, "clone", "-q", str(public), str(up))
+    _g(up, "checkout", "-q", "-b", "main")
+    a = _commit(up, "Horosa-Web/astropy/a.py", "a\n", "A")
+    _g(up, "push", "-q", "origin", "main")
+    _g(up, "fetch", "-q", "origin")
+    return up, a
+
+
+def test_a_pushed_head_is_recorded_as_is(upstream_repo: tuple[Path, str]) -> None:
+    up, a = upstream_repo
+    assert guard.pin_to_record(up, a) == (a, "")
+
+
+def test_unpushed_commits_outside_the_inputs_fall_back_to_the_pushed_ancestor(upstream_repo: tuple[Path, str]) -> None:
+    """v0.40.1 的原样：本地多一个只改安装器脚本的未推送提交 → pin 留在已推送的那个。"""
+    up, a = upstream_repo
+    b = _commit(up, "Horosa_Desktop_Installer/scripts/release_lock.sh", "lock\n", "B (local only)")
+    pin, note = guard.pin_to_record(up, b)
+    assert pin == a and b[:12] in note and a[:12] in note
+    assert pin != b, "负向对照：旧逻辑记的就是 b——公开远端上取不到的提交"
+
+
+def test_unpushed_commits_touching_an_input_refuse_to_write(upstream_repo: tuple[Path, str]) -> None:
+    up, _a = upstream_repo
+    _commit(up, "Horosa_Desktop_Installer/scripts/release_lock.sh", "lock\n", "B")
+    c = _commit(up, "Horosa-Web/astropy/b.py", "b\n", "C touches a vendored input")
+    pin, note = guard.pin_to_record(up, c)
+    assert pin is None and "Horosa-Web/astropy/b.py" in note
+
+
+def test_the_version_manifest_alone_is_an_input(upstream_repo: tuple[Path, str]) -> None:
+    up, _a = upstream_repo
+    d = _commit(up, guard.UPSTREAM_VERSION_MANIFEST, '{"version": "9.9.9"}\n', "D bumps the app version")
+    assert guard.pin_to_record(up, d)[0] is None
+
+
+def test_uncommitted_input_changes_refuse_even_on_a_pushed_head(upstream_repo: tuple[Path, str]) -> None:
+    up, a = upstream_repo
+    (up / "Horosa-Web/astropy/a.py").write_text("edited, never committed\n", encoding="utf-8")
+    pin, note = guard.pin_to_record(up, a)
+    assert pin is None and "Horosa-Web/astropy/a.py" in note
+    (up / "Horosa-Web/astropy/a.py").write_text("a\n", encoding="utf-8")
+    # 输入之外的脏文件（v0.40.1 当天上游只有 SELFCHECK_LOG.md 未提交）不挡
+    (up / "Horosa_Desktop_Installer").mkdir(exist_ok=True)
+    (up / "Horosa_Desktop_Installer/SELFCHECK_LOG.md").write_text("log\n", encoding="utf-8")
+    assert guard.pin_to_record(up, a) == (a, "")
+
+
+def test_touches_inputs_classifies_roots_and_files() -> None:
+    paths = ["Horosa-Web/x.py", "runtime/mac/python/bin/python3", "scripts/requirements/mac-python.txt",
+             "Horosa_Desktop_Installer/package.json", "Horosa_Desktop_Installer/scripts/y.sh", "docs/README.md"]
+    assert guard.touches_inputs(paths) == paths[:4]
+
+
+# 读上游的脚本里出现的上游相对路径都必须落在 UPSTREAM_INPUT_ROOTS / FILES 之内——否则「未推送提交没碰输入」的判断会漏。
+# vendor_manifest.json 的 upstream 字段相对 Horosa-Web/astrostudyui/src（revendor_core_js 的 upstream_src 参数），已在根内。
+_UPSTREAM_READERS = (
+    "scripts/sync_vendored_runtime_sources.sh", "scripts/verify_upstream_sync.py", "scripts/gen_knowledge_packs.py",
+    "scripts/gen_bazi_pithy_pack.py", "scripts/verify_export_section_baseline.py", "scripts/build_hover_knowledge_bundle.mjs",
+    "scripts/harvest_help_books.mjs",
+)
+_UPSTREAM_PATH_PATTERNS = (
+    re.compile(r"\$\{SOURCE_ROOT\}/([^\"\s}]+)"),
+    re.compile(r"upstream\s*/\s*\"([^\"]+)\""),
+    re.compile(r"(?:join|resolve)\(\s*SOURCE_ROOT\s*,\s*\"([^\"]+)\""),
+    re.compile(r"\"((?:Horosa-Web|Horosa_Desktop_Installer)/[^\"]*)\""),
+)
+
+
+def _upstream_paths_outside_inputs(text: str) -> list[str]:
+    found = {m.group(1) for pat in _UPSTREAM_PATH_PATTERNS for m in pat.finditer(text)}
+    return sorted(p for p in found if not guard.touches_inputs([p]) and p.rstrip("/") not in ("Horosa-Web",))
+
+
+def test_every_upstream_path_the_readers_use_is_inside_the_declared_inputs() -> None:
+    root = Path(__file__).resolve().parents[1]
+    offenders = {rel: bad for rel in _UPSTREAM_READERS
+                 if (bad := _upstream_paths_outside_inputs((root / rel).read_text(encoding="utf-8")))}
+    assert offenders == {}, f"读上游的脚本用到了 UPSTREAM_INPUT_ROOTS / FILES 之外的上游路径：{offenders}"
+    # 负向对照：新读一个清单外的上游路径，扫描必须抓到
+    assert _upstream_paths_outside_inputs('x = upstream / "docs/new_source.md"') == ["docs/new_source.md"]
+    assert _upstream_paths_outside_inputs('rsync "${SOURCE_ROOT}/Horosa_Desktop_Installer/scripts/a.sh" .') == [
+        "Horosa_Desktop_Installer/scripts/a.sh"]
+
+
+def test_preflight_checks_the_pin_after_the_gates_that_may_rewrite_it() -> None:
+    """preflight 的「pin 在公开远端」必须验**最终**的 pin：排在 GATES（含 --write-state）之后。"""
+    src = (Path(__file__).resolve().parents[1] / "scripts" / "preflight_release.py").read_text(encoding="utf-8")
+    main = src[src.index("def main() -> int:"):]
+    assert main.index("for label, argv in GATES:") < main.index("upstream_pin_failures(")
+
+
+# --- CI shape: upstream checkout present, vendor/runtime-source (gitignored) absent ------------------------------------
+
+_UPSTREAM = guard.os.environ.get("HOROSA_SOURCE_ROOT")
+
+
+@pytest.mark.skipif(
+    not _UPSTREAM or not (Path(_UPSTREAM) / "Horosa-Web").is_dir(),
+    reason="[upstream-checkout] HOROSA_SOURCE_ROOT (upstream checkout) not set",
+)
+def test_ci_shape_skips_only_the_vendored_tree_sections_and_preflight_still_requires_them(monkeypatch, tmp_path, capsys) -> None:
+    """CI 检出了公开上游（PF-20）却没有 gitignored 的 vendor/runtime-source：此前 2 / 2b 两节把每个文件都报成
+    「missing in vendor/runtime-source」，v0.51 PR 的 Linux CI 红在这里。现在：CI 形状可见地跳过这两节、其余照断言；
+    --require-upstream（发布 preflight）缺这棵树照旧 FAIL。负向对照（实跑）：去掉 vendored_tree 判断 → 第一段 SystemExit 红。"""
+    monkeypatch.setattr(guard, "VENDOR_ROOT", tmp_path / "no-vendor-tree")
+    monkeypatch.setattr(guard.sys, "argv", ["verify_upstream_sync.py"])
+    guard.main()
+    out = capsys.readouterr().out
+    assert "sentinel / subtree comparison skipped" in out and "upstream-sync: ok" in out
+    assert "sentinels skipped (no vendor/runtime-source)" in out
+    monkeypatch.setattr(guard.sys, "argv", ["verify_upstream_sync.py", "--require-upstream"])
+    with pytest.raises(SystemExit, match="release preflight needs it"):
+        guard.main()

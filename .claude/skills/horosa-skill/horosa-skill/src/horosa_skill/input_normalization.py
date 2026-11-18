@@ -1,0 +1,1277 @@
+"""入参的唯一入口：先归一（各种写法 → 引擎口径），再校验（读不懂就结构化拒绝）。v0.50.0 起两步合一。
+
+全部技法、嵌套当事人（inner / outer、dispatch 的 birth / subject / context、natal、davison）、`horosa_tool_run`、
+dispatch / hecan、命主档案都经 `normalize_request_payload`。**当事人位置**（顶层与上面这些键下面的那一层）上的
+date / time / zone / 经纬度 / 性别 逐字段由 `input_fields.parse_*` 判定：读懂了 → 规范值（做了解读的进 warnings）；
+读不懂 → `ToolValidationError`，details 里每个出问题的字段一条 {field, got, expected, example, options}。认不出的值不会
+原样流到引擎，也不会换成缺省值。更深的引擎结构（nongli、jieqi_year_*、options、rectifyEvents…，多是引擎结果回传）
+仍走旧的宽松归一（`_legacy_normalize`）：那是引擎自己的数据，不替它判。
+"""
+from __future__ import annotations
+
+from functools import lru_cache
+
+import difflib
+import math
+import re
+from datetime import UTC, datetime
+from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from horosa_skill import input_fields as F
+from horosa_skill.errors import ToolValidationError, bilingual
+from horosa_skill.western_vocab import CLASSICAL_UNDECLARED_FIELDS
+
+_COMPACT_COORD_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([NSEWnsew])\s*(\d+(?:\.\d+)?)\s*$")
+_DECIMAL_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
+_ZONE_HM_RE = re.compile(r"^(?P<sign>[+-]?)(?P<hours>\d{1,2})(?::(?P<minutes>\d{1,2}))?$")
+# 年带符号、1–5 位（上游 dateStrSafe.parseDateParts 同域：公元前 '-0500-03-21'、五位年 '10000-01-01'）；
+# 归一成 formatSignedDate 同形（负年前导负号、年不足 4 位补零、5 位原样）。旧式只认四位无号年：公元前 / 五位年原样透传，
+# 月日不补零、IANA 时区也换算不了偏移。
+_DATE_RE = re.compile(r"^(?P<year>-?\d{1,5})(?P<sep>[-/])(?P<month>\d{1,2})(?P=sep)(?P<day>\d{1,2})$")
+_TIME_RE = re.compile(r"^(?P<hour>\d{1,2}):(?P<minute>\d{1,2})(?::(?P<second>\d{1,2}))?$")
+_DATETIME_RE = re.compile(
+    r"^(?P<date>-?\d{1,5}[-/]\d{1,2}[-/]\d{1,2})(?P<sep>[T\s]+)(?P<time>\d{1,2}:\d{1,2}(?::\d{1,2})?)$"
+)
+
+
+
+# 当事人位置：这些键下面的那一层 dict 与顶层同样逐字段严判（dispatch 的 subject.birth 也是）。
+PARTY_KEYS = ("inner", "outer", "birth", "subject", "natal", "davison", "context")
+# 日期 → 它的纪元键（ad=-1 + 不带负号的日期在入口改写成带负号的日期，见 _fold_era）。
+_ERA_PAIRS = (("date", "ad"), ("guaDate", "guaAd"))
+_TIME_KEYS = ("time", "guaTime")
+_ZONE_KEYS = ("zone", "dirZone", "guaZone")
+_COORD_KEYS = (("lat", "lat"), ("lon", "lon"), ("dirLat", "lat"), ("dirLon", "lon"), ("guaLat", "lat"), ("guaLon", "lon"))
+# 常见的别名键 → 规范键（模型没声明别名时才改名，改名进 warnings）。
+FIELD_ALIASES: dict[str, str] = {
+    "timezone": "zone", "tz": "zone", "time_zone": "zone", "timeZone": "zone", "utc_offset": "zone",
+    "latitude": "lat", "longitude": "lon", "lng": "lon", "long": "lon",
+    "house_system": "hsys", "houseSystem": "hsys", "houses": "hsys",
+    "sex": "gender",
+    "birth_date": "date", "birthDate": "date", "birth_time": "time", "birthTime": "time",
+    # 择日主题：runner 曾私下 `topicId or topic` 读它，不经词表、入口却说「没有哪个设置读它」（深审余项）。
+    "topic": "topicId",
+}
+# 只在知道技法、且它声明了 datetime（推运目标）时才改名（审计 S-13：`target_year: 2027` 曾只换来一句告警，照样按 2026 算返照）。
+# 不进 FIELD_ALIASES：那张表在不知道技法时也改名，会把 dispatch 层的键改掉。
+TARGET_ALIASES: dict[str, str] = {
+    "target_year": "datetime", "targetYear": "datetime", "target_date": "datetime", "targetDate": "datetime",
+    "target_datetime": "datetime", "targetDatetime": "datetime", "target_time": "datetime", "targetTime": "datetime",
+}
+# 不是技法参数、但合法出现在载荷里的键（入口 / 闸门 / 派生）：不报「未知参数」。
+NON_TECHNIQUE_KEYS = frozenset({
+    "place", "profile", "knowledge", "name", "pos", "question", "agent_confirmed_settings", "defaults_accepted",
+    "clarification_notes", "response_view", "geoZone", "zoneAdvisory", "placeResolution", "cnUnifiedZone", "request",
+    "tool_name", "save_result", "subject", "query", "group_id", "_place_records", "zone_confirmed",
+})
+# 只有用户知道的事实：缺了要问用户，不是改写法。
+USER_FACT_FIELDS = frozenset({"date", "time", "zone", "lat", "lon", "gender", "guaDate", "guaTime", "guaZone", "guaLat", "guaLon"})
+
+
+class _Issues:
+    def __init__(self) -> None:
+        self.items: list[dict[str, Any]] = []
+
+    def add(self, path: str, value: Any, issue: F.FieldIssue) -> None:
+        entry = {
+            "field": path, "code": issue.code, "got": _jsonable(value), "expected": bilingual(issue.expected_zh, issue.expected_en),
+            "example": issue.example, "ask_user": issue.ask_user, "message": bilingual(issue.zh, issue.en),
+        }
+        if issue.options:
+            entry["options"] = issue.options
+        self.items.append(entry)
+
+
+def _jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return repr(value)
+
+
+def normalize_request_payload(
+    payload: Any, *, model: Any = None, tool_name: str | None = None, place_records: list[dict[str, Any]] | None = None,
+) -> Any:
+    """归一 + 校验。读不懂的字段一次全部列出：抛 `ToolValidationError`（见 `field_issues_error`）。`model` 给了就按它的字段集
+    报「未知参数」并把 datetime / year 拆到声明了的字段上。`tool_name` 给了，追问开头点名是哪个技法的输入。"""
+    payload = _month_only_date(payload, model)
+    normalized, issues = normalize_collecting_issues(payload, model=model, filled_by_place=_place_filled(place_records))
+    if issues:
+        raise field_issues_error(issues, tool_name=tool_name or _model_tool_name(model))
+    return normalized
+
+
+def _month_only_date(payload: Any, model: Any) -> Any:
+    """万年历要的就是一个月（审计 F23）：「1990-05」= 该月 1 日。别的技法照旧把缺日当作要问的事。"""
+    if not isinstance(payload, dict) or _model_tool_name(model) != "calendar_month":
+        return payload
+    value = payload.get("date")
+    if isinstance(value, str) and re.fullmatch(r"\s*\d{4}[-/.]\d{1,2}\s*", value):
+        year, month = re.split(r"[-/.]", value.strip())
+        return {**payload, "date": f"{int(year):04d}-{int(month):02d}-01"}
+    return payload
+
+
+def _model_tool_name(model: Any) -> str | None:
+    """技法模型 → 注册表键（一个模型只被一个技法用时）；门面模型 / 共享模型 → None。"""
+    if model is None:
+        return None
+    from horosa_skill.engine.registry import TOOL_DEFINITIONS
+
+    names = [name for name, definition in TOOL_DEFINITIONS.items() if definition.input_model is model]
+    return names[0] if len(names) == 1 else None
+
+
+def technique_heading(tool_name: str | None) -> str | None:
+    """逐字段追问的开头一行：「八字排盘（bazi_birth）的输入：」——几个技法一起跑（dispatch / 合参）时，用户得知道问的是哪一个的。"""
+    if not tool_name:
+        return None
+    from horosa_skill.engine.synonyms import display_name
+
+    label = display_name(tool_name)
+    named = f"{label}（{tool_name}）" if label != tool_name else tool_name
+    return bilingual(f"{named}的输入：", f"Input for {tool_name}:")
+
+
+def normalize_collecting_issues(
+    payload: Any, *, model: Any = None, filled_by_place: frozenset[str] = frozenset(),
+) -> tuple[Any, list[dict[str, Any]]]:
+    """同上，但不抛：返回 (归一后的载荷, 逐字段问题表)。命主档案（profiles.validate_birth_fields）用它并进自己的错误形状。"""
+    issues = _Issues()
+    if not isinstance(payload, dict):
+        return _legacy_normalize(payload), issues.items
+    fields, required = _model_fields(model)
+    normalized = _normalize_party(payload, path="", issues=issues, fields=fields, required=required, filled_by_place=filled_by_place)
+    return normalized, issues.items
+
+
+def _model_fields(model: Any) -> tuple[frozenset[str] | None, frozenset[str]]:
+    model_fields = getattr(model, "model_fields", None) if model is not None else None
+    if not isinstance(model_fields, dict):
+        return None, frozenset()
+    return frozenset(model_fields), frozenset(name for name, info in model_fields.items() if info.is_required())
+
+
+def _normalize_party(
+    payload: dict[str, Any], *, path: str, issues: _Issues, fields: frozenset[str] | None, required: frozenset[str] = frozenset(),
+    filled_by_place: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key in PARTY_KEYS and isinstance(value, dict):
+            out[key] = _normalize_party(value, path=f"{path}{key}.", issues=issues, fields=None)
+        else:
+            out[key] = _legacy_normalize(value)
+    if fields is not None:
+        _lift_nested_party(out, fields)
+    _apply_aliases(out, path=path, fields=fields)
+    if fields is not None:
+        _split_target_fields(out, path=path, issues=issues, fields=fields)
+    _apply_calendar_flags(out, path, issues, fields)
+    for date_key, era_key in _ERA_PAIRS:
+        era_explicit = out.get(era_key) is not None
+        _strict(out, date_key, path, issues, lambda v, explicit=era_explicit: F.parse_date(v, era_explicit=explicit), extras=True)
+        _fold_era(out, date_key, era_key, path, issues, fields)
+    if fields is not None:
+        _lift_day_switches(out, path, issues, fields)
+    for key in F.DAY_SWITCH_KEYS:
+        _strict(out, key, path, issues, lambda v, name=key: F.parse_day_switch(v, field_name=name))
+    for key in _TIME_KEYS:
+        # 空串钟点：模型要求钟点 → 「钟点未知」问用户；否则等于没给。
+        _strict(out, key, path, issues, F.parse_time, drop_blank=key not in required)
+    # 审计 F06：用户确认「就按约 8 点算」→ time + time_approximate: true（不广告，只出现在 tool.time_approximate 的示例里）。结果写明是约数。
+    out.pop("zone_confirmed", None)   # 待决项 3 的确认位：地名解析时已读过（service/api/place.py），不进引擎
+    approximate = out.pop("time_approximate", None)
+    if approximate is True and isinstance(out.get("time"), str):
+        F.add_input_note(
+            f"{path}time {out['time'][:5]} 是用户给的约数（确认按此起算）：时柱、命宫 / 上升、宫位与月亮的精确位置都随钟点变，这几处只作参考。",
+            f"{path}time {out['time'][:5]} is the user's approximate time (confirmed to use): the hour pillar, Ascendant / houses and the Moon's exact position move with the clock, so treat them as indicative only.",
+        )
+    if "datetime" in out:
+        _strict(out, "datetime", path, issues, _parse_target_datetime)
+    flagged = {item["field"] for item in issues.items}
+    for key in _ZONE_KEYS:
+        _strict_zone(out, key, path, issues, flagged)
+    _strict_coordinates(out, path, issues)
+    _strict(out, "gender", path, issues, F.parse_gender)
+    if fields is not None:
+        _report_unknown_keys(out, fields, filled_by_place, path=path, issues=issues)
+    return out
+
+
+# 「这个日期是农历」的结构化写法（审计 F02）：模型知道是农历却没有字段可写，就会加这些键。以前它们只换来一句「不是本技法的参数」，
+# 然后按公历同号日起盘、ok:true——另一张盘。现在：说是农历 → 按农历换算（与文字写法同一条路）；说是儒略历 → 按字段拒；说是公历 → 照常。
+_CALENDAR_KEYS = ("calendar", "calendarType", "calendar_type", "dateType", "date_type")
+_LUNAR_BOOL_KEYS = ("lunar", "isLunar", "is_lunar")
+_LEAP_KEYS = ("leap", "isLeap", "is_leap", "leap_month", "isLeapMonth")
+_LUNAR_WORDS = {"lunar", "chinese", "农历", "農曆", "阴历", "陰曆", "旧历", "舊曆", "夏历", "夏曆"}
+_SOLAR_WORDS = {"gregorian", "solar", "公历", "公曆", "阳历", "陽曆", "新历", "新曆", "西历", "西曆"}
+_JULIAN_WORDS = {"julian", "儒略", "儒略历", "儒略曆"}
+
+
+def _apply_calendar_flags(out: dict[str, Any], path: str, issues: _Issues, fields: frozenset[str] | None) -> None:
+    declared = fields or frozenset()
+    flags = {key: out.pop(key) for key in (*_CALENDAR_KEYS, *_LUNAR_BOOL_KEYS, *_LEAP_KEYS) if key in out and key not in declared}
+    if not flags:
+        return
+    words = {str(flags[key]).strip().lower() for key in _CALENDAR_KEYS if key in flags and flags[key] not in (None, "")}
+    lunar = bool(words & _LUNAR_WORDS) or any(F.is_truthy(flags[key]) for key in _LUNAR_BOOL_KEYS if key in flags)
+    unknown = words - _LUNAR_WORDS - _SOLAR_WORDS - _JULIAN_WORDS
+    if unknown and fields is None:
+        # 不知道是哪个技法（MCP 面的预归一化）：认不出的值可能是技法自己的设置（十年大运 calendarType: calendar_360），
+        # 原样放回、交给按模型归一化的那一遍；那一遍知道字段表，没声明的键才在那里报 calendar_unsupported。
+        out.update(flags)
+        return
+    if words & _JULIAN_WORDS or unknown:
+        which = next(iter(words & _JULIAN_WORDS or unknown))
+        issues.add(path + "calendar", which, F.FieldIssue(
+            "tool.calendar_unsupported",
+            f"历法「{which}」不能自动换算：日期请给公历（YYYY-MM-DD），或给农历（calendar: \"lunar\"，1900–2100 年）。",
+            f"Calendar {which!r} is not converted automatically: give a Gregorian date (YYYY-MM-DD), or a lunar one (calendar: \"lunar\", 1900–2100).",
+            expected_zh="calendar：lunar（农历）或不写（公历）", expected_en="calendar: lunar, or omit it for Gregorian", example="lunar",
+            ask_user=False,
+        ))
+        return
+    if not lunar or "date" not in out or F.is_blank(out.get("date")):
+        return
+    leap_values = [flags[key] for key in _LEAP_KEYS if key in flags]
+    leap = F.is_truthy(leap_values[0]) if leap_values else None
+    try:
+        parsed = F.parse_lunar_date(out["date"], forced=True, leap=leap)
+    except F.FieldIssue as issue:
+        issues.add(path + "date", out["date"], issue)
+        return
+    if parsed is None:
+        issues.add(path + "date", out["date"], F.FieldIssue(
+            "tool.invalid_date", f"说了是农历，但「{out['date']}」读不出农历的年月日。", f"Marked as lunar, but {out['date']!r} has no readable lunar year/month/day.",
+            expected_zh="农历 YYYY-MM-DD 或 农历1990年四月初九", expected_en="lunar YYYY-MM-DD or 农历1990年四月初九", example="1990-04-09",
+        ))
+        return
+    out["date"] = F.note_parsed(parsed, path + "date")
+
+
+def _strict(out: dict[str, Any], key: str, path: str, issues: _Issues, parse: Any, *, extras: bool = False, drop_blank: bool = True) -> None:
+    if key not in out:
+        return
+    value = out[key]
+    if value is None:
+        return
+    if F.is_blank(value) and drop_blank:
+        # 客户端常把可选字符串填成 ""：等于没给（必填字段随后报缺）。
+        del out[key]
+        return
+    try:
+        parsed = parse(value)
+    except F.FieldIssue as issue:
+        issues.add(path + key, value, issue)
+        return
+    out[key] = F.note_parsed(parsed, path + key)
+    if extras and parsed.extra:
+        time_key = "guaTime" if key == "guaDate" else "time"
+        zone_key = "guaZone" if key == "guaDate" else "zone"
+        for extra_key, target in (("time", time_key), ("zone", zone_key)):
+            if extra_key not in parsed.extra:
+                continue
+            given = out.get(target)
+            if F.is_blank(given):
+                out[target] = parsed.extra[extra_key]
+                continue
+            try:
+                given_value = (F.parse_time if extra_key == "time" else F.parse_zone)(given).value
+            except F.FieldIssue:
+                continue  # 单独那个字段自己会报
+            if given_value != parsed.extra[extra_key]:
+                issues.add(path + target, given, F.FieldIssue(
+                    "tool.field_conflict",
+                    f"`{key}` 里带的{('时刻' if extra_key == 'time' else '时区')} {parsed.extra[extra_key]} 与 `{target}`={given!r} 不一致，不知道该用哪个。",
+                    f"The {extra_key} inside `{key}` ({parsed.extra[extra_key]}) disagrees with `{target}`={given!r}; cannot tell which one is meant.",
+                    expected_zh=f"只在一处给{('时刻' if extra_key == 'time' else '时区')}", expected_en=f"give the {extra_key} in one place only",
+                    example=parsed.extra[extra_key], options=[parsed.extra[extra_key], given_value],
+                ))
+
+
+def _fold_era(out: dict[str, Any], date_key: str, era_key: str, path: str, issues: _Issues, fields: frozenset[str] | None) -> None:
+    """公元前只留一种写法（v0.50.0）：`ad=-1` + 不带负号的日期 → 带负号的日期 + `ad=-1`（上游 chartAtMoment 同形：
+    DateTime.format 出带符号的年、ad 随之）。
+
+    两种写法以前各技法读法不一：太乙的农历按公元前、年柱按公元；金口诀月将卯 / 戌；正传 / 小六壬 / 轨策 / 小成图 / 神数 ×14 /
+    灵棋 / 河洛 / 参评只看日期、ad 整个被丢——同一个「公元前 500 年」起出公元 500 年的盘。带负号的写法各技法一致，于是在入口改写一次。
+    没有声明 `ad` 的技法：纪元已经折进日期，`ad` 从载荷里拿掉（不再报「没有哪个设置读它」）。
+    带负号的日期 + `ad=1` 不改（负号本身就是纪元）。`ad` 只属于它配对的那个日期：择日的搜索窗、起课时刻、流年时刻各按自己日期的
+    负号定纪元（runner 用 `_ad_of_date`，守卫 tests/test_era_pairing.py），命主的 ad=-1 不跟到别的日期上。"""
+    raw = out.get(era_key)
+    if raw is None:
+        return
+    if F.is_blank(raw):
+        del out[era_key]
+        return
+    try:
+        era = F.parse_era(raw)
+    except F.FieldIssue as issue:
+        issues.add(path + era_key, raw, issue)
+        return
+    out[era_key] = F.note_parsed(era, path + era_key)
+    date = out.get(date_key)
+    if not isinstance(date, str) or not date or path + date_key in {item["field"] for item in issues.items}:
+        return
+    if out[era_key] == -1 and not date.startswith("-"):
+        out[date_key] = f"-{date}"
+        F.add_input_note(
+            f"`{path}{era_key}`=-1：`{path}{date_key}` 按公元前读作 {out[date_key]}（历史纪年，没有公元 0 年；1582 年以前各技法引擎的历法口径不一，以正文起盘信息为准）。",
+            f"`{path}{era_key}`=-1: `{path}{date_key}` was read as the BC date {out[date_key]} (historical numbering, no year 0; before 1582 "
+            "the engines differ on the calendar — the chart's header states what was used).",
+        )
+    if fields is not None and era_key not in fields:
+        del out[era_key]  # 纪元已折进日期；本技法本来就不读 ad
+
+
+# 技法的口径对象里也可能写日界两开关（上游奇门 / 太乙 options 就带）；三式合一另有三层口径对象。
+_OPTION_DICT_KEYS = ("options", "qimen_options", "taiyi_options", "liureng_options")
+
+
+def _lift_day_switches(out: dict[str, Any], path: str, issues: _Issues, fields: frozenset[str]) -> None:
+    """日界两开关只有一个生效值（v0.50.0）：顶层与口径对象（options / 三式合一的三层口径）里都可以写，入口合成一个顶层值，
+    口径对象里的那份拿掉；两处值不同 → tool.field_conflict。
+
+    以前各读各的：太乙的 options.after23NewDay 只到了快照的「换日」行，/nongli/time 与 /taiyi/pan 用顶层（缺省）——
+    盘头写 24 点换日、日柱却按 23 点进位；大六壬则把 options 里的这两个键当未知键拒掉。只对声明了这两个键的技法做。"""
+    for key in F.DAY_SWITCH_KEYS:
+        if key not in fields:
+            continue
+        sources: list[tuple[str, Any]] = []
+        if out.get(key) is not None and not F.is_blank(out.get(key)):
+            sources.append((path + key, out[key]))
+        for holder in _OPTION_DICT_KEYS:
+            nested = out.get(holder)
+            if isinstance(nested, dict) and key in nested:
+                value = nested[key]
+                out[holder] = {k: v for k, v in nested.items() if k != key}
+                if value is not None and not F.is_blank(value):
+                    sources.append((f"{path}{holder}.{key}", value))
+        if not sources:
+            continue
+        parsed: list[tuple[str, Any, int]] = []
+        for where, value in sources:
+            try:
+                parsed.append((where, value, F.parse_day_switch(value, field_name=key).value))
+            except F.FieldIssue as issue:
+                issues.add(where, value, issue)
+        if len(parsed) != len(sources):
+            out.pop(key, None)
+            continue
+        values = {item[2] for item in parsed}
+        if len(values) > 1:
+            listing = "、".join(f"`{where}`={value!r}" for where, value, _ in parsed)
+            issues.add(parsed[1][0], parsed[1][1], F.FieldIssue(
+                "tool.field_conflict", f"日界开关 {key} 给了两个不同的值（{listing}），不知道该用哪个。",
+                f"The day-boundary switch {key} was given two different values ({listing.replace('、', ', ')}); cannot tell which one is meant.",
+                expected_zh=f"只在一处给 {key}（顶层）", expected_en=f"give {key} in one place only (top level)", example=1,
+                options=sorted(values),
+            ))
+            out.pop(key, None)
+            continue
+        out[key] = parsed[0][2]
+        lifted = [where for where, _, _ in parsed if where != path + key]
+        if lifted:
+            F.add_input_note(f"{'、'.join(f'`{w}`' for w in lifted)} 按顶层 `{path}{key}` 读（日界开关只有一个生效值）。",
+                             f"{', '.join(f'`{w}`' for w in lifted)} was read as the top-level `{path}{key}` (one effective day-boundary switch).")
+
+
+def _strict_coordinates(out: dict[str, Any], path: str, issues: _Issues) -> None:
+    """经纬度：罗盘串 / 十进制 / 度分秒 / 北纬东经 → 罗盘串（上游 AstroHelper 同式）+ gps 十进制。
+
+    gpsLat / gpsLon 与 lat / lon 是同一个点的两种写法：Java 控制器把 gps 键原样转给后端、后端按候选回退，所以两者都要对。
+    只给一边就补另一边（旧口径：gps = 原值十进制 6 位）；两边都给且相差超过 1′ → 以 lat / lon 为准、改写 gps 并进 warnings。"""
+    for value_key, axis in _COORD_KEYS:
+        gps_key = {"lat": "gpsLat", "lon": "gpsLon"}.get(value_key)
+        decimal = _strict_decimal(out, value_key, axis, path, issues)
+        if gps_key is None:
+            if decimal is not None:
+                out[value_key] = _format_compact_coordinate(decimal, axis=axis)
+            continue
+        gps_decimal = _strict_decimal(out, gps_key, axis, path, issues)
+        if decimal is False or gps_decimal is False:
+            continue
+        if decimal is not None:
+            out[value_key] = _format_compact_coordinate(decimal, axis=axis)
+            if gps_decimal is not None and abs(decimal - gps_decimal) > 1 / 60 + 1e-9:
+                F.add_input_note(
+                    f"`{path}{value_key}` 与 `{path}{gps_key}`={out[gps_key]} 不是同一个点：按 {value_key}={out[value_key]} 起盘，{gps_key} 已改成 {round(decimal, 6)}。",
+                    f"`{path}{value_key}` and `{path}{gps_key}`={out[gps_key]} are different points; {value_key}={out[value_key]} was used and {gps_key} rewritten to {round(decimal, 6)}.",
+                )
+                gps_decimal = None
+            out[gps_key] = round(gps_decimal if gps_decimal is not None else decimal, 6)
+        elif gps_decimal is not None:
+            out[gps_key] = round(gps_decimal, 6)
+            out[value_key] = _format_compact_coordinate(gps_decimal, axis=axis)
+
+
+def _strict_decimal(out: dict[str, Any], key: str, axis: str, path: str, issues: _Issues) -> float | None | bool:
+    """→ 十进制度；没给 → None；给了但读不懂（已记问题）→ False。"""
+    if key not in out or out[key] is None:
+        return None
+    value = out[key]
+    if F.is_blank(value):
+        del out[key]
+        return None
+    try:
+        return F.note_parsed(F.parse_coordinate(value, axis=axis), path + key)
+    except F.FieldIssue as issue:
+        issues.add(path + key, value, issue)
+        return False
+
+
+def _iana_name(text: str) -> str | None:
+    """IANA 名（大小写不敏感：asia/shanghai → Asia/Shanghai）或地名式时区（北京时间 → Asia/Shanghai）→ 规范 IANA 名。"""
+    folded = text.strip()
+    named = F.ZONE_NAME_TO_IANA.get(folded.lower()) or F.ZONE_NAME_TO_IANA.get(_fold(folded))
+    if named:
+        return named
+    if "/" not in folded:
+        return None
+    return _iana_casefold_map().get(folded.casefold())
+
+
+def _fold(text: str) -> str:
+    from horosa_skill.textscript import fold_to_simplified
+
+    return fold_to_simplified(text).lower()
+
+
+_IANA_MAP: dict[str, str] | None = None
+
+
+def _iana_casefold_map() -> dict[str, str]:
+    global _IANA_MAP
+    if _IANA_MAP is None:
+        from zoneinfo import available_timezones
+
+        _IANA_MAP = {name.casefold(): name for name in available_timezones()}
+    return _IANA_MAP
+
+
+def _strict_zone(out: dict[str, Any], key: str, path: str, issues: _Issues, flagged: set[str]) -> None:
+    if key not in out or out[key] is None:
+        return
+    value = out[key]
+    if F.is_blank(value):
+        del out[key]
+        return
+    iana = _iana_name(F.clean_text(value)) if isinstance(value, str) else None
+    if iana is None:
+        try:
+            out[key] = F.note_parsed(F.parse_zone(value), path + key)
+        except F.FieldIssue as issue:
+            if isinstance(value, str) and "/" in value:
+                issue = F.FieldIssue("tool.invalid_zone", f"没有叫 {value!r} 的时区（IANA 名区分地区 / 城市，如 Asia/Shanghai）。",
+                                     f"There is no time zone named {value!r} (IANA names look like Asia/Shanghai).",
+                                     expected_zh=issue.expected_zh, expected_en=issue.expected_en, example="Asia/Shanghai")
+            issues.add(path + key, value, issue)
+        return
+    date_keys = {"zone": ("date", "time"), "dirZone": ("datetime",), "guaZone": ("guaDate", "guaTime")}[key]
+    if any(path + k in flagged for k in date_keys):
+        return  # 日期 / 时刻自己已经报错，换算不了偏移，不重复报
+    if _reference_datetime_for_zone(out, key) is None:
+        issues.add(path + key, value, F.FieldIssue(
+            "tool.invalid_zone",
+            f"时区 {value!r} 是地区名：要知道日期和钟点才能换算成偏移（夏令时、历史改制）。请同时给 date + time，或直接给偏移如 +08:00。",
+            f"Zone {value!r} is a region name; converting it to an offset needs the date and time (DST, historical changes). Give date + time, or an offset such as +08:00.",
+            expected_zh="±HH:MM 偏移，或 IANA 名 + 日期时刻", expected_en="an ±HH:MM offset, or an IANA name together with date and time", example="+08:00",
+        ))
+        return
+    if iana != value:
+        F.add_input_note(f"`{path}{key}`「{value}」按 IANA 时区 {iana} 读。", f"`{path}{key}` '{value}' was read as the IANA zone {iana}.")
+    offset = _normalize_iana_zone_value(iana, payload=out, key=key)
+    if offset is None:
+        return
+    ambiguous = _wall_time_ambiguity(out, key)
+    if ambiguous is not None:
+        kind, options = ambiguous
+        zh = ("这个钟点在该地落在夏令时切换的回拨重叠里，出现过两次" if kind == "fold" else "这个钟点在该地因夏令时拨快而不存在")
+        en = ("this wall time occurred twice there (DST fall-back overlap)" if kind == "fold" else "this wall time did not exist there (DST spring-forward gap)")
+        issues.add(path + key, value, F.FieldIssue(
+            "tool.zone_ambiguous", f"时区 {value!r}：{zh}，偏移是 {options[0]} 还是 {options[1]} 只有用户知道（出生证上的钟点按哪套时间记）。",
+            f"Zone {value!r}: {en}; whether the offset is {options[0]} or {options[1]} is something only the user knows.",
+            expected_zh="明确的偏移 ±HH:MM", expected_en="an explicit ±HH:MM offset", example=options[0], options=options, ask_user=True,
+        ))
+        return
+    out[key] = offset
+
+
+def _wall_time_ambiguity(payload: dict[str, Any], key: str) -> tuple[str, list[str]] | None:
+    """IANA 名 + 钟点 落在夏令时缺口 / 重叠里 → ('gap' | 'fold', [两个偏移])。上游覆盖表生效的日子不判（那里恒为一个偏移）。"""
+    from zoneinfo import ZoneInfo
+
+    reference = _reference_datetime_for_zone(payload, key)
+    if reference is None:
+        return None
+    name = _iana_name(f"{payload.get(key)}") or ""
+    if payload.get("zoneAdvisory") == "cn-unified" and name in _CN_UNIFY:
+        name = _CN_UNIFY[name]
+    if not name or _override_offset(name, reference[:3]) is not None:
+        return None
+    wall = _wall_datetime_for_offset(reference)
+    if wall is None:
+        return None
+    zone = ZoneInfo(name)
+    first, second = wall.replace(tzinfo=zone, fold=0), wall.replace(tzinfo=zone, fold=1)
+    off0, off1 = first.utcoffset(), second.utcoffset()
+    if off0 is None or off1 is None or off0 == off1:
+        return None
+
+    roundtrip = first.astimezone(UTC).astimezone(zone).replace(tzinfo=None)
+    kind = "fold" if roundtrip == wall else "gap"
+    return kind, [_format_offset_seconds(off0.total_seconds()), _format_offset_seconds(off1.total_seconds())]
+
+
+_YEAR_ONLY_RE = re.compile(r"^\d{4}$")
+
+
+def _parse_target_datetime(value: Any) -> F.Parsed:
+    """推运 / 返照的目标时刻：'YYYY'（那一年的返照 / 流年，由 enrich 按出生月日补全）、日期、日期 + 时刻（空格或 ISO 'T'）。"""
+    if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 9999:
+        return F.Parsed(f"{value:04d}")
+    text = F.clean_text(value)
+    if _YEAR_ONLY_RE.match(text):
+        return F.Parsed(text)
+    match = re.match(r"^(?P<date>\S+?)(?:(?:T|\s+)(?P<time>\S.*?))?(?P<offset>Z|[+-]\d{2}:?\d{2})?$", text, re.IGNORECASE)
+    issue = F.FieldIssue(
+        "tool.invalid_datetime", f"认不出目标时刻：{value!r}。", f"Unrecognized target datetime: {value!r}.",
+        expected_zh="YYYY（那一年）、YYYY-MM-DD 或 YYYY-MM-DD HH:MM[:SS]（也认 ISO 的 T）", expected_en="YYYY (that year), YYYY-MM-DD or YYYY-MM-DD HH:MM[:SS] (ISO 'T' accepted)",
+        example="2026-05-03 08:00:00",
+    )
+    if not match:
+        raise issue
+    try:
+        date = F.parse_date(match.group("date")).value
+        clock = F.parse_time(match.group("time")).value if match.group("time") else None
+    except F.FieldIssue as inner:
+        raise F.FieldIssue("tool.invalid_datetime", inner.zh, inner.en, expected_zh=issue.expected_zh, expected_en=issue.expected_en,
+                           example=issue.example, options=inner.options) from None
+    if match.group("offset"):
+        raise F.FieldIssue("tool.invalid_datetime", f"目标时刻 {value!r} 里带了时区：请把时区单独放进 dirZone。",
+                           f"Target datetime {value!r} carries a zone; put the zone in dirZone instead.",
+                           expected_zh=issue.expected_zh, expected_en=issue.expected_en, example=issue.example)
+    canonical = f"{date} {clock}" if clock else date
+    plain = text == canonical or _DATETIME_RE.match(text) is not None or _DATE_RE.match(text) is not None
+    return F.Parsed(canonical) if plain else F.Parsed(canonical, f"目标时刻「{text}」按 {canonical} 读。", f"Target datetime '{text}' was read as {canonical}.")
+
+
+def _lift_nested_party(out: dict[str, Any], fields: frozenset[str]) -> None:
+    """技法模型没有 `birth` / `subject` 却收到了（dispatch 的写法用在技法工具上）→ 里层字段提到顶层；顶层显式给的优先。"""
+    for key in ("birth", "subject"):
+        nested = out.get(key)
+        if key in fields or not isinstance(nested, dict):
+            continue
+        del out[key]
+        lifted = [name for name in nested if name not in out]
+        for name in lifted:
+            out[name] = nested[name]
+        F.add_input_note(f"`{key}` 里的字段按顶层参数读（{', '.join(lifted) or '无新增'}）。",
+                         f"Fields inside `{key}` were read as top-level arguments ({', '.join(lifted) or 'none new'}).")
+
+
+# 地点的常见别名 → `place`（审计 S-07）：模型写 city / location 时以前一律被当成「没人读的参数」，再让它去问用户时区和经纬度。
+PLACE_ALIASES = ("location", "city", "birthplace", "birth_place", "birthPlace", "出生地", "地点", "城市")
+
+
+def apply_field_aliases(payload: Any, *, model: Any = None) -> Any:
+    """别名改写提前到地名解析之前（审计 S-07 / F05）：地名解析先于归一化跑，别名若等到归一化才改，`city` 来不及变成 `place`，
+    `timezone` 也会被地名推出的时区顶掉（而规范名 `zone` 照用——同一个意思差一小时）。顶层与合盘双方各做一遍；改名进 warnings。"""
+    if not isinstance(payload, dict):
+        return payload
+    fields, _required = _model_fields(model)
+    out = dict(payload)
+    _apply_place_alias(out, path="", fields=fields)
+    _apply_aliases(out, path="", fields=fields)
+    for key in PARTY_KEYS:
+        if isinstance(out.get(key), dict):
+            party = dict(out[key])
+            _apply_place_alias(party, path=f"{key}.", fields=None)
+            _apply_aliases(party, path=f"{key}.", fields=None)
+            out[key] = party
+    return out
+
+
+def _apply_place_alias(out: dict[str, Any], *, path: str, fields: frozenset[str] | None) -> None:
+    for alias in PLACE_ALIASES:
+        if alias not in out or (fields is not None and alias in fields):
+            continue
+        value = out.pop(alias)
+        if not F.is_blank(out.get("place")) and out.get("place") != value:
+            F.add_input_note(f"`{path}{alias}` 与 `{path}place` 都给了且不同：按 `place`，`{alias}` 已忽略。",
+                             f"`{path}{alias}` and `{path}place` disagree; `place` was used and `{alias}` ignored.")
+            continue
+        out["place"] = value
+        F.add_input_note(f"参数 `{path}{alias}` 按地名 `{path}place` 读。", f"Argument `{path}{alias}` was read as the place name `{path}place`.")
+
+
+def _apply_aliases(out: dict[str, Any], *, path: str, fields: frozenset[str] | None) -> None:
+    aliases = {**FIELD_ALIASES, **(TARGET_ALIASES if fields is not None and "datetime" in fields else {})}
+    for alias, canonical in aliases.items():
+        if alias not in out or (fields is not None and (alias in fields or canonical not in fields)):
+            continue  # 模型自己声明了别名键，或根本没有规范键（改名只会把「没人读」的提示换成另一个名字）
+        value = out.pop(alias)
+        if canonical in out and out[canonical] is not None and out[canonical] != value:
+            F.add_input_note(f"`{path}{alias}` 与 `{path}{canonical}` 都给了且不同：按 `{canonical}`，`{alias}` 已忽略。",
+                             f"`{path}{alias}` and `{path}{canonical}` disagree; `{canonical}` was used and `{alias}` ignored.")
+            continue
+        out[canonical] = value
+        F.add_input_note(f"参数 `{path}{alias}` 按 `{path}{canonical}` 读。", f"Argument `{path}{alias}` was read as `{path}{canonical}`.")
+
+
+def _split_target_fields(out: dict[str, Any], *, path: str, issues: _Issues, fields: frozenset[str]) -> None:
+    """模型没有 datetime 却给了 datetime（起盘工具）→ 拆成 date + time；推运工具给了 year 而没给 datetime → datetime='YYYY'。"""
+    if "datetime" in out and "datetime" not in fields and "date" in fields:
+        value = out.pop("datetime")
+        if F.is_blank(value):
+            return
+        try:
+            parsed = F.parse_date(value)
+        except F.FieldIssue as issue:
+            issues.add(path + "datetime", value, issue)
+            return
+        if not parsed.extra.get("time"):
+            try:
+                parsed = F.parse_date(F.clean_text(value).split()[0])
+            except F.FieldIssue:
+                pass
+        if F.is_blank(out.get("date")):
+            out["date"] = value  # 交给下面的 date 校验（含拆出的 time / zone 的冲突判定）
+            F.add_input_note(f"`{path}datetime` 拆成 date / time 起盘。", f"`{path}datetime` was split into date / time.")
+        elif F.parse_date(out["date"]).value != parsed.value if _safe_date(out["date"]) else False:
+            issues.add(path + "datetime", value, F.FieldIssue(
+                "tool.field_conflict", f"`datetime`={value!r} 与 `date`={out['date']!r} 不是同一天。", f"`datetime`={value!r} and `date`={out['date']!r} are different days.",
+                expected_zh="只给 date + time", expected_en="give date + time only", example="1990-05-03",
+            ))
+    if "year" in out and "year" not in fields and "datetime" in fields and F.is_blank(out.get("datetime")):
+        out["datetime"] = out.pop("year")
+        F.add_input_note(f"`{path}year` 作为推运目标年（datetime）读。", f"`{path}year` was read as the target year (datetime).")
+
+
+def _safe_date(value: Any) -> bool:
+    try:
+        F.parse_date(value)
+        return True
+    except F.FieldIssue:
+        return False
+
+
+def _place_filled(records: list[dict[str, Any]] | None) -> frozenset[str]:
+    """顶层 `place` 解析补进来的键（坐标恒补，时区按日期补到的才算）：不是调用方写的，不报「不是本技法的参数」（审计 S-11：
+    万年历传 place 曾被告「gpsLat、gpsLon 不是本技法的参数」）。调用方自己给了坐标时 status 是 explicit_coordinates，不在此列。
+    records = PlaceAPI.pop_place_records 取走的记录（归一化之前就从载荷里摘掉了）。"""
+    record = next((item for item in records or [] if isinstance(item, dict) and "spot" not in item), None)
+    if record is None or record.get("status") != "resolved":
+        return frozenset()
+    keys = {"lat", "lon", "gpsLat", "gpsLon"}
+    if str(record.get("zone_source") or "").startswith("place"):
+        keys.add("zone")
+    return frozenset(keys)
+
+
+def _edit_distance(a: str, b: str, limit: int) -> int:
+    """Levenshtein，超过 limit 提前返回 limit + 1。"""
+    if abs(len(a) - len(b)) > limit:
+        return limit + 1
+    previous = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        current = [i]
+        for j, cb in enumerate(b, 1):
+            current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (ca != cb)))
+        if min(current) > limit:
+            return limit + 1
+        previous = current
+    return previous[-1]
+
+
+@lru_cache(maxsize=1)
+def _all_technique_fields() -> frozenset[str]:
+    from horosa_skill.engine.registry import TOOL_DEFINITIONS
+
+    return frozenset(name for definition in TOOL_DEFINITIONS.values() for name in definition.input_model.model_fields)
+
+
+def _near_miss(key: str, fields: frozenset[str]) -> str | None:
+    """`key` 是本技法某个参数写错了几个字 → 那个参数；多于一个同样近的不猜。忽略大小写与 _ / -；键长 ≥ 6 容 2 处差、4–5 容 1 处
+    （`tree` 与 `time` 差 2 处，是两回事）。别的技法真有的参数名不算写错（合参把八字的 byLon 交给紫微，`byLon` 与 `lon` 差 2 处）。
+    比 difflib 的相似度严：`direction` 与 `pdProjection` 相似度 0.76，却是两回事（pdchart 自己读 direction）。"""
+    norm = lambda text: text.lower().replace("_", "").replace("-", "")  # noqa: E731
+    wanted = norm(key)
+    if len(wanted) < 4 or key in _all_technique_fields():
+        return None
+    limit = 2 if len(wanted) >= 6 else 1
+    scored = sorted((_edit_distance(wanted, norm(name), limit), name) for name in fields if not name.startswith("_"))
+    best = [name for distance, name in scored if distance <= limit and distance == scored[0][0]]
+    return best[0] if len(best) == 1 else None
+
+
+def _report_unknown_keys(
+    out: dict[str, Any], fields: frozenset[str], filled_by_place: frozenset[str] = frozenset(), *, path: str = "",
+    issues: _Issues | None = None,
+) -> None:
+    # 恒星轨前端名 fixedStarOrb / fixedStarOrbMode：西占盘族（声明了后端名 starOrb 的模型）照读（chart_family.fixedStarOrbParamsFor、
+    # judgeLayerHeadless 双名回退），不是「没人读的键」。
+    read_aliases = CLASSICAL_UNDECLARED_FIELDS if "starOrb" in fields else ()
+    unknown = [key for key in out if key not in fields and key not in NON_TECHNIQUE_KEYS and key not in read_aliases
+               and key not in filled_by_place and not key.startswith("_")]
+    if not unknown:
+        return
+    vocabulary = sorted(fields | set(FIELD_ALIASES))
+    parts_zh, parts_en = [], []
+    for key in unknown:
+        match = difflib.get_close_matches(key, vocabulary, n=1, cutoff=0.75)
+        hint = FIELD_ALIASES.get(match[0], match[0]) if match else None
+        typo_of = _near_miss(key, fields) if out[key] is not None else None
+        if typo_of and issues is not None:
+            hint = typo_of
+            # 写错的是本技法的参数（审计 S-13）：照算就是拿缺省值算另一张盘、只附一句告警——拒绝，给最接近的合法键。
+            issues.add(path + key, out[key], F.FieldIssue(
+                "tool.unknown_argument",
+                f"`{path}{key}` 不是本技法的参数；是不是 `{path}{hint}`？照算会按 `{hint}` 的缺省值起盘。",
+                f"`{path}{key}` is not a parameter of this technique; did you mean `{path}{hint}`? Running as is would use `{hint}`'s default.",
+                expected_zh=f"`{hint}`", expected_en=f"`{hint}`", example={hint: out[key]},
+            ))
+            continue
+        parts_zh.append(f"`{key}`" + (f"（是不是 `{hint}`？）" if hint else ""))
+        parts_en.append(f"`{key}`" + (f" (did you mean `{hint}`?)" if hint else ""))
+    if not parts_zh:
+        return
+    F.add_input_note(
+        "这些参数不是本技法的参数，没有哪个设置读它们：" + "、".join(parts_zh) + "。",
+        "These arguments are not parameters of this technique and no setting reads them: " + ", ".join(parts_en) + ".",
+    )
+
+
+def field_issues_error(
+    issues: list[dict[str, Any]], *, extra_details: dict[str, Any] | None = None, tool_name: str | None = None,
+) -> ToolValidationError:
+    """逐字段问题表 → 一个 ToolValidationError。code = 第一个问题的码；每个字段一条恢复条目（不是整份闸门问卷）。
+    `tool_name` 给了：消息与 prompt_to_user 开头点名技法（显示名 + 注册表键），details.tool 记键。"""
+    first = issues[0]
+    must_ask = any(item.get("ask_user") for item in issues)
+    heading = technique_heading(tool_name)
+    # 同一句说明对几个字段都成立时（择日窗口的 startDate / endDate）只说一遍。
+    message = "\n".join([*([heading] if heading else []), *dict.fromkeys(item["message"] for item in issues)])
+    fix_fields = [{key: item[key] for key in ("field", "code", "got", "expected", "example", "options") if key in item} for item in issues]
+    details: dict[str, Any] = {
+        "field": first["field"], "got": first["got"], "expected": first["expected"], "example": first["example"],
+        **({"options": first["options"]} if first.get("options") else {}),
+        "fields": issues,
+        **({"tool": tool_name} if tool_name else {}),
+        **(extra_details or {}),
+        "agent_recovery": {
+            "kind": "input", "must_ask_user": must_ask, "reason": "invalid_field",
+            "next_action": "ask_user_then_retry" if must_ask else "fix_field_and_retry",
+            "fix_fields": fix_fields, "prompt_to_user": message,
+            # 与闸门 / 地名错误同名的键：只列要问用户的那些字段（问题原文 + 候选），客户端按同一套逻辑把它念给用户。
+            "ask_if_missing": [{"field": item["field"], "question": item["message"], **({"options": item["options"]} if item.get("options") else {})}
+                               for item in issues if item.get("ask_user")],
+        },
+    }
+    return ToolValidationError(message, code=first["code"], details=details)
+
+
+def tool_error_from_validation(exc: Any, *, tool_name: str, payload: dict[str, Any] | None = None) -> ToolValidationError:
+    """pydantic ValidationError（技法模型）→ 逐字段的结构化错误。缺字段：只有用户知道的事实标 ask_user；缺坐标的提示「或传 place」。
+    `horosa_field` 类错误（词表 / parse_* 挂在 schema 上的 BeforeValidator）还原成它自己的码。"""
+    from horosa_skill.errors import validation_errors
+
+    issues: list[dict[str, Any]] = []
+    for error in exc.errors(include_url=False):
+        loc = [str(part) for part in error.get("loc", ())]
+        field = ".".join(loc) or "(payload)"
+        leaf = loc[-1] if loc else ""
+        ctx = error.get("ctx") or {}
+        if error.get("type") == "horosa_field":
+            # 模型级前置校验（未声明的 extra 键，如恒星轨前端名 fixedStarOrb）没有 loc，字段名放在 ctx 里。
+            field = ctx.get("field") or field
+            entry = {"field": field, "code": ctx.get("code", "tool.invalid_option"), "got": _jsonable(error.get("input")),
+                     "expected": ctx.get("expected"), "example": ctx.get("example"), "ask_user": bool(ctx.get("ask_user")),
+                     "message": ctx.get("message") or error.get("msg")}
+            if ctx.get("options"):
+                entry["options"] = ctx["options"]
+        elif error.get("type") == "missing":
+            entry = _missing_entry(field, leaf, tool_name, payload or {})
+        else:
+            entry = {"field": field, "code": "tool.invalid_payload", "got": _jsonable(error.get("input")),
+                     "expected": error.get("msg"), "example": None, "ask_user": False,
+                     "message": bilingual(f"`{field}` 不合法：{error.get('msg')}", f"`{field}` is invalid: {error.get('msg')}")}
+        issues.append(entry)
+    if not issues:
+        issues.append({"field": "(payload)", "code": "tool.invalid_payload", "got": None, "expected": None, "example": None,
+                       "ask_user": False, "message": bilingual(f"`{tool_name}` 的入参不合法。", f"Invalid payload for `{tool_name}`.")})
+    codes = {item["code"] for item in issues}
+    error = field_issues_error(issues, extra_details={"errors": validation_errors(exc)}, tool_name=tool_name)
+    if len(codes) > 1 or codes & {"tool.invalid_payload", "tool.missing_field"}:
+        # 开头已点名技法（field_issues_error）；这里只把码收成一个。
+        error = ToolValidationError(str(error), code="tool.invalid_payload", details=error.details)
+    return error
+
+
+_MISSING_TEXT: dict[str, tuple[str, str, Any]] = {
+    "date": ("公历日期 YYYY-MM-DD", "the Gregorian date YYYY-MM-DD", "1990-05-03"),
+    "time": ("钟表时刻 HH:MM:SS", "the clock time HH:MM:SS", "08:30:00"),
+    "zone": ("时区：偏移 +08:00 或 IANA 名；或传 `place`（地名，连时区一起解析）", "the time zone: an offset such as +08:00 or an IANA name; or pass `place` (a place name also resolves the zone)", "+08:00"),
+    "lat": ("纬度 31n13 / 31.22；或传 `place`（地名）", "the latitude 31n13 / 31.22; or pass `place` (a place name)", "31n13"),
+    "lon": ("经度 121e28 / 121.47；或传 `place`（地名）", "the longitude 121e28 / 121.47; or pass `place` (a place name)", "121e28"),
+    "gender": ("性别 1 男 / 0 女", "the gender, 1 male / 0 female", 1),
+    # 卦义查询的 name 是卦名（审计 S-22：以前缺它时只说「缺 `name`：`name`」）
+    "name": ("卦名或卦码的列表（如 [\"乾\", \"既济\"]）", "a list of hexagram names or codes (e.g. [\"乾\", \"既济\"])", ["乾"]),
+    "q": ("检索词 q（事件 / 人物 / 术数名，取自用户的问题；按条件浏览请换 action，如 events / figures / timeline）",
+          "the search term q (an event, person or technique, taken from the user's question; to browse instead, use another action such as events / figures / timeline)",
+          "袁天罡"),
+}
+
+
+def missing_fields_error(fields: list[str] | tuple[str, ...], *, tool_name: str, payload: dict[str, Any]) -> ToolValidationError:
+    """模型里不必填、这次调用却要的字段（占时起课的时地、读时区的神数…）→ 与 pydantic「缺字段」同一份逐字段条目
+    （同一段说明、同样提示「或传 place」、用户才知道的事实标 ask_user），码 tool.missing_field；details.missing 列出字段名。"""
+    issues = [_missing_entry(name, name, tool_name, payload) for name in fields]
+    return field_issues_error(issues, extra_details={"missing": list(fields)}, tool_name=tool_name)
+
+
+def _is_cast_tool(tool_name: str | None) -> bool:
+    """起课类（time_roles 的 moment 角色：奇门 / 六壬 / 六爻 / 塔罗 / 卜卦 / 小六壬 …）。"""
+    if not tool_name:
+        return False
+    from horosa_skill.engine.time_roles import MOMENT, time_role
+
+    return time_role(tool_name) == MOMENT
+
+
+def _is_natal_tool(tool_name: str | None) -> bool:
+    """本命类（出生时刻起盘）：缺 time 就是「不知道出生钟点」。择日窗口的 time 是锚点、起课的 time 是此刻，不在此列。"""
+    if not tool_name:
+        return False
+    from horosa_skill.engine.time_roles import NATAL, NATAL_MOMENT, NATAL_TARGET, time_role
+
+    return time_role(tool_name) in (NATAL, NATAL_TARGET, NATAL_MOMENT)
+
+
+def _missing_entry(field: str, leaf: str, tool_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    zh, en, example = _MISSING_TEXT.get(leaf, (f"`{leaf}`", f"`{leaf}`", None))
+    ask = leaf in USER_FACT_FIELDS
+    if leaf in ("lat", "lon") and not F.is_blank(payload.get("pos")) and F.is_blank(payload.get("place")):
+        zh += f"（`pos`={payload.get('pos')!r} 只是盘头显示名，不解析坐标：要按地名起盘请传 `place`）"
+        en += f" (`pos`={payload.get('pos')!r} is a display label only and is not resolved; pass `place` to resolve a place name)"
+    resolution = payload.get("placeResolution") if isinstance(payload.get("placeResolution"), dict) else {}
+    if leaf == "zone" and resolution.get("zone_source") == "not_filled_no_date":
+        zh = "时区：给了 place，但这个技法没有日期，地名换算不出当天的 UTC 偏移（夏令时、历史改制）——请直接给 zone（如 +08:00）"
+        en = "the time zone: place was given, but this technique has no date, so the place cannot be turned into that day's UTC offset; pass zone (e.g. +08:00)"
+    if leaf in ("date", "time") and _is_cast_tool(tool_name):
+        # 起课的时刻是「此刻」（审计 F10）：以前沿用出生盘的话术（「缺 date：公历日期」，example 1990-05-03，ask_user:true），
+        # 等于让模型去问用户「今天几号」或照抄 1990 年的示例。服务端不拿自己的钟当用户的此刻（SKILL §4），由客户端传。
+        if leaf == "date":
+            zh = "起课日期：传用户提问那一刻的日期（你知道今天几号，不要问用户；用户说了别的时刻就用那个）"
+            en = "the casting date: pass the date of the moment the user asked (you know today's date; do not ask the user unless they named another moment)"
+            example = "YYYY-MM-DD"
+        else:
+            zh = "起课时间：传用户提问那一刻的钟点（你知道现在几点，不要问用户）"
+            en = "the casting time: pass the clock time of the moment the user asked (you know the current time; do not ask the user)"
+            example = "HH:MM"
+        ask = False
+    if leaf in ("inner", "outer"):
+        others = [key for key, value in payload.items() if isinstance(value, dict) and key not in ("inner", "outer")]
+        if others:
+            # 给了别的 dict 键（person1 / person2 …）：是键名问题，模型自己改。
+            zh = f"合盘两人：inner = 第一人（本人）、outer = 第二人，各带 {{date, time, zone, lat, lon}}；收到的 {others} 不是这两个键"
+            en = f"the two people: inner = the first person, outer = the second, each {{date, time, zone, lat, lon}}; {others} are not these keys"
+            example = {"date": "1990-05-03", "time": "08:00:00", "zone": "+08:00", "lat": "31n13", "lon": "121e28"}
+            ask = False
+        else:
+            # 整个人没给：那是只有用户知道的事实（审计 F11：以前标 ask_user=false 并给一组现成出生数据当示例，等于教模型自己编一个人）。
+            who = "第一个人（本人）" if leaf == "inner" else "第二个人"
+            zh = f"合盘需要{who}的出生日期、时间与地点：请向用户问（填 `{leaf}`：{{date, time, place}}）"
+            en = f"synastry needs the {'first' if leaf == 'inner' else 'second'} person's birth date, time and place: ask the user (as `{leaf}`: {{date, time, place}})"
+            example = {"date": "YYYY-MM-DD", "time": "HH:MM", "place": "城市 / city"}
+            ask = True
+    code = "tool.missing_field"
+    if leaf == "time" and _is_natal_tool(tool_name):
+        # 审计 F28：省略 time 与写「不详」以前两种码两种话（tool.invalid_payload「缺 time：钟表时刻」对 tool.time_unknown 一整段说明）——
+        # 省略才是最常见的「不知道」。同码同文案。
+        try:
+            F.parse_time("")
+        except F.FieldIssue as issue:
+            return {"field": field, "code": issue.code, "got": None, "expected": bilingual(zh, en), "example": "HH:MM", "ask_user": True,
+                    "message": bilingual(issue.zh, issue.en)}
+    if leaf == "time" and "time" in payload and F.is_blank(payload.get("time")):
+        code = "tool.time_unknown"
+    return {"field": field, "code": code, "got": None, "expected": bilingual(zh, en), "example": example, "ask_user": ask,
+            "message": bilingual(f"缺 `{field}`：{zh}。", f"Missing `{field}`: {en}.")}
+
+
+def _legacy_normalize(payload: Any) -> Any:
+    """v0.49 及以前的宽松归一（只认得的写法补齐格式，认不出原样留下）。只用在当事人位置以外的引擎结构上。"""
+    if isinstance(payload, list):
+        return [_legacy_normalize(item) for item in payload]
+    if not isinstance(payload, dict):
+        return payload
+    normalized = {key: _legacy_normalize(value) for key, value in payload.items()}
+    _normalize_date_like_fields(normalized)
+    _normalize_zone_fields(normalized)
+    _normalize_coordinate_fields(normalized)
+    _normalize_gender_field(normalized)
+    return normalized
+
+
+# 性别标签词表的唯一来源是 input_fields（service/_common._gender_label 经这两个名字读）。
+_GENDER_MALE_LABELS = F.GENDER_MALE_LABELS
+_GENDER_FEMALE_LABELS = F.GENDER_FEMALE_LABELS
+
+
+def _normalize_gender_field(payload: dict[str, Any]) -> None:
+    value = payload.get("gender")
+    if isinstance(value, bool):
+        payload["gender"] = 1 if value else 0
+        return
+    if not isinstance(value, str):
+        return
+    key = value.strip().lower()
+    if key in _GENDER_MALE_LABELS:
+        payload["gender"] = 1
+    elif key in _GENDER_FEMALE_LABELS:
+        payload["gender"] = 0
+
+
+def _normalize_date_like_fields(payload: dict[str, Any]) -> None:
+    for key in ("date", "datetime", "guaDate", "guaTime", "time"):
+        if key not in payload:
+            continue
+        normalized = _normalize_date_like_value(key, payload.get(key))
+        if normalized is not None:
+            payload[key] = normalized
+
+
+def _normalize_date_like_value(key: str, value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return text
+
+    if key in {"date", "guaDate"}:
+        return _normalize_date_value(text)
+    if key in {"time", "guaTime"}:
+        return _normalize_time_value(text)
+    if key == "datetime":
+        return _normalize_datetime_value(text)
+    return text
+
+
+def _normalize_date_value(text: str) -> str:
+    match = _DATE_RE.match(text)
+    if not match:
+        return text
+    year = int(match.group("year"))
+    sign = "-" if match.group("year").startswith("-") else ""
+    return f"{sign}{abs(year):04d}-{int(match.group('month')):02d}-{int(match.group('day')):02d}"
+
+
+def _normalize_time_value(text: str) -> str:
+    match = _TIME_RE.match(text)
+    if not match:
+        return text
+    second = int(match.group("second") or "0")
+    return f"{int(match.group('hour')):02d}:{int(match.group('minute')):02d}:{second:02d}"
+
+
+def _normalize_datetime_value(text: str) -> str:
+    match = _DATETIME_RE.match(text)
+    if not match:
+        return text
+    date_text = _normalize_date_value(match.group("date"))
+    time_text = _normalize_time_value(match.group("time"))
+    separator = "T" if "T" in match.group("sep") else " "
+    return f"{date_text}{separator}{time_text}"
+
+
+def _normalize_zone_fields(payload: dict[str, Any]) -> None:
+    for key in ("zone", "dirZone", "guaZone"):
+        if key not in payload:
+            continue
+        normalized = _normalize_zone_value(payload.get(key), payload=payload, key=key)
+        if normalized is not None:
+            payload[key] = normalized
+
+
+def _normalize_coordinate_fields(payload: dict[str, Any]) -> None:
+    for value_key, gps_key, axis in (
+        ("lat", "gpsLat", "lat"),
+        ("lon", "gpsLon", "lon"),
+        ("dirLat", None, "lat"),
+        ("dirLon", None, "lon"),
+        ("guaLat", None, "lat"),
+        ("guaLon", None, "lon"),
+    ):
+        raw_value = payload.get(value_key)
+        raw_decimal = _coerce_coordinate_decimal(raw_value)
+        if raw_decimal is not None:
+            payload[value_key] = _format_compact_coordinate(raw_decimal, axis=axis)
+
+        if not gps_key:
+            continue
+
+        gps_value = payload.get(gps_key)
+        gps_decimal = _coerce_coordinate_decimal(gps_value)
+        if gps_decimal is None and raw_decimal is not None:
+            payload[gps_key] = round(raw_decimal, 6)
+        elif gps_decimal is not None:
+            payload[gps_key] = round(gps_decimal, 6)
+            if raw_value is None:
+                payload[value_key] = _format_compact_coordinate(gps_decimal, axis=axis)
+
+
+def _normalize_zone_value(value: Any, *, payload: dict[str, Any] | None = None, key: str = "zone") -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return _format_zone_offset(float(value))
+
+    text = str(value).strip()
+    if not text:
+        return text
+
+    iana_offset = _normalize_iana_zone_value(text, payload=payload, key=key)
+    if iana_offset is not None:
+        return iana_offset
+
+    offset_text = text.upper().replace("UTC", "").replace("GMT", "").strip()
+    if offset_text in ("", "Z"):
+        # Bare UTC / GMT / Z (and "UTC"/"GMT" alone) -> canonical zero offset.
+        return "+00:00"
+    if ":" not in offset_text:
+        compact_match = re.fullmatch(r"(?P<sign>[+-]?)(?P<digits>\d{3,4})", offset_text)
+        if compact_match:
+            sign = compact_match.group("sign") or "+"
+            digits = compact_match.group("digits")
+            hours = int(digits[:-2])
+            minutes = int(digits[-2:])
+            if minutes < 60:
+                return _format_zone_offset((-1 if sign == "-" else 1) * (hours + minutes / 60))
+    match = _ZONE_HM_RE.match(offset_text)
+    if not match:
+        if _DECIMAL_RE.match(offset_text):
+            return _format_zone_offset(float(offset_text))
+        return str(value)
+
+    sign = -1 if match.group("sign") == "-" else 1
+    hours = int(match.group("hours"))
+    minutes = int(match.group("minutes") or "0")
+    if minutes >= 60:
+        return str(value)
+    total_hours = sign * (hours + minutes / 60)
+    return _format_zone_offset(total_hours)
+
+
+# 中国大陆统一北京时间口径（上游 utils/timezone.js:124-151 unifyCnZone，horosa_tz_cn_unified_v1）：IANA 把新疆
+# 划为 Asia/Urumqi（+06:00，民间「新疆时间」），而出生证/户籍/医院记录一律按法定北京时间。统一时间起点
+# （1949-10-01）之后 Asia/Urumqi → Asia/Shanghai，**只做 IANA 名归并、不写死偏移**（1986–1991 夏令时照常
+# 得 +09:00；统一前的新疆出生仍按 +06:00）。归并时在载荷里留 geoZone（原地理时区）+ zoneAdvisory='cn-unified'，
+# 技法卡与 warnings 据此回显。退出口：cnUnifiedZone=false（上游 kill-switch 是 localStorage 'horosa.tz.cnUnified'='0'），
+# 或直接给偏移 "+06:00"（偏移不归并）。
+_CN_UNIFIED_SINCE_YMD = (1949, 10, 1)
+_CN_UNIFY = {"Asia/Urumqi": "Asia/Shanghai"}
+_OPT_OUT_VALUES = (False, 0, "0", "false", "False", "no", "off")
+
+
+def _cn_unified_enabled(payload: dict[str, Any]) -> bool:
+    return payload.get("cnUnifiedZone") not in _OPT_OUT_VALUES
+
+
+# 上游 utils/timezone.js TZ_RULE_OVERRIDES 的逐值抄本（v0.48.0）：IANA 新规先于 ICU / tzdata 落地时的前瞻覆盖——
+# 当日（含）起恒为该偏移，只收「永久废除夏令时」类已立法规则。上游用它补 ICU，本仓用它补 zoneinfo（tzdata>=2025.2 的下限
+# 早于 2026b/2026c，系统 tzdata 更旧）：否则同一个 IANA 名在 2026-11-01 之后比星阙选点差 1 小时。
+# 守卫：tests/test_place_search.py 把本表与 vendored horosa-core-js/src/vendor/utils/timezone.js 逐条比对（vendored 文件
+# 又由 revendor --from-manifest 锁到上游），上游改表 → re-vendor → 测试红 → 改这里。
+_TZ_RULE_OVERRIDES: dict[str, tuple[tuple[tuple[int, int, int], str], ...]] = {
+    "America/Edmonton": (((2026, 11, 1), "-06:00"),),
+    "America/Vancouver": (((2026, 11, 1), "-07:00"),),
+    "Africa/Casablanca": (((2026, 9, 20), "+00:00"),),
+    "Africa/El_Aaiun": (((2026, 9, 20), "+00:00"),),
+}
+
+
+def _override_offset(zone: str, ymd: tuple[int, int, int]) -> str | None:
+    for since, offset in _TZ_RULE_OVERRIDES.get(zone, ()):
+        if ymd >= since:
+            return offset
+    return None
+
+
+def _normalize_iana_zone_value(text: str, *, payload: dict[str, Any] | None, key: str) -> str | None:
+    if "/" not in text:
+        return None
+    reference = _reference_datetime_for_zone(payload or {}, key)
+    unified_from: str | None = None
+    target = _CN_UNIFY.get(text)
+    # 上游：只有能解析出 YYYY-MM-DD 且早于起点才不归并（日期缺失照样归并——但缺日期本仓也算不出偏移，
+    # 下面 reference 为 None 时原样返回 None，不改 zone）。按 (年, 月, 日) 比较：strftime('%Y') 对四位以下的年
+    # 不补零（平台相关），字符串比较会把公元 100 年判成「晚于 1949」。
+    if (
+        target
+        and payload is not None
+        and _cn_unified_enabled(payload)
+        and reference is not None
+        and reference[:3] >= _CN_UNIFIED_SINCE_YMD
+    ):
+        unified_from, text = text, target
+    try:
+        zone = ZoneInfo(text)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+
+    if reference is None:
+        return None
+    if unified_from is not None and payload is not None:
+        payload.setdefault("geoZone", unified_from)
+        payload["zoneAdvisory"] = "cn-unified"
+    # 上游 offsetForZoneAtDate 先查覆盖表再问 Intl（同序）。
+    override = _override_offset(text, reference[:3])
+    if override is not None:
+        return override
+    wall = _wall_datetime_for_offset(reference)
+    offset = wall.replace(tzinfo=zone).utcoffset() if wall is not None else None
+    if offset is None:
+        return None
+    return _format_offset_seconds(offset.total_seconds())
+
+
+def _wall_datetime_for_offset(reference: tuple[int, int, int, int, int, int]) -> datetime | None:
+    """参照钟面 → datetime（只拿来问时区偏移）。年份按外推格里历读（上游 offsetForZoneAtDate 经 parseDateTimeMs 同口径）；
+    datetime 只认 1–9999 年：公元前 / 五位年平移整 400 年（外推格里历 400 年 = 146097 天、星期与闰年分布逐日重合，
+    时区规则得同一偏移；公元 1 年以前本就是地方平时 LMT）。2 月 29 日落在格里历平年 → 3 月 1 日（JS Date 同样进位）；
+    其余不存在的日子（2 月 30 日、13 月…）→ None（上游 parseDateTimeParts 同样拒收）。"""
+    year, month, day, hour, minute, second = reference
+    if year < 1:
+        year += 400 * ((1 - year + 399) // 400)
+    elif year > 9999:
+        year -= 400 * ((year - 9999 + 399) // 400)
+    try:
+        return datetime(year, month, day, hour, minute, second)
+    except ValueError:
+        if month == 2 and day == 29 and 0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59:
+            return datetime(year, 3, 1, hour, minute, second)
+        return None
+
+
+def _format_offset_seconds(total_seconds: float) -> str:
+    """UTC 偏移秒数 → '±HH:MM'，秒数舍去（上游 offsetForZoneAtDate 读 Intl longOffset 'GMT+01:34:52' 只取时、分）。
+    整分钟的时区与旧 round 口径逐字相同；地方平时（LMT，如雅典 +01:34:52、佛罗伦萨所在 Europe/Rome +00:49:56）
+    旧 round 进成 +01:35 / +00:50，与上游差一分钟。"""
+    sign = "+" if total_seconds >= 0 else "-"
+    hours, minutes = divmod(int(abs(total_seconds)) // 60, 60)
+    return f"{sign}{hours:02d}:{minutes:02d}"
+
+
+def _reference_datetime_for_zone(payload: dict[str, Any], key: str) -> tuple[int, int, int, int, int, int] | None:
+    if key == "guaZone":
+        reference = _combine_date_time(payload.get("guaDate"), payload.get("guaTime"))
+        if reference is not None:
+            return reference
+    if key == "dirZone":
+        reference = _parse_datetime_text(payload.get("datetime"))
+        if reference is not None:
+            return reference
+    return _combine_date_time(payload.get("date"), payload.get("time")) or _parse_datetime_text(payload.get("datetime"))
+
+
+def _combine_date_time(date_value: Any, time_value: Any) -> tuple[int, int, int, int, int, int] | None:
+    """(带符号显示年, 月, 日, 时, 分, 秒)；日期 / 时刻形状认不出、或数值越界（13 月、45 日、99 时）→ None。"""
+    if date_value is None or time_value is None:
+        return None
+    date_text = str(date_value).strip()
+    time_text = str(time_value).strip()
+    date_match = _DATE_RE.match(date_text)
+    time_match = _TIME_RE.match(time_text)
+    if not date_match or not time_match:
+        return None
+    reference = (
+        int(date_match.group("year")),
+        int(date_match.group("month")),
+        int(date_match.group("day")),
+        int(time_match.group("hour")),
+        int(time_match.group("minute")),
+        int(time_match.group("second") or "0"),
+    )
+    # The regexes accept digit-shaped but calendar-invalid values (month 13, day 45,
+    # hour 99, ...). Degrade like a regex miss instead of crashing normalization — the
+    # backend will reject the bad date with a structured param error.
+    return reference if _wall_datetime_for_offset(reference) is not None else None
+
+
+def _parse_datetime_text(value: Any) -> tuple[int, int, int, int, int, int] | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    match = _DATETIME_RE.match(text)
+    if not match:
+        return None
+    return _combine_date_time(match.group("date"), match.group("time"))
+
+
+def _format_zone_offset(offset_hours: float) -> str:
+    sign = "+" if offset_hours >= 0 else "-"
+    total_minutes = round(abs(offset_hours) * 60)
+    hours, minutes = divmod(total_minutes, 60)
+    return f"{sign}{hours:02d}:{minutes:02d}"
+
+
+# 上游 splitDegree 先把数字转成字符串再 parseInt 取度：|x| ≥ 1e21 时 JS 写成「1e+21」，度只剩首位数字（实测 convertLatToStr(1e21)
+# = '1n06'）；非有限值（NaN / ±Infinity）上游一律当 0 → '0n00'（一个真实存在的位置）。两者都不是坐标——这里不换算、原样交给校验层
+# 报 tool.invalid_payload（铁律：解析失败不许换成默认值），这是本节唯一一处有意不跟上游。
+_COORDINATE_DOMAIN = 1e21
+
+
+def _coerce_coordinate_decimal(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return _in_coordinate_domain(float(value))
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    compact_match = _COMPACT_COORD_RE.match(text)
+    if compact_match:
+        degrees = float(compact_match.group(1))
+        hemisphere = compact_match.group(2).lower()
+        minutes = float(compact_match.group(3))
+        decimal = degrees + minutes / 60
+        if hemisphere in {"s", "w"}:
+            decimal *= -1
+        return _in_coordinate_domain(decimal)
+
+    if _DECIMAL_RE.match(text):
+        return _in_coordinate_domain(float(text))
+    return None
+
+
+def _in_coordinate_domain(value: float) -> float | None:
+    return value if math.isfinite(value) and abs(value) < _COORDINATE_DOMAIN else None
+
+
+def _js_math_round(value: float) -> int:
+    """JS Math.round：最近的整数，恰在 .5 时向 +∞（Python round 是银行家舍入，floor(x + 0.5) 在 0.49999999999999994 上也会多进一）。"""
+    floor = math.floor(value)
+    return int(floor) + (1 if value - floor >= 0.5 else 0)
+
+
+def _format_compact_coordinate(decimal_value: float, *, axis: str) -> str:
+    """十进制度 → 罗盘串（31n13 / 121e28）。上游 components/astro/AstroHelper.js 的 convertLatToStr / convertLonToStr + splitDegree
+    逐步同构（utils/aiTools/normalize/geoCompass.js 是它的逐字抄本）：方向按**原值**符号判（-0 与 0 都是北 / 东，-0.12 是南 / 西）；
+    度取整；分**向下取整**；秒按 JS Math.round 取整；秒满 60 进 1 分、分满 60 进 1 度。旧实现把分四舍五入（31.2304 → 31n14，上游
+    31n13），差 1′ 进起盘请求。地名解析（service/api/place.py）与一般十进制入参都走这一个函数；守卫：tests/test_coordinate_text.py
+    （金标 = 上游 AstroHelper 在 node 里跑出）。"""
+    hemisphere = ("s" if axis == "lat" else "w") if decimal_value < 0 else ("n" if axis == "lat" else "e")
+    absolute = abs(decimal_value)
+    degrees = int(absolute)
+    minute = (absolute - degrees) * 60
+    minutes = math.floor(minute)
+    if _js_math_round((minute - minutes) * 60) == 60:
+        minutes += 1
+    if minutes == 60:
+        degrees += 1
+        minutes = 0
+    return f"{degrees}{hemisphere}{minutes:02d}"

@@ -1,0 +1,146 @@
+{
+  "_comment": "上游 preset 段级欠账基线（棘轮：只减不增）。回填后跑 --update-baseline 收紧。",
+  "source": {
+    "kind": "upstream",
+    "aiexport_settings_version": 65
+  },
+  "totals": {
+    "missing_sections": 8,
+    "extra_sections": 27,
+    "absent_keys": 0,
+    "keys_with_debt": 19
+  },
+  "keys": {
+    "acg": {
+      "missing": [],
+      "extra": [
+        "月宿",
+        "偕升纬度带",
+        "线交点",
+        "落点分析",
+        "事件时刻"
+      ]
+    },
+    "astrochart": {
+      "missing": [],
+      "extra": [
+        "月宿"
+      ]
+    },
+    "astrochart_like": {
+      "missing": [],
+      "extra": [
+        "月宿"
+      ]
+    },
+    "cetian": {
+      "missing": [],
+      "extra": [
+        "判词原文"
+      ]
+    },
+    "draconic": {
+      "missing": [],
+      "extra": [
+        "月宿"
+      ]
+    },
+    "dwadasamsa": {
+      "missing": [],
+      "extra": [
+        "月宿"
+      ]
+    },
+    "extrareturns": {
+      "missing": [],
+      "extra": [
+        "日月返照年表"
+      ]
+    },
+    "fengshui": {
+      "missing": [
+        "风水·玄空六法",
+        "风水·命理派",
+        "风水·综合罗经",
+        "风水·大玄空",
+        "风水·水龙平洋",
+        "风水·改造化煞",
+        "风水·阳宅判断"
+      ],
+      "extra": []
+    },
+    "geomancy": {
+      "missing": [],
+      "extra": [
+        "起卦信息",
+        "十六卦目录"
+      ]
+    },
+    "harmonic": {
+      "missing": [],
+      "extra": [
+        "月宿",
+        "调波位置",
+        "同频合相"
+      ]
+    },
+    "hellenastro": {
+      "missing": [],
+      "extra": [
+        "月宿"
+      ]
+    },
+    "indiachart": {
+      "missing": [],
+      "extra": [
+        "未能计算"
+      ]
+    },
+    "indiazeri": {
+      "missing": [],
+      "extra": [
+        "未能计算"
+      ]
+    },
+    "persiandirected": {
+      "missing": [],
+      "extra": [
+        "指定日期向运盘"
+      ]
+    },
+    "primarydirchart": {
+      "missing": [],
+      "extra": [
+        "本命盘星与虚点",
+        "主限法盘星体表格",
+        "主限法盘相位"
+      ]
+    },
+    "primarydirect": {
+      "missing": [
+        "主限天球·当前动画所指"
+      ],
+      "extra": [
+        "本命盘星与虚点"
+      ]
+    },
+    "relocation": {
+      "missing": [],
+      "extra": [
+        "月宿"
+      ]
+    },
+    "tianxing": {
+      "missing": [],
+      "extra": [
+        "单时判读"
+      ]
+    },
+    "transformchart": {
+      "missing": [],
+      "extra": [
+        "月宿"
+      ]
+    }
+  }
+}

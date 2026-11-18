@@ -1,0 +1,76 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+
+test('loadChatBootstrap throws instead of returning empty bootstrap on request failure', async () => {
+    const browserApiModule = require('../lib/browser-api') as typeof import('../lib/browser-api');
+    const bootstrapPath = require.resolve('../lib/chat/bootstrap');
+    const originalRequestBrowserJson = browserApiModule.requestBrowserJson;
+
+    browserApiModule.requestBrowserJson = async () => ({
+        data: null,
+        error: { message: '加载失败' },
+    });
+
+    try {
+        delete require.cache[bootstrapPath];
+        const { loadChatBootstrap } = require('../lib/chat/bootstrap') as typeof import('../lib/chat/bootstrap');
+        await assert.rejects(loadChatBootstrap(), {
+            message: '加载失败',
+        });
+    } finally {
+        browserApiModule.requestBrowserJson = originalRequestBrowserJson;
+        delete require.cache[bootstrapPath];
+    }
+});
+
+test('getCurrentUserProfileBundle throws instead of returning null on request failure', async () => {
+    const browserApiModule = require('../lib/browser-api') as typeof import('../lib/browser-api');
+    const profilePath = require.resolve('../lib/user/profile');
+    const originalRequestBrowserJson = browserApiModule.requestBrowserJson;
+
+    browserApiModule.requestBrowserJson = async () => ({
+        data: null,
+        error: { message: '获取用户资料失败' },
+    });
+
+    try {
+        delete require.cache[profilePath];
+        const { getCurrentUserProfileBundle } = require('../lib/user/profile') as typeof import('../lib/user/profile');
+        await assert.rejects(getCurrentUserProfileBundle(), {
+            message: '获取用户资料失败',
+        });
+    } finally {
+        browserApiModule.requestBrowserJson = originalRequestBrowserJson;
+        delete require.cache[profilePath];
+    }
+});
+
+test('loadAdminClientAccessState surfaces profile loading failures instead of downgrading to non-admin', async () => {
+    const authModule = require('../lib/auth') as typeof import('../lib/auth');
+    const profileModule = require('../lib/user/profile') as typeof import('../lib/user/profile');
+    const adminClientPath = require.resolve('../lib/admin/client');
+    const originalGetSession = authModule.getSession;
+    const originalGetCurrentUserProfileBundle = profileModule.getCurrentUserProfileBundle;
+
+    (authModule as { getSession: typeof import('../lib/auth').getSession }).getSession = async () => ({
+        id: 'session-1',
+        userId: 'user-1',
+        expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+    } as Awaited<ReturnType<typeof originalGetSession>>);
+    (profileModule as { getCurrentUserProfileBundle: typeof import('../lib/user/profile').getCurrentUserProfileBundle }).getCurrentUserProfileBundle = async () => {
+        throw new Error('获取用户资料失败');
+    };
+
+    try {
+        delete require.cache[adminClientPath];
+        const { loadAdminClientAccessState } = require('../lib/admin/client') as typeof import('../lib/admin/client');
+        await assert.rejects(loadAdminClientAccessState(), {
+            message: '获取用户资料失败',
+        });
+    } finally {
+        (authModule as { getSession: typeof import('../lib/auth').getSession }).getSession = originalGetSession;
+        (profileModule as { getCurrentUserProfileBundle: typeof import('../lib/user/profile').getCurrentUserProfileBundle }).getCurrentUserProfileBundle = originalGetCurrentUserProfileBundle;
+        delete require.cache[adminClientPath];
+    }
+});

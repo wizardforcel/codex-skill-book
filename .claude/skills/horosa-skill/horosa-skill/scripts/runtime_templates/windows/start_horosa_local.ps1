@@ -1,0 +1,213 @@
+﻿try { [Console]::OutputEncoding = [Text.Encoding]::UTF8; [Console]::InputEncoding = [Text.Encoding]::UTF8 } catch { }
+$ErrorActionPreference = "Stop"
+
+$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RuntimeRoot = Join-Path $Root "..\\runtime\\windows"
+# Normalize (resolve the `..` + collapse separators) so these match the OS-canonical Get-Process .Path
+# in the PID-ownership checks below — an unnormalized path with `..` never -ieq's the running image path.
+$PythonBin = [System.IO.Path]::GetFullPath((Join-Path $RuntimeRoot "python\\python.exe"))
+$JavaBin = [System.IO.Path]::GetFullPath((Join-Path $RuntimeRoot "java\\bin\\java.exe"))
+$JarPath = [System.IO.Path]::GetFullPath((Join-Path $RuntimeRoot "bundle\\astrostudyboot.jar"))
+$ChartPort = if ($env:HOROSA_CHART_PORT) { $env:HOROSA_CHART_PORT } else { "8899" }
+$BackendPort = if ($env:HOROSA_SERVER_PORT) { $env:HOROSA_SERVER_PORT } else { "9999" }
+$LogRoot = if ($env:HOROSA_LOG_ROOT) { $env:HOROSA_LOG_ROOT } else { Join-Path $Root ".horosa-local-logs" }
+$RunTag = Get-Date -Format "yyyyMMdd_HHmmss"
+$LogDir = Join-Path $LogRoot $RunTag
+$PyOutLog = Join-Path $LogDir "astropy.stdout.log"
+$PyErrLog = Join-Path $LogDir "astropy.stderr.log"
+$JavaOutLog = Join-Path $LogDir "astrostudyboot.stdout.log"
+$JavaErrLog = Join-Path $LogDir "astrostudyboot.stderr.log"
+$PyBootstrapPath = Join-Path $LogDir "astropy_bootstrap.py"
+$PyPidPath = Join-Path $Root ".horosa_py.pid"
+$JavaPidPath = Join-Path $Root ".horosa_java.pid"
+
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+
+if (-not (Test-Path $PythonBin)) { throw "python runtime not found: $PythonBin" }
+if (-not (Test-Path $JavaBin)) { throw "java runtime not found: $JavaBin" }
+if (-not (Test-Path $JarPath)) { throw "astrostudyboot.jar not found: $JarPath" }
+# JDK 17's Windows launcher reads its own command line through the ANSI code page (GetCommandLineA): any character the
+# active code page cannot represent (CJK or Cyrillic on an en-US cp1252 machine) reaches Java as '?', `-jar` fails with
+# "Unable to access jarfile ...\horosa ?? lane\..." and only the chart service comes up (v0.38.1 runtime-matrix lanes, work
+# dir with CJK). Java starts with -WorkingDirectory $Root, so hand it the jar RELATIVE to $Root: that path only walks our
+# own payload layout and is pure ASCII wherever the runtime is installed; user.dir and file IO inside the JVM are Unicode.
+$JarArg = '..\runtime\windows\bundle\astrostudyboot.jar'
+if (-not (Test-Path -LiteralPath (Join-Path $Root $JarArg))) { throw "astrostudyboot.jar not found relative to the launcher: $JarArg" }
+
+# Return the live process for a recorded PID ONLY if it still maps to our own runtime image.
+# Windows recycles PIDs aggressively, so a bare Stop-Process on a stale PID could hit an unrelated
+# process; matching on the expected exe path makes start/stop safe against PID reuse.
+function Get-OwnedProcess([string]$pidPath, [string]$expectedExe) {
+  if (-not (Test-Path $pidPath)) { return $null }
+  $pidText = (Get-Content $pidPath -Raw).Trim()
+  if (-not $pidText) { return $null }
+  $pidInt = 0
+  if (-not [int]::TryParse($pidText, [ref]$pidInt)) { return $null }
+  $proc = Get-Process -Id $pidInt -ErrorAction SilentlyContinue
+  if ($proc -and $proc.Path -and ($proc.Path -ieq $expectedExe)) { return $proc }
+  return $null
+}
+
+# Stale / already-running guard: if a PRIOR run's own processes are still alive (e.g. after a slow
+# start where the caller gave up but the children kept coming up), stop them first so we never
+# orphan them by clobbering their pid files below. Emit the marker string the runtime manager keys on.
+$priorPy = Get-OwnedProcess $PyPidPath $PythonBin
+$priorJava = Get-OwnedProcess $JavaPidPath $JavaBin
+if ($priorPy -or $priorJava) {
+  Write-Host "pid files already exist; stopping prior runtime before relaunch"
+  foreach ($p in @($priorPy, $priorJava)) { if ($p) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
+  Start-Sleep -Seconds 2
+}
+# Drop any pid files now (stale, or just-stopped) so a later stop never force-kills a recycled PID.
+foreach ($pidPath in @($PyPidPath, $JavaPidPath)) {
+  if (Test-Path $pidPath) { Remove-Item $pidPath -Force -ErrorAction SilentlyContinue }
+}
+
+# Port-collision guard: fail fast with a clear, actionable message instead of waiting out the full
+# readiness deadline when something else already holds the chart/backend port.
+function Test-PortListening([int]$port) {
+  return [bool](Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
+}
+foreach ($pc in @(@{ Name = "chart"; Port = [int]$ChartPort }, @{ Name = "backend"; Port = [int]$BackendPort })) {
+  if (Test-PortListening $pc.Port) {
+    $holder = Get-NetTCPConnection -State Listen -LocalPort $pc.Port -ErrorAction SilentlyContinue | Select-Object -First 1
+    $holderPid = if ($holder) { $holder.OwningProcess } else { "?" }
+    throw ("port {0} ({1} service) already in use by PID {2}; stop that process or set HOROSA_CHART_PORT / HOROSA_SERVER_PORT to free ports before starting" -f $pc.Port, $pc.Name, $holderPid)
+  }
+}
+
+$AstropyRoot = Join-Path $Root "astropy"
+$FlatlibRoot = Join-Path $Root "flatlib-ctrad2"
+$VendorRoot = Join-Path $Root "vendor"
+$ChartEntry = Join-Path $AstropyRoot "websrv\\webchartsrv.py"
+
+if (-not $env:HOME) {
+  if ($env:USERPROFILE) {
+    $env:HOME = $env:USERPROFILE
+  } else {
+    $env:HOME = [Environment]::GetFolderPath("UserProfile")
+  }
+}
+if (-not $env:USERPROFILE) {
+  $env:USERPROFILE = $env:HOME
+}
+if (-not $env:HOMEDRIVE) {
+  $Drive = [System.IO.Path]::GetPathRoot($env:USERPROFILE)
+  if ($Drive) {
+    $env:HOMEDRIVE = $Drive.TrimEnd('\')
+  }
+}
+if (-not $env:HOMEPATH -and $env:HOMEDRIVE) {
+  $env:HOMEPATH = $env:USERPROFILE.Substring($env:HOMEDRIVE.Length)
+}
+
+$env:HOROSA_CHART_PORT = $ChartPort
+# vendor/ carries the ken engines (kinqimen/kintaiyi/kinjinkou) the chart service mounts;
+# keep it on PYTHONPATH to mirror the macOS launcher's PYTHONPATH_ASTRO.
+$env:PYTHONPATH = "{0};{1};{2}" -f $AstropyRoot, $FlatlibRoot, $VendorRoot
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+# Swiss Ephemeris keeps its state (ephemeris path, open files) per THREAD on Windows (sweodef.h declares it TLS
+# on every platform but __APPLE__; MSVC builds get __declspec(thread)). Upstream v3.11.2's ephemeris-path fast path remembers "path set"
+# process-wide, so CherryPy pool threads never set it, look in the default \sweph\ephe\ and cannot open the
+# asteroid files: Chiron/Ceres vanish and /chart answers "param error" (v0.40.0 draft lanes). Keep it off here.
+$env:HOROSA_EPHE_PATH_FASTPATH = "0"
+# Also hand every thread the bundled ephemeris directory through the environment. A thread that never called
+# swe_set_ephe_path resolves its path on first use from SE_EPHE_PATH (libswe gives that variable priority over any
+# path argument) and otherwise falls back to the compiled-in default \sweph\ephe\ on the current drive. Upstream's
+# astroextra endpoints (ephemeris without transits, prenatal syzygy) call swisseph directly and never reach flatlib's
+# ensureEphePath, so with only the switch above a pool thread that had not yet served a flatlib request computed them
+# from \sweph\ephe\: Moshier on a clean machine, another program's old files where those exist (published v0.40.0 on
+# the Windows maintainer box: 39 of 40 cold-start ephemeris responses off the bundled reference). It is the directory
+# flatlib already passes to set_ephe_path, and the upstream desktop launcher sets the same variable.
+$env:SE_EPHE_PATH = [System.IO.Path]::GetFullPath((Join-Path $FlatlibRoot "flatlib\resources\swefiles"))
+if (-not (Test-Path -LiteralPath $env:SE_EPHE_PATH -PathType Container)) { throw "Swiss Ephemeris files not found: $env:SE_EPHE_PATH" }
+
+# Paths are embedded as JSON string literals (a JSON string is a valid Python string literal): the old
+# r"$Var" form breaks on a trailing backslash or an embedded quote. Keep every literal here ASCII.
+$PyBootCode = @"
+import runpy
+import sys
+
+for path in [$(ConvertTo-Json $FlatlibRoot -Compress), $(ConvertTo-Json $AstropyRoot -Compress), $(ConvertTo-Json $VendorRoot -Compress)]:
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+runpy.run_path($(ConvertTo-Json $ChartEntry -Compress), run_name="__main__")
+"@
+Set-Content -LiteralPath $PyBootstrapPath -Value $PyBootCode -Encoding utf8
+
+# Start-Process joins -ArgumentList elements with spaces and does NOT quote them: a runtime root under
+# C:\Users\John Doe\... split the bootstrap path in two and neither service ever started (v0.38.0 B1).
+# Every path element is wrapped in its own double quotes; --key=value flags carry no spaces and stay bare.
+$PyProc = Start-Process -FilePath $PythonBin -ArgumentList ('"{0}"' -f $PyBootstrapPath) -WorkingDirectory $Root -RedirectStandardOutput $PyOutLog -RedirectStandardError $PyErrLog -PassThru -WindowStyle Hidden
+# -Dfile.encoding/-Dsun.jnu.encoding=UTF-8: the bundled Temurin 17 is pre-JEP-400 and defaults to the
+# OS code page (Cp1252/Cp936 on Windows), which cannot represent CJK; pin UTF-8 so any jar resource the
+# backend reads via a charset-defaulting API (star/格局/神煞 tables) is decoded correctly. No-op on a
+# healthy run; eliminates the whole JDK-17 codepage class of bug.
+# --server.address=127.0.0.1: Spring Boot binds 0.0.0.0 by default, which on Windows means a Firewall
+# prompt on first start and a backend reachable from the LAN; the macOS launcher already pins loopback.
+$JavaProc = Start-Process -FilePath $JavaBin -ArgumentList "-Dfile.encoding=UTF-8", "-Dsun.jnu.encoding=UTF-8", "-jar", ('"{0}"' -f $JarArg), "--server.port=$BackendPort", "--server.address=127.0.0.1", "--astrosrv=http://127.0.0.1:$ChartPort", "--mongodb.ip=127.0.0.1", "--redis.ip=127.0.0.1" -WorkingDirectory $Root -RedirectStandardOutput $JavaOutLog -RedirectStandardError $JavaErrLog -PassThru -WindowStyle Hidden
+
+$PyProc.Id | Set-Content -Encoding utf8 $PyPidPath
+$JavaProc.Id | Set-Content -Encoding utf8 $JavaPidPath
+
+# Readiness: full success needs BOTH the Python chart service (:8899) and the Java backend (:9999),
+# but a dead/blocked Java backend must not lock out the chart-only techniques (issue #14: WFP filters
+# from proxy/VPN/security software can veto JDK-17's AF_UNIX loopback pipes, killing the jar during
+# Spring bean construction with no console output). Contract, kept in lockstep with the runtime
+# manager's readiness handling (`manager._run_start_command` accepts chart-up/java-down as degraded):
+#   - both ready              -> exit 0 ("services are ready.")
+#   - chart ready, java DEAD  -> exit 0 degraded immediately (marker line + java log tails below)
+#   - chart ready, java slow  -> exit 0 degraded at deadline (Mongo/Redis boot retries can exceed the
+#                                window on a bare box; java may still become ready afterwards)
+#   - chart not ready         -> throw (real failure)
+$Deadline = (Get-Date).AddSeconds(300)
+$ChartReady = $false
+$JavaGaveUp = $false
+while ((Get-Date) -lt $Deadline) {
+  $ChartReady = $false
+  $BackendReady = $false
+  try {
+    $chartRsp = Invoke-WebRequest -Uri "http://127.0.0.1:$ChartPort/" -UseBasicParsing -TimeoutSec 2
+    $ChartReady = $chartRsp.StatusCode -lt 500
+  } catch {}
+  if (-not $JavaGaveUp) {
+    try {
+      $backendRsp = Invoke-WebRequest -Uri "http://127.0.0.1:$BackendPort/common/time" -UseBasicParsing -TimeoutSec 2
+      $BackendReady = $backendRsp.StatusCode -lt 500
+    } catch {}
+    if (-not $BackendReady -and $JavaProc.HasExited) {
+      # The jar died before ever becoming ready. Its log4j appenders die with it, so tail the
+      # captured std streams here — the runtime manager stores this output for doctor/diagnosis.
+      $JavaGaveUp = $true
+      Write-Host "java backend process exited before becoming ready (exit code $($JavaProc.ExitCode))"
+      foreach ($lg in @($JavaErrLog, $JavaOutLog)) {
+        if (Test-Path $lg) {
+          Write-Host "---- tail: $lg ----"
+          Get-Content $lg -Tail 40 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+        }
+      }
+    }
+  }
+  if ($ChartReady -and $BackendReady) {
+    Write-Host "services are ready."
+    Write-Host "backend:  http://127.0.0.1:$BackendPort"
+    Write-Host "chartpy:  http://127.0.0.1:$ChartPort"
+    exit 0
+  }
+  if ($ChartReady -and $JavaGaveUp) {
+    Write-Host "degraded: chart-only (java backend exited; chart-side techniques remain available)"
+    Write-Host "chartpy:  http://127.0.0.1:$ChartPort"
+    exit 0
+  }
+  Start-Sleep -Seconds 1
+}
+
+if ($ChartReady) {
+  Write-Host "degraded: chart-only (java backend not ready within the window; Mongo/Redis boot retries are slow on machines without them - it may still become ready)"
+  Write-Host "chartpy:  http://127.0.0.1:$ChartPort"
+  exit 0
+}
+
+throw "Windows Horosa runtime did not become ready in time."

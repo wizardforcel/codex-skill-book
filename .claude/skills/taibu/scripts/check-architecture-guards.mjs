@@ -1,0 +1,1075 @@
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { join, resolve, relative, isAbsolute } from 'node:path';
+import { builtinModules } from 'node:module';
+import ts from 'typescript';
+
+const root = process.cwd();
+const failures = [];
+const missingInputs = new Set();
+
+function reportMissingInput(relativePath) {
+  if (!missingInputs.has(relativePath)) {
+    missingInputs.add(relativePath);
+    failures.push(`${relativePath}: required architecture input is missing`);
+  }
+}
+
+function read(relativePath) {
+  try {
+    return readFileSync(resolve(root, relativePath), 'utf8');
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    reportMissingInput(relativePath);
+    return null;
+  }
+}
+
+function walk(relativeDir, files = []) {
+  if (!existsSync(resolve(root, relativeDir))) {
+    reportMissingInput(relativeDir);
+    return files;
+  }
+
+  for (const entry of readdirSync(resolve(root, relativeDir), { withFileTypes: true })) {
+    if (entry.name.startsWith('.')) {
+      continue;
+    }
+
+    const nextPath = join(relativeDir, entry.name);
+    if (entry.isDirectory()) {
+      walk(nextPath, files);
+      continue;
+    }
+
+    files.push(nextPath);
+  }
+
+  return files;
+}
+
+function mustExist(relativePath, reason) {
+  if (!existsSync(resolve(root, relativePath))) {
+    failures.push(`${relativePath}: ${reason}`);
+  }
+}
+
+function mustNotExist(relativePath, reason) {
+  if (existsSync(resolve(root, relativePath))) {
+    failures.push(`${relativePath}: ${reason}`);
+  }
+}
+
+function mustMatch(relativePath, pattern, reason) {
+  const source = read(relativePath);
+  if (source !== null && !pattern.test(source)) {
+    failures.push(`${relativePath}: ${reason}`);
+  }
+}
+
+function mustNotMatch(relativePath, pattern, reason) {
+  const source = read(relativePath);
+  if (source !== null && pattern.test(source)) {
+    failures.push(`${relativePath}: ${reason}`);
+  }
+}
+
+function mustNotMatchInTree(relativeDir, pattern, reason, predicate = () => true) {
+  for (const file of walk(relativeDir)) {
+    if (!predicate(file)) {
+      continue;
+    }
+
+    const source = read(file);
+    if (source !== null && pattern.test(source)) {
+      failures.push(`${file}: ${reason}`);
+    }
+  }
+}
+
+mustExist('src/lib/hooks/session-context.tsx', 'session state should have a component-independent context entrypoint');
+mustNotMatchInTree(
+  'src/lib/hooks',
+  /from\s*['"]@\/components\/providers\/ClientProviders['"]/u,
+  'base hooks should depend on session-context instead of the provider composition component',
+  (file) => /\.(ts|tsx)$/u.test(file),
+);
+mustNotMatch(
+  'src/lib/chat/ConversationListContext.tsx',
+  /from\s*['"]@\/components\/providers\/ClientProviders['"]/u,
+  'conversation state should depend on the shared session context, not provider composition',
+);
+mustNotMatch(
+  'src/components/providers/ClientProviders.tsx',
+  /\bcreateContext\b/u,
+  'provider composition should reuse the extracted context instead of declaring another store',
+);
+
+mustExist('src/lib/auth.ts', 'browser auth should converge on the unified auth entrypoint');
+mustNotExist('src/lib/auth-client.ts', 'legacy browser auth client entrypoint should stay removed');
+mustNotExist('src/lib/data-sources/init.ts', 'data source side-effect init should stay removed');
+mustNotExist('src/lib/divination/qimen-shared.ts', 'legacy qimen shared adapter should stay removed');
+mustNotExist('src/lib/divination/liuyao-traditional.ts', 'legacy liuyao traditional adapter should stay removed');
+mustNotExist('src/app/api/notifications/launch/route.ts', 'legacy notifications launch route should stay removed after announcement split');
+mustNotExist('src/app/api/mbti/history/route.ts', 'legacy mbti history route should stay removed after history-summaries migration');
+mustNotExist('src/app/api/chat/title/route.ts', 'legacy chat title route should stay removed after draft-title convergence');
+mustNotExist('src/lib/title-utils.ts', 'legacy title helper should stay removed after draft-title convergence');
+mustNotExist('src/lib/user-charts.ts', 'duplicate chart browser helper should stay removed after charts-client convergence');
+mustNotExist('src/lib/admin/request.ts', 'thin admin request wrapper should stay removed after browser-api convergence');
+mustNotExist('src/app/admin/payment/page.tsx', 'legacy admin payment entry should stay removed after settings-center convergence');
+mustNotExist('src/app/user/orders/page.tsx', 'legacy user orders entry should stay removed after membership-center convergence');
+mustNotExist('src/app/user/settings/ai/page.tsx', 'legacy ai-settings alias page should stay removed after route convergence');
+mustNotExist('src/app/checkin/page.tsx', 'legacy checkin shell should stay removed after settings-center convergence');
+mustNotExist('src/app/help/page.tsx', 'legacy help shell should stay removed after settings-center convergence');
+mustNotExist('src/app/user/page.tsx', 'legacy user shell should stay removed after settings-center convergence');
+mustNotExist('src/app/admin/announcements/page.tsx', 'legacy admin announcements shell should stay removed after settings-center convergence');
+mustNotExist('src/app/admin/features/page.tsx', 'legacy admin features shell should stay removed after settings-center convergence');
+mustNotExist('src/app/admin/ai-services/page.tsx', 'legacy admin AI services shell should stay removed after settings-center convergence');
+mustNotExist('src/app/admin/mcp/page.tsx', 'legacy admin MCP shell should stay removed after settings-center convergence');
+mustNotExist('src/components/settings/SettingsRouteLauncher.tsx', 'legacy settings route launcher should stay removed after settings-center convergence');
+mustNotExist('src/components/admin/McpKeyManagementPanel.tsx', 'authenticated MCP key management should stay removed for the public MCP service');
+mustNotExist('src/app/api/admin/mcp-keys/route.ts', 'authenticated MCP admin key route should stay removed for the public MCP service');
+mustNotExist('src/app/api/user/mcp-key/route.ts', 'authenticated MCP user key route should stay removed for the public MCP service');
+mustNotExist('src/lib/mcp-keys.ts', 'authenticated MCP key storage helper should stay removed for the public MCP service');
+// Credits, tiers, activation keys and check-ins gave way to USD billing (src/lib/billing).
+for (const removed of [
+  'src/lib/user/credits.ts', 'src/lib/user/membership.ts', 'src/lib/user/membership-server.ts',
+  'src/lib/user/activation-keys.ts', 'src/lib/user/checkin.ts', 'src/app/api/checkin/route.ts',
+  'src/app/api/activation-keys/route.ts', 'src/app/api/credits/use/route.ts', 'src/app/api/credits/transactions/route.ts',
+  'src/app/api/user/membership/route.ts', 'src/lib/ai/web-search-access.ts', 'src/components/admin/KeyManagementPanel.tsx',
+]) mustNotExist(removed, 'credits and membership tiers were replaced by USD billing');
+
+// B6 破坏性迁移：bearer-only 路由鉴权已删除，所有接口统一走 requireUserContext。
+mustNotMatchInTree(
+  'src/app/api',
+  /requireBearerUser\(|authMethod\s*:/u,
+  'bearer-only route auth has been removed in favor of requireUserContext',
+);
+
+mustExist('database/schema.sql', 'current PostgreSQL table definitions must be deployable');
+mustExist('database/functions.sql', 'database functions must have a single current definition');
+mustExist('database/access.sql', 'RLS and grants must be explicit');
+mustNotMatch('database/schema.sql', /CREATE TABLE (?:auth\.users|taibu_meta\.schema_migrations)/u, 'database definitions must use Better Auth without a migration ledger');
+
+for (const page of ['src/app/meihua/page.tsx', 'src/app/xiaoliuren/page.tsx']) {
+  mustMatch(
+    page,
+    /<HistoryDrawer type="(?:meihua|xiaoliuren)"/u,
+    `${page} should reuse the shared history drawer`,
+  );
+  mustNotMatch(
+    page,
+    /router\.push\('\/(?:meihua|xiaoliuren)\/history'\)/u,
+    `${page} should not add a second history entry beside the shared drawer`,
+  );
+}
+
+// 小六壬起课表单由入口页与结果页（原地重新起课）共用，日期默认值随表单组件下沉。
+for (const form of ['src/app/meihua/page.tsx', 'src/components/xiaoliuren/XiaoliurenForm.tsx']) {
+  mustMatch(
+    form,
+    /import \{ toDateTimeLocalValue \} from '@\/lib\/date-utils';/u,
+    `${form} should reuse the shared local datetime formatter`,
+  );
+}
+
+mustNotMatch(
+  'src/app/api/mbti/route.ts',
+  /action === 'history'|action:\s*'[^']*history[^']*'/u,
+  'mbti route should not keep the legacy history action',
+);
+
+for (const file of [
+  'src/app/user/annual-report/page.tsx',
+  'src/app/bazi/result/page.tsx',
+  'src/app/ziwei/result/page.tsx',
+  'src/app/records/page.tsx',
+  'src/components/settings/panels/GeneralSettingsPanel.tsx',
+  'src/components/settings/panels/KnowledgeBasePanel.tsx',
+  'src/components/settings/panels/McpServicePanel.tsx',
+  'src/components/settings/panels/ProfilePanel.tsx',
+  'src/components/knowledge-base/AddToKnowledgeBaseModal.tsx',
+  'src/components/chat/composer/useComposerState.ts',
+  'src/lib/chat/use-chat-messaging.ts',
+  'src/lib/auth.ts',
+  'src/components/admin/FeatureTogglePanel.tsx',
+  'src/components/admin/billing/BillingCodesPanel.tsx',
+  'src/components/admin/AIModelPanel.tsx',
+  'src/components/admin/AnnouncementManagementPanel.tsx',
+  'src/components/admin/AIGatewayPanel.tsx',
+]) {
+  mustNotMatch(
+    file,
+    /Bearer\s*\$\{/u,
+    'browser code should rely on same-origin cookies instead of interpolated bearer headers',
+  );
+}
+
+mustMatch(
+  'src/lib/api-utils.ts',
+  /const resolvedAuthResult = dependencies\.userContext \?\? await requireUserContext\(request\);/u,
+  'requireAdminUser should be based on requireUserContext',
+);
+mustNotMatch(
+  'src/lib/api-utils.ts',
+  /getServiceRoleClient/u,
+  'stale service-role naming should stay removed',
+);
+mustNotMatch(
+  'src/lib/api-utils.ts',
+  /const serviceClient = getSystemAdminClient\(\);/u,
+  'requireAdminUser should not create a service-role client directly',
+);
+
+mustMatch(
+  'src/lib/server/ai-config.ts',
+  /import 'server-only';/u,
+  'server ai-config should stay marked as server-only',
+);
+mustMatch(
+  'src/lib/server/ai-config.ts',
+  /systemDb/u,
+  'server ai-config should use the shared privileged server client',
+);
+
+
+mustMatch(
+  'src/app/api/models/route.ts',
+  /from ['"]@\/lib\/server\/ai-config['"]/u,
+  'models route should use the server ai-config module',
+);
+
+mustMatch(
+  'src/app/api/chat/route.ts',
+  /from ['"]@\/lib\/server\/chat\/request['"]/u,
+  'chat route should delegate request preparation to the shared server helper',
+);
+mustMatch(
+  'src/app/api/chat/route.ts',
+  /prepareChatRequest\(/u,
+  'chat route should call prepareChatRequest',
+);
+mustMatch(
+  'src/app/api/chat/route.ts',
+  /callAIUIMessageResult\(/u,
+  'chat route should call callAIUIMessageResult for streaming',
+);
+mustMatch(
+  'src/lib/server/chat/request.ts',
+  /import 'server-only';/u,
+  'chat request helper should stay server-only',
+);
+mustMatch(
+  'src/lib/server/chat/prompt-context.ts',
+  /import 'server-only';/u,
+  'chat prompt context helper should stay server-only',
+);
+mustMatch(
+  'src/app/chat/page.tsx',
+  /useChatBootstrap/u,
+  'chat page should load bootstrap state through the shared hook',
+);
+mustNotMatch(
+  'src/app/chat/page.tsx',
+  /getMembershipInfo\(/u,
+  'chat page should not fetch membership directly',
+);
+mustNotMatch(
+  'src/app/chat/page.tsx',
+  /getCurrentUserProfileBundle\(/u,
+  'chat page should not fetch the profile bundle directly',
+);
+mustNotMatch(
+  'src/app/chat/page.tsx',
+  /fetch\((['"])\/api\/knowledge-base\1/u,
+  'chat page should not fetch knowledge bases directly',
+);
+
+mustMatch(
+  'src/lib/divination/tarot.ts',
+  /from ['"]taibu-core\/tarot['"]/u,
+  'tarot wrapper should import tarot APIs from the tarot domain subpath',
+);
+mustNotMatch(
+  'src/lib/divination/tarot.ts',
+  /from ['"]taibu-core['"]/u,
+  'tarot wrapper should not import the root core entry',
+);
+mustMatch(
+  'src/lib/divination/daliuren.ts',
+  /from ['"]taibu-core\/daliuren['"]/u,
+  'daliuren wrapper should import daliuren APIs from the daliuren domain subpath',
+);
+mustNotMatch(
+  'src/lib/divination/daliuren.ts',
+  /from ['"]taibu-core\/daliuren-core['"]/u,
+  'daliuren wrapper should not depend on the removed daliuren-core subpath',
+);
+mustMatch(
+  'src/app/api/daliuren/route.ts',
+  /from ['"]@\/lib\/divination\/daliuren['"]/u,
+  'daliuren route should use the daliuren wrapper',
+);
+mustMatch(
+  'src/lib/divination/qimen.ts',
+  /from ['"]taibu-core\/qimen['"]/u,
+  'qimen wrapper should import the qimen domain subpath',
+);
+mustNotMatch(
+  'src/lib/divination/qimen.ts',
+  /from ['"]taibu-core['"]/u,
+  'qimen wrapper should not import the root core entry',
+);
+mustMatch(
+  'src/app/api/daliuren/route.ts',
+  /const\s+\{[^}]*timezone[^}]*\}\s*=\s*body/u,
+  'daliuren calculate action should extract timezone from the request body',
+);
+mustMatch(
+  'src/app/api/daliuren/route.ts',
+  /calculateDaliurenBundle\(\{[\s\S]*timezone[\s\S]*\}\)/u,
+  'daliuren route should forward timezone into the daliuren wrapper calculate call',
+);
+mustMatch(
+  'src/lib/divination/liuyao.ts',
+  /from ['"]taibu-core\/liuyao['"]/u,
+  'liuyao web adapter should import shared liuyao helpers from the liuyao domain subpath',
+);
+mustMatch(
+  'src/app/api/liuyao/route.ts',
+  /from ['"]@\/lib\/divination\/liuyao['"]/u,
+  'liuyao route should use the liuyao wrapper',
+);
+mustMatch(
+  'src/app/liuyao/result/page.tsx',
+  /from ['"]@\/lib\/divination\/liuyao['"]/u,
+  'liuyao result page should use the liuyao wrapper',
+);
+mustMatch(
+  'src/lib/data-sources/liuyao.ts',
+  /from ['"]@\/lib\/divination\/liuyao['"]/u,
+  'liuyao data source should use the liuyao wrapper',
+);
+mustMatch(
+  'src/lib/divination/liuyao.ts',
+  /taibu-core\/data\/hexagrams/u,
+  'liuyao web adapter should import shared hexagram data from core',
+);
+mustMatch(
+  'src/lib/divination/liuyao.ts',
+  /taibu-core\/data\/shensha/u,
+  'liuyao web adapter should import shared shensha data from core',
+);
+mustNotMatch(
+  'src/lib/divination/liuyao.ts',
+  /packages\/core\/dist\//u,
+  'liuyao web adapter should not import package dist files directly',
+);
+mustMatch(
+  'src/lib/divination/bazi.ts',
+  /from ['"]taibu-core\/bazi['"]/u,
+  'bazi wrapper should import bazi APIs from the bazi domain subpath',
+);
+mustMatch(
+  'src/lib/divination/bazi.ts',
+  /from ['"]taibu-core\/bazi-dayun['"]/u,
+  'bazi wrapper should import dayun APIs from the bazi-dayun domain subpath',
+);
+mustNotMatch(
+  'src/lib/divination/bazi.ts',
+  /from ['"]taibu-core['"]/u,
+  'bazi wrapper should not import the root core entry',
+);
+mustMatch(
+  'src/lib/divination/ziwei.ts',
+  /from ['"]taibu-core\/ziwei['"]/u,
+  'ziwei wrapper should import chart APIs from the ziwei domain subpath',
+);
+mustMatch(
+  'src/lib/divination/ziwei.ts',
+  /from ['"]taibu-core\/ziwei-horoscope['"]/u,
+  'ziwei wrapper should import horoscope APIs from the ziwei-horoscope subpath',
+);
+mustNotMatch(
+  'src/lib/divination/ziwei.ts',
+  /from ['"]taibu-core['"]/u,
+  'ziwei wrapper should not import the root core entry',
+);
+mustMatch(
+  'src/app/qimen/result/page.tsx',
+  /from ['"]@\/lib\/divination\/qimen['"]/u,
+  'qimen result page should import qimen helpers from the qimen wrapper',
+);
+mustMatch(
+  'src/app/daliuren/result/page.tsx',
+  /from ['"]@\/lib\/divination\/daliuren['"]/u,
+  'daliuren result page should import daliuren formatters from the daliuren wrapper',
+);
+
+mustMatch(
+  'src/app/qimen/result/page.tsx',
+  /import\s*\{[\s\S]*buildQimenCanonicalJSON[\s\S]*generateQimenChartText[\s\S]*\}\s*from ['"]@\/lib\/divination\/qimen['"]/u,
+  'qimen result page should use the qimen wrapper canonical/text helpers',
+);
+mustNotMatch(
+  'src/app/qimen/result/page.tsx',
+  /from ['"]@\/lib\/divination\/qimen-shared['"]/u,
+  'qimen result page should not depend on qimen-shared',
+);
+mustNotMatch(
+  'src/app/qimen/result/page.tsx',
+  /import\s*\{\s*generateQimenResultText[^}]*\}\s*from ['"]@\/lib\/divination\/qimen['"]/u,
+  'qimen result page should not import runtime copy helpers from the server-only qimen module',
+);
+mustMatch(
+  'src/app/api/qimen/route.ts',
+  /import\s*\{[\s\S]*calculateQimenBundle[\s\S]*\}\s*from ['"]@\/lib\/divination\/qimen['"]/u,
+  'qimen route should use the qimen wrapper',
+);
+mustNotMatch(
+  'src/app/api/qimen/route.ts',
+  /from ['"]@\/lib\/divination\/qimen-shared['"]/u,
+  'qimen route should not depend on qimen-shared',
+);
+mustMatch(
+  'src/lib/data-sources/qimen.ts',
+  /import\s*\{[\s\S]*toQimenText[\s\S]*\}\s*from ['"]taibu-core\/qimen['"]/u,
+  'qimen data source should use direct core qimen text renderer',
+);
+mustNotMatch(
+  'src/lib/data-sources/qimen.ts',
+  /from ['"]@\/lib\/divination\/qimen-shared['"]/u,
+  'qimen data source should not depend on qimen-shared',
+);
+
+mustNotMatch(
+  'src/lib/chat/conversation.ts',
+  /from ['"]@\/lib\/auth['"]/u,
+  'conversation client should use HTTP APIs instead of browser auth DB access',
+);
+mustMatch(
+  'src/lib/chat/conversation.ts',
+  /\/api\/conversations/u,
+  'conversation client should target the dedicated conversations API',
+);
+
+
+mustNotMatch(
+  'src/app/user/notifications/page.tsx',
+  /FeatureGate/u,
+  'user notifications page should remain directly accessible even when entry links are hidden',
+);
+mustNotMatch(
+  'src/lib/navigation/registry.ts',
+  /NAV_TO_FEATURE_ID/u,
+  'navigation registry should not re-export the removed NAV_TO_FEATURE_ID shim',
+);
+mustNotMatch(
+  'src/lib/user/settings.ts',
+  /DEFAULT_TOOL_ORDER\s*=\s*\[[^\]]*'daily'/u,
+  'default tool order should not list daily as a tool entry',
+);
+mustNotMatch(
+  'src/lib/user/settings.ts',
+  /DEFAULT_TOOL_ORDER\s*=\s*\[[^\]]*'monthly'/u,
+  'default tool order should not list monthly as a tool entry',
+);
+mustNotMatch(
+  'Dockerfile',
+  /ARG SUPABASE_SERVICE_ROLE_KEY|SUPABASE_SERVICE_ROLE_KEY="\$SUPABASE_SERVICE_ROLE_KEY"/u,
+  'Dockerfile should not accept or forward the Supabase service role key at build time',
+);
+mustMatch(
+  'src/app/page.tsx',
+  /redirect\('\/bazi'\)/u,
+  'home page should redirect visitors to /bazi as the default public entry',
+);
+mustNotMatch(
+  'src/app/page.tsx',
+  /ACCESS_COOKIE|REFRESH_COOKIE|resolveSessionFromTokens|createAnonClient|createRequestSupabaseClient|cookies\(\)/u,
+  'home page should not resolve auth cookies or server sessions directly',
+);
+for (const file of [
+  'src/app/api/liuyao/route.ts',
+  'src/app/liuyao/result/page.tsx',
+  'src/lib/data-sources/liuyao.ts',
+]) {
+  mustNotMatch(
+    file,
+    /rank=|rankScore|排序分/u,
+    'liuyao surfaces should not expose rank score wording',
+  );
+}
+
+mustNotMatch(
+  'src/lib/data-sources/index.ts',
+  /registerDataSource\(/u,
+  'data source registry should remain manifest-driven',
+);
+mustNotMatchInTree(
+  'src',
+  /packages\/core\/src\//u,
+  'web app code should not import internal packages/core/src paths directly',
+  (file) => /\.(?:ts|tsx|mts)$/u.test(file),
+);
+
+// Discover new extracted modules; only these reviewed legacy adapters are not roots.
+// An exception never permits a protected module to depend on the adapter.
+const adapterEntries = new Set([
+  'src/lib/server/ai-config.ts',
+  'src/lib/server/amap-geocode.ts',
+  'src/lib/server/bazi-case-profile.ts',
+  'src/lib/server/conversation-messages.ts',
+  'src/lib/server/chat/bootstrap.ts',
+  'src/lib/server/chat/prompt-context.ts',
+  'src/lib/server/chat/request.ts',
+  'src/lib/knowledge-base/browser-client.ts',
+  'src/lib/knowledge-base/embedding-config.ts',
+  'src/lib/knowledge-base/hits.ts',
+  'src/lib/knowledge-base/ingest.ts',
+  'src/app/api/knowledge-base/archive/',
+  'src/lib/knowledge-base/persistence.server.ts',
+  'src/lib/knowledge-base/reranker.ts',
+  'src/lib/knowledge-base/search.ts',
+  'src/lib/knowledge-base/vector-index.ts',
+]);
+const contractEntries = ['src/lib/data-sources/types.ts', 'src/lib/knowledge-base/types.ts'];
+const sourceExtension = /\.[cm]?[jt]sx?$/u;
+const pureEntries = new Set([
+  'src/lib/server/analysis.ts',
+  'src/lib/server/chat/contracts.ts',
+  'src/lib/server/chat/use-case.ts',
+  'src/lib/knowledge-base/source-replacement.ts',
+  ...['src/lib/server', 'src/lib/knowledge-base'].flatMap(dir => walk(dir))
+    .filter(file => sourceExtension.test(file) && !adapterEntries.has(file)),
+]);
+const compilerOptions = {
+  moduleResolution: ts.ModuleResolutionKind.Bundler,
+  module: ts.ModuleKind.ESNext,
+  allowJs: true,
+  resolveJsonModule: true,
+  baseUrl: root,
+  paths: { '@/*': ['./src/*'] },
+};
+const configPath = resolve(root, 'tsconfig.json');
+if (existsSync(configPath)) {
+  const config = ts.readConfigFile(configPath, ts.sys.readFile);
+  if (config.error) failures.push('tsconfig.json: invalid architecture module-resolution input');
+  else Object.assign(compilerOptions, ts.parseJsonConfigFileContent(config.config, ts.sys, root).options);
+}
+const resolutionCache = ts.createModuleResolutionCache(root, value => value, compilerOptions);
+const parsedModules = new Map();
+function parseModule(file) {
+  if (!parsedModules.has(file)) {
+    const text = read(file);
+    parsedModules.set(file, text === null ? null : ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true));
+  }
+  return parsedModules.get(file);
+}
+function literalText(node) {
+  return node && ts.isStringLiteralLike(node) ? node.text : null;
+}
+const nodeBuiltins = new Set(builtinModules.map(name => name.replace(/^node:/u, '')));
+function forbiddenModule(name) {
+  return nodeBuiltins.has(name.replace(/^node:/u, ''))
+    || /^(?:next|react|react-dom|ai)(?:\/|$)|^@(?:supabase|ai-sdk)\/|^node:|^(?:server-only|client-only)$/u.test(name);
+}
+function forbiddenFile(file) {
+  return adapterEntries.has(file) || /(?:^|\/)(?:components|app)\/|(?:^|\/)(?:api-utils|supabase[^/]*)(?:\.[cm]?[jt]sx?)?$|\.server\.[cm]?[jt]sx?$/u.test(file);
+}
+function checkDependencyBoundary(entry, reason) {
+  const visited = new Set();
+  function fail(chain, detail) {
+    failures.push(`${entry}: ${reason}; dependency path: ${chain.join(' -> ')} (${detail})`);
+  }
+  function visit(file, names, chain) {
+    const key = `${file}:${names ? [...names].sort().join(',') : '*'}`;
+    if (visited.has(key)) return;
+    visited.add(key);
+    const source = parseModule(file);
+    if (!source) return;
+    if (source.parseDiagnostics.length) {
+      fail(chain, 'invalid dependency source syntax');
+      return;
+    }
+    // Type-only edges follow selected DTO declarations and local references,
+    // not unrelated executable functions in mixed legacy modules. SDK types
+    // still travel through imports/re-exports and receive no exemption.
+    let nodes = source.statements;
+    if (names) {
+      const wanted = new Set(names);
+      const selected = new Set();
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const statement of source.statements) {
+          const declarations = ts.isVariableStatement(statement)
+            ? statement.declarationList.declarations : [statement];
+          if (ts.isExportDeclaration(statement) && !statement.moduleSpecifier && statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+            for (const item of statement.exportClause.elements) {
+              const localName = (item.propertyName || item.name).text;
+              if (wanted.has(item.name.text) && !wanted.has(localName)) {
+                wanted.add(localName);
+                changed = true;
+              }
+            }
+          }
+          const matches = declarations.some(node => node.name && wanted.has(node.name.getText(source)))
+            || (wanted.has('default') && (ts.isExportAssignment(statement)
+              || statement.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.DefaultKeyword)));
+          if (!matches || selected.has(statement)) continue;
+          selected.add(statement);
+          changed = true;
+          function collect(node) {
+            if (ts.isIdentifier(node)) wanted.add(node.text);
+            ts.forEachChild(node, collect);
+          }
+          collect(statement);
+        }
+      }
+      nodes = [...selected, ...source.statements.filter(node =>
+        ts.isImportDeclaration(node) || ts.isExportDeclaration(node) || ts.isImportEqualsDeclaration(node))];
+      names = wanted;
+    }
+    function edge(specifier, importedNames) {
+      if (forbiddenModule(specifier)) {
+        fail([...chain, specifier], 'forbidden framework/SDK dependency');
+        return;
+      }
+      const resolved = ts.resolveModuleName(specifier, resolve(root, file), compilerOptions, ts.sys, resolutionCache).resolvedModule;
+      const local = specifier.startsWith('.') || specifier.startsWith('@/') || isAbsolute(specifier)
+        || Object.keys(compilerOptions.paths || {}).some(pattern => specifier.startsWith(pattern.split('*')[0]));
+      if (!resolved) {
+        if (local) fail([...chain, specifier], 'unresolved local dependency');
+        return;
+      }
+      if (resolved.isExternalLibraryImport) return;
+      const target = relative(root, resolved.resolvedFileName).replaceAll('\\', '/');
+      if (forbiddenFile(target)) {
+        fail([...chain, target], 'infrastructure adapter dependency');
+        return;
+      }
+      if (sourceExtension.test(target)) visit(target, importedNames, [...chain, target]);
+    }
+    function inspect(node) {
+      if (ts.isImportDeclaration(node)) {
+        const clause = node.importClause;
+        const bindings = clause?.namedBindings;
+        let imported = null;
+        if (names || clause?.isTypeOnly || (bindings && ts.isNamedImports(bindings) && !clause.name && bindings.elements.every(e => e.isTypeOnly))) {
+          imported = new Set();
+          if (clause?.name && (!names || names.has(clause.name.text))) imported.add('default');
+          if (bindings && ts.isNamedImports(bindings)) {
+            for (const item of bindings.elements) {
+              if (!names || names.has(item.name.text)) imported.add((item.propertyName || item.name).text);
+            }
+          } else if (bindings && (!names || names.has(bindings.name.text))) imported = null;
+          if (imported?.size === 0) return;
+        }
+        edge(node.moduleSpecifier.text, imported);
+        return;
+      }
+      if (ts.isExportDeclaration(node) && node.moduleSpecifier) {
+        let imported = null;
+        if (node.exportClause && ts.isNamedExports(node.exportClause)) {
+          const items = node.exportClause.elements.filter(item => !names || names.has(item.name.text));
+          if (!items.length) return;
+          if (names || node.isTypeOnly || items.every(item => item.isTypeOnly)) imported = new Set(items.map(item => (item.propertyName || item.name).text));
+        } else if (node.exportClause && ts.isNamespaceExport(node.exportClause)) {
+          if (names && !names.has(node.exportClause.name.text)) return;
+        } else if (names) imported = names;
+        edge(node.moduleSpecifier.text, imported);
+        return;
+      }
+      if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+        const specifier = literalText(node.moduleReference.expression);
+        if (specifier && (!names || names.has(node.name.text))) edge(specifier, null);
+        return;
+      }
+      if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
+        const specifier = literalText(node.argument.literal);
+        if (specifier) edge(specifier, node.qualifier ? new Set([node.qualifier.getText(source).split('.')[0]]) : null);
+      }
+      if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(node.expression) && node.expression.text === 'require'))) {
+        const specifier = literalText(node.arguments[0]);
+        if (specifier) edge(specifier, null);
+      }
+      if (ts.isIdentifier(node) && /^(?:SupabaseClient|NextRequest|NextResponse|Postgrest\w*|fetch)$/u.test(node.text)) {
+        fail(chain, `forbidden infrastructure identifier ${node.text}`);
+      }
+      if ((ts.isPropertyAccessExpression(node) && node.name.text === 'env' && node.expression.getText(source) === 'process')
+        || (ts.isElementAccessExpression(node) && literalText(node.argumentExpression) === 'env' && node.expression.getText(source) === 'process')) {
+        fail(chain, 'global environment dependency');
+      }
+      ts.forEachChild(node, inspect);
+    }
+    for (const node of nodes) inspect(node);
+  }
+  visit(entry, null, [entry]);
+}
+for (const file of pureEntries) {
+  if (!contractEntries.includes(file)) checkDependencyBoundary(file,
+    'extracted use cases must keep HTTP, SDK, network and infrastructure dependencies in adapters');
+}
+for (const file of contractEntries) checkDependencyBoundary(file,
+  'browser-safe data contracts must not import server or SDK contracts');
+mustNotMatch(
+  'src/lib/api/divination-pipeline.ts',
+  /\bgetSystemAdminClient\b/u,
+  'caller database context must fail closed; privileged persistence stays in its named adapter',
+);
+mustNotMatch(
+  'src/lib/knowledge-base/search.ts',
+  /\bgetSystemAdminClient\b/u,
+  'knowledge search must retain the caller identity for owner-scoped SQL',
+);
+mustNotMatchInTree(
+  'src/app/api',
+  /resolveRequestDbClient\([^)]*\)\s*(?:\?\?|\|\|)\s*getSystemAdminClient\b/u,
+  'a missing caller database context must fail closed, never fall back to the system-admin client',
+  (file) => /\.(ts|tsx)$/u.test(file),
+);
+mustNotMatch(
+  'src/lib/chat/ConversationListContext.tsx',
+  /\[conversations,\s*setConversations\]\s*=\s*useState/u,
+  'Query must own the conversation list without a second writable Context copy',
+);
+
+// P1 数据访问边界：只有 src/lib/db 可以持有 pg/Kysely；systemDb 仅限系统路径。
+const DB_SERVER_IMPORT = /from\s*['"]@\/lib\/db\/[^'"]+['"]/u;
+mustNotMatchInTree(
+  'src',
+  DB_SERVER_IMPORT,
+  'client components must not import the server database layer',
+  (file) => /\.(ts|tsx)$/u.test(file) && /^\s*['"]use client['"]/u.test(read(file) ?? ''),
+);
+// A secret name in a client bundle is inlined and shipped to every visitor.
+mustNotMatchInTree(
+  'src',
+  /process\.env\.(?!NODE_ENV\b|NEXT_PUBLIC_)[A-Z0-9_]+/u,
+  'client components may only read NODE_ENV or NEXT_PUBLIC_*',
+  (file) => /\.(ts|tsx)$/u.test(file) && /^\s*['"]use client['"]/u.test(read(file) ?? ''),
+);
+mustNotMatchInTree(
+  'src',
+  /from\s*['"](?:pg|kysely)['"]/u,
+  'only src/lib/db may import pg or kysely',
+  (file) => /\.(ts|tsx)$/u.test(file) && !file.startsWith('src/lib/db/') && !file.startsWith('src/tests/'),
+);
+mustNotMatchInTree(
+  'src',
+  /from\s*['"]@base-ui\//u,
+  'business code should use the shared wrappers in src/components/ui, not Base UI directly',
+  (file) => /\.(ts|tsx)$/u.test(file) && !file.startsWith('src/components/ui/'),
+);
+mustNotMatchInTree(
+  'src',
+  /shadcn\/tailwind\.css|@\/styles\/shadcn/u,
+  'the shadcn default theme must not be imported; taibu semantic tokens stay the visual source',
+  (file) => /\.(ts|tsx|css)$/u.test(file),
+);
+mustNotMatchInTree(
+  'src',
+  /<select[\s>]/u,
+  'forms use the shared Select, not a native select',
+  (file) => /\.tsx$/u.test(file) && !file.startsWith('src/components/ui/'),
+);
+mustNotMatchInTree(
+  'src',
+  /<button[\s>]/u,
+  'buttons use the shared Button/IconButton/FilterChip, not a native button element',
+  (file) => /\.tsx$/u.test(file) && !file.startsWith('src/components/ui/'),
+);
+mustNotMatchInTree(
+  'src',
+  /<textarea[\s>]/u,
+  'multi-line fields use the shared Textarea, not a native textarea',
+  (file) => /\.tsx$/u.test(file) && !file.startsWith('src/components/ui/'),
+);
+mustNotMatchInTree(
+  'src',
+  /<input\b[^>]*type="(?:text|search|email|password|url|tel|number|date|time|datetime-local|month|week)"/u,
+  'form fields use the shared Input; only hidden file pickers keep a native input',
+  (file) => /\.tsx$/u.test(file) && !file.startsWith('src/components/ui/'),
+);
+mustNotMatchInTree(
+  'src',
+  /<input\b[^>]*type="(?:checkbox|radio)"/u,
+  'checkboxes and radios use the shared Checkbox/RadioGroup/FilterChip',
+  (file) => /\.tsx$/u.test(file) && !file.startsWith('src/components/ui/'),
+);
+mustNotMatchInTree(
+  'src',
+  /<Input\b[^>]*type="(?:checkbox|radio)"/u,
+  'checkboxes and radios use the shared Checkbox/RadioGroup/FilterChip, not Input',
+  (file) => /\.tsx$/u.test(file) && !file.startsWith('src/components/ui/'),
+);
+mustNotMatchInTree(
+  'src',
+  /from ['"]@\/components\/ui\/Modal['"]/u,
+  'business dialogs use the shared Dialog; Modal is its internal surface',
+  (file) => /\.tsx$/u.test(file) && !file.startsWith('src/components/ui/'),
+);
+// 原生弹层角色只由共享组件产生；MobileNav 是带焦点圈定的底部导航抽屉。
+const OVERLAY_ROLE_EXEMPT = new Set(['src/components/layout/MobileNav.tsx']);
+mustNotMatchInTree(
+  'src',
+  /role="(?:listbox|option)"/u,
+  'overlays use Dialog, Menu, Select or Popover instead of hand-rolled ARIA roles',
+  (file) => /\.tsx$/u.test(file) && !file.startsWith('src/components/ui/'),
+);
+mustNotMatchInTree(
+  'src',
+  /<(?:div|section|article|aside|form|main)\b[^>]*\brole="(?:dialog|alertdialog)"/u,
+  'overlays use Dialog, Menu, Select or Popover instead of hand-rolled ARIA roles',
+  (file) => /\.tsx$/u.test(file) && !file.startsWith('src/components/ui/') && !OVERLAY_ROLE_EXEMPT.has(file),
+);
+mustNotMatchInTree(
+  'src',
+  /settings-button|settings-icon-button/u,
+  'the retired settings button classes must not return; use Button or IconButton',
+  (file) => /\.(ts|tsx|css)$/u.test(file),
+);
+mustNotMatchInTree(
+  'src/components/ui',
+  /#[0-9a-fA-F]{3,8}\b|rgba?\(/u,
+  'shared components use semantic tokens, not literal colors',
+  (file) => /\.tsx$/u.test(file) && file !== 'src/components/ui/ThemeProvider.tsx',
+);
+// 图表、分享卡、品牌图标与浏览器主题色需要固定颜色，其余 TSX 一律使用语义令牌。
+const COLOR_EXEMPT = (file) => file.startsWith('src/components/visualization/')
+  || [
+    'src/components/fortune/ShareCard.tsx',
+    'src/components/auth/OAuthButtons.tsx',
+    'src/app/layout.tsx',
+    'src/components/ui/ThemeProvider.tsx',
+  ].includes(file);
+mustNotMatchInTree(
+  'src',
+  /(?:amber|yellow|orange|red|green|emerald|purple|indigo|blue|sky|teal|rose|pink|violet|fuchsia|lime|cyan)-(?:[3-9]\d{2}|\d{3})\b|#[0-9a-fA-F]{6}\b/u,
+  'general UI uses semantic tokens, not the Tailwind palette or literal hex colors',
+  (file) => /\.tsx$/u.test(file) && !COLOR_EXEMPT(file),
+);
+mustNotMatchInTree(
+  'src',
+  /rgba?\(/u,
+  'general UI uses shadow tokens, not literal rgb/rgba colors',
+  (file) => /\.tsx$/u.test(file) && !COLOR_EXEMPT(file),
+);
+const PORTAL_ALLOWED = new Set([
+  'src/components/ui/Modal.tsx',
+  'src/components/ui/Toast.tsx',
+  'src/components/chat/QuoteSelection.tsx',
+]);
+mustNotMatchInTree(
+  'src',
+  /createPortal\s*\(/u,
+  'overlays use Dialog/Select/Menu/Popover/Tooltip; direct portals need a reviewed exception',
+  (file) => /\.(ts|tsx)$/u.test(file) && !PORTAL_ALLOWED.has(file),
+);
+for (const file of walk('src/lib/db')) {
+  if (!file.endsWith('.server.ts')) continue;
+  mustMatch(file, /^\s*import\s+['"]server-only['"];?/u, 'db server modules must import server-only first');
+}
+const SYSTEM_DB_ALLOWED = [
+  'src/lib/jobs/',
+  'src/lib/identity/',
+  'src/lib/agent/',
+  'src/app/api/admin/',
+  'src/lib/reminders.ts',
+  'src/lib/app-settings.ts',
+  'src/lib/server/ai-config.ts',
+  'src/lib/billing/',
+  'src/lib/notification-server.ts',
+  'src/app/api/announcements/route.ts',
+  'src/lib/ai/ai-analysis.ts',
+  'src/lib/ai/image-generation.server.ts',
+  'src/lib/server/chat/prompt-context.ts',
+  'src/lib/mentions.ts',
+  'src/lib/annual-report.ts',
+  'src/lib/ai/chart-prompt-detail.ts',
+  'src/lib/server/bazi-case-profile.ts',
+  'src/lib/knowledge-base/ingest.ts',
+  'src/app/api/knowledge-base/archive/',
+  'src/lib/announcements.server.ts',
+  'src/lib/admin/ai-catalog.server.ts',
+];
+mustNotMatchInTree(
+  'src',
+  /import\s*\{[^}]*\bsystemDb\b[^}]*\}\s*from\s*['"]@\/lib\/db\/context\.server['"]/u,
+  'systemDb may only be used by whitelisted system paths',
+  (file) => /\.(ts|tsx)$/u.test(file)
+    && !file.startsWith('src/lib/db/')
+    && !file.startsWith('src/tests/')
+    && !SYSTEM_DB_ALLOWED.some((prefix) => file.startsWith(prefix)),
+);
+
+mustNotMatchInTree(
+  'src',
+  /from\s*['"]@\/lib\/db\/pool\.server['"]/u,
+  'pool internals are private to src/lib/db (Better Auth owns its own pool)',
+  (file) => /\.(ts|tsx)$/u.test(file)
+    && !file.startsWith('src/lib/db/')
+    && !file.startsWith('src/lib/identity/')
+    && !file.startsWith('src/tests/'),
+);
+
+// 身份边界：Supabase SDK 与旧部署变量不得回流；identity 模块仅限服务端。
+mustNotMatchInTree(
+  'src',
+  /@supabase\/(?:supabase-js|ssr)/u,
+  'Supabase SDK imports must not return after the Better Auth migration',
+  (file) => /\.(ts|tsx)$/u.test(file),
+);
+mustNotMatchInTree(
+  'src',
+  /process\.env\.(?:(?:NEXT_PUBLIC_)?SUPABASE_[A-Z_]+|SELF_HOSTED)\b|__MINGAI_PUBLIC_SUPABASE__|getSupabaseUrl|getSupabaseAnonKey/u,
+  'retired Supabase/self-host configuration must not be read',
+  (file) => /\.(ts|tsx|mjs)$/u.test(file) && !file.startsWith('src/tests/'),
+);
+mustNotMatchInTree(
+  'src',
+  /\bsupabase\s*\.\s*(?:from|rpc|storage)\b/u,
+  'a Supabase-style client must not return after the Kysely migration',
+  (file) => /\.(ts|tsx)$/u.test(file),
+);
+mustNotMatchInTree(
+  'src',
+  /from\s*['"]@\/lib\/identity\//u,
+  'identity modules are server-only',
+  (file) => /\.(ts|tsx)$/u.test(file) && /^\s*['"]use client['"]/u.test(read(file) ?? ''),
+);
+for (const file of walk('src/lib/identity')) {
+  if (!file.endsWith('.server.ts')) continue;
+  mustMatch(file, /^\s*import\s+['"]server-only['"];?/u, 'identity server modules must import server-only first');
+}
+
+// JSONB writes: node-postgres encodes a JS array as a PostgreSQL array literal,
+// so an array bound to a jsonb column must go through json() (src/lib/db/sql-helpers.ts).
+const schemaPath = resolve(root, 'database/schema.sql');
+const tsconfigPath = resolve(root, 'tsconfig.json');
+if (existsSync(schemaPath) && existsSync(tsconfigPath)) {
+  const jsonbColumns = new Map();
+  let currentTable = null;
+  for (const line of (read('database/schema.sql') ?? '').split('\n')) {
+    const tableMatch = line.match(/^CREATE TABLE public\.([a-zA-Z0-9_]+)\s*\(/u);
+    if (tableMatch) {
+      currentTable = tableMatch[1];
+      jsonbColumns.set(currentTable, new Set());
+      continue;
+    }
+    if (!currentTable) continue;
+    if (/^\);?/u.test(line)) {
+      currentTable = null;
+      continue;
+    }
+    const columnMatch = line.match(/^\s+([a-zA-Z0-9_]+)\s+(?:jsonb|json)\b/u);
+    if (columnMatch) jsonbColumns.get(currentTable).add(columnMatch[1]);
+  }
+
+  const tsconfig = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
+  const parsedTsconfig = tsconfig.error ? null : ts.parseJsonConfigFileContent(tsconfig.config, ts.sys, root);
+  if (parsedTsconfig && !parsedTsconfig.errors.length) {
+    const program = ts.createProgram(parsedTsconfig.fileNames, parsedTsconfig.options);
+    const checker = program.getTypeChecker();
+    const unwrap = (node) => {
+      let value = node;
+      while (value && (ts.isAsExpression(value) || ts.isParenthesizedExpression(value) || ts.isNonNullExpression(value)
+        || (ts.isSatisfiesExpression && ts.isSatisfiesExpression(value)))) value = value.expression;
+      return value;
+    };
+    const isJsonValue = (node) => {
+      const value = unwrap(node);
+      if (!value) return false;
+      if (ts.isCallExpression(value) && ts.isIdentifier(value.expression) && value.expression.text === 'json') return true;
+      return ts.isTaggedTemplateExpression(value) && ts.isIdentifier(value.tag) && value.tag.text === 'sql';
+    };
+    const isArrayType = (type) => {
+      if (type.isUnion()) return type.types.some(isArrayType);
+      if (type.isIntersection()) return type.types.some(isArrayType);
+      if (checker.isArrayType(type) || checker.isTupleType(type)) return true;
+      const text = checker.typeToString(type);
+      return /\[\]$/u.test(text) || /^(?:Readonly)?Array</u.test(text);
+    };
+    const stringArg = (call) => {
+      const argument = call.arguments?.[0];
+      return argument && ts.isStringLiteralLike(argument) ? argument.text : null;
+    };
+    const baseTable = (start) => {
+      let current = start;
+      let guard = 0;
+      while (current && guard++ < 20) {
+        if (ts.isCallExpression(current) && ts.isPropertyAccessExpression(current.expression)) {
+          const method = current.expression.name.text;
+          if (method === 'insertInto' || method === 'updateTable') return stringArg(current);
+          current = current.expression.expression;
+          continue;
+        }
+        if (ts.isPropertyAccessExpression(current)) {
+          current = current.expression;
+          continue;
+        }
+        if (ts.isCallExpression(current)) {
+          current = current.expression;
+          continue;
+        }
+        break;
+      }
+      return null;
+    };
+    const tableOf = (call) => {
+      if (ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === 'doUpdateSet') {
+        let parent = call.parent;
+        while (parent && !(ts.isCallExpression(parent) && ts.isPropertyAccessExpression(parent.expression)
+          && parent.expression.name.text === 'onConflict')) parent = parent.parent;
+        if (parent) return baseTable(parent);
+      }
+      return baseTable(call);
+    };
+
+    for (const sourceFile of program.getSourceFiles()) {
+      if (sourceFile.isDeclarationFile) continue;
+      const file = relative(root, sourceFile.fileName).replaceAll('\\', '/');
+      if (!file.startsWith('src/') || file.startsWith('src/tests/')) continue;
+      const visit = (node) => {
+        if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+          const method = node.expression.name.text;
+          if (method === 'values' || method === 'set' || method === 'doUpdateSet') {
+            const table = tableOf(node);
+            const columns = table ? jsonbColumns.get(table) : null;
+            const argument = node.arguments?.[0];
+            const payload = argument ? unwrap(argument) : null;
+            if (columns?.size && payload && ts.isObjectLiteralExpression(payload)) {
+              for (const property of payload.properties) {
+                let key = null;
+                let value = null;
+                if (ts.isPropertyAssignment(property)) {
+                  key = ts.isIdentifier(property.name) || ts.isStringLiteral(property.name) ? property.name.text : null;
+                  value = property.initializer;
+                } else if (ts.isShorthandPropertyAssignment(property)) {
+                  key = property.name.text;
+                  value = property.name;
+                }
+                if (!key || !value || !columns.has(key) || isJsonValue(value)) continue;
+                if (!isArrayType(checker.getTypeAtLocation(value))) continue;
+                const line = sourceFile.getLineAndCharacterOfPosition(property.getStart()).line + 1;
+                failures.push(`${file}:${line}: ${table}.${key} is jsonb; wrap the array in json() so node-postgres sends JSON text`);
+              }
+            }
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(sourceFile);
+    }
+  }
+}
+
+if (failures.length > 0) {
+  console.error('Architecture guard failures:');
+  for (const failure of failures) {
+    console.error(`- ${failure}`);
+  }
+  process.exit(1);
+}
+
+console.log('Architecture guards passed.');

@@ -1,0 +1,7 @@
+interface:
+  display_name: "会议纪要"
+  short_description: "录音转写、PPT提取并生成正式会议纪要"
+  default_prompt: "Use $meeting-minutes to transcribe this meeting recording, incorporate any PPT and background information, and draft formal meeting minutes."
+
+policy:
+  allow_implicit_invocation: true

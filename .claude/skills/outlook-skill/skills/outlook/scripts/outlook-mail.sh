@@ -1,0 +1,3006 @@
+#!/bin/bash
+# Outlook Mail Operations via Microsoft Graph API
+
+set -e
+
+BASE_DIR="$HOME/.dbhq/outlook"
+
+# One-time migrations, oldest first. Each is guarded on the NEW directory not
+# existing, so an install that has already moved is left alone and a second run
+# does nothing. The skill has had three homes:
+#
+#   ~/.outlook-graph            before the ~/.dbhq rule (10 Sep 2026)
+#   ~/.dbhq/outlook-graph       before the rename (17 Sep 2026)
+#   ~/.dbhq/outlook             now
+#
+# EVERY ENTRY SCRIPT CARRIES THIS, and that is the point rather than
+# duplication for its own sake: whichever one a user or an agent runs first has
+# to be the one that moves the settings. A migration in only one script is a
+# migration that has not run.
+if [ ! -e "$HOME/.dbhq/outlook-graph" ] && [ ! -e "$BASE_DIR" ] \
+   && [ -d "$HOME/.outlook-graph" ]; then
+    mkdir -p "$HOME/.dbhq"
+    chmod 700 "$HOME/.dbhq"
+    mv "$HOME/.outlook-graph" "$HOME/.dbhq/outlook-graph"
+    chmod 700 "$HOME/.dbhq/outlook-graph"
+fi
+
+if [ ! -e "$BASE_DIR" ] && [ -d "$HOME/.dbhq/outlook-graph" ]; then
+    mv "$HOME/.dbhq/outlook-graph" "$BASE_DIR"
+    chmod 700 "$BASE_DIR"
+fi
+
+# Account resolution: --account/-a flag wins, else OUTLOOK_ACCOUNT env, else "default"
+ACCOUNT="${OUTLOOK_ACCOUNT:-default}"
+if [ "$1" = "--account" ] || [ "$1" = "-a" ]; then
+    [ -n "$2" ] || { echo "Error: $1 requires an account name" >&2; exit 1; }
+    ACCOUNT="$2"; shift 2
+fi
+
+# One-time migration: legacy flat config -> default/
+if [ -f "$BASE_DIR/config.json" ] && [ ! -d "$BASE_DIR/default" ]; then
+    mkdir -p "$BASE_DIR/default"
+    chmod 700 "$BASE_DIR" "$BASE_DIR/default"
+    mv "$BASE_DIR/config.json" "$BASE_DIR/credentials.json" "$BASE_DIR/id_cache.json" \
+       "$BASE_DIR/default/" 2>/dev/null || true
+fi
+
+CONFIG_DIR="$BASE_DIR/$ACCOUNT"
+# shellcheck disable=SC2034 # read by lib/graph.sh
+CONFIG_FILE="$CONFIG_DIR/config.json"
+CREDS_FILE="$CONFIG_DIR/credentials.json"
+ID_CACHE_FILE="$CONFIG_DIR/id_cache.json"
+GRAPH_URL="https://graph.microsoft.com/v1.0"
+
+# --- Token management -------------------------------------------------------
+# The token code lives in lib/graph.sh, shared by every script, so a fix to it
+# lands once. The access token is resolved from a locally-stored absolute expiry
+# (expires_at), so the common path makes NO network pre-flight call. The token
+# is refreshed over the network only when it is missing/expired, or when Graph
+# rejects it mid-run (handled reactively in api_call).
+#
+# The library is found beside this script's real location, following symlinks,
+# so it resolves however the script was reached (plugin, symlinked skill
+# directory, or a symlink to the script itself).
+_self="${BASH_SOURCE[0]}"
+while [ -L "$_self" ]; do
+    _dir=$(cd -P "$(dirname "$_self")" && pwd)
+    _self=$(readlink "$_self")
+    case "$_self" in /*) ;; *) _self="$_dir/$_self" ;; esac
+done
+OUTLOOK_SCRIPT_DIR=$(cd -P "$(dirname "$_self")" && pwd)
+unset _self _dir
+# shellcheck source=lib/graph.sh
+. "$OUTLOOK_SCRIPT_DIR/lib/graph.sh"
+
+# Read-only mode: with OUTLOOK_READ_ONLY set, only these verbs run. Every
+# other verb refuses here, before a token is read or a request is made. See
+# outlook_read_only_gate in lib/graph.sh. A new verb that only reads belongs in
+# this list; one that writes or sends must stay out of it.
+READ_ONLY_VERBS=(inbox unread focused sent from search read preview aliases drafts flagged thread category categories folders subfolders folder stats attachments download export)
+outlook_read_only_gate outlook-mail.sh "${1:-}" "${READ_ONLY_VERBS[@]}" || exit 1
+
+# Check credentials
+if [ ! -f "$CREDS_FILE" ]; then
+    echo "Error: Account '$ACCOUNT' not configured. Run: outlook-setup.sh --account $ACCOUNT"
+    exit 1
+fi
+
+# A failed refresh has already said why on stderr, and left credentials.json
+# as it was.
+if ! ACCESS_TOKEN=$(ensure_valid_token) || [ -z "$ACCESS_TOKEN" ]; then
+    exit 1
+fi
+
+# Low-level Graph request using the current $ACCESS_TOKEN. outlook_curl (in
+# lib/graph.sh) adds the timeouts and retries a throttled request.
+_graph_request() {
+    local method="$1"
+    local endpoint="$2"
+    local data="$3"
+
+    if [ -n "$data" ]; then
+        outlook_curl "$method" -X "$method" "${GRAPH_URL}${endpoint}" \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$data"
+    else
+        # Content-Length: 0 required for POST requests with no body
+        outlook_curl "$method" -X "$method" "${GRAPH_URL}${endpoint}" \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H "Content-Length: 0"
+    fi
+}
+
+# As _graph_request, but streams the body from a FILE rather than an argv string.
+# Required for any payload that can exceed Linux's ~128KB single-argument limit
+# (MAX_ARG_STRLEN) - notably base64 file attachments, where `-d "$data"` fails
+# with "Argument list too long" for files larger than ~96KB.
+_graph_request_file() {
+    local method="$1"
+    local endpoint="$2"
+    local body_file="$3"
+
+    outlook_curl "$method" -X "$method" "${GRAPH_URL}${endpoint}" \
+        -H "Authorization: Bearer $ACCESS_TOKEN" \
+        -H "Content-Type: application/json" \
+        --data-binary @"$body_file"
+}
+
+# Shared retry/error wrapper around a low-level request function ($1), so every
+# Graph call gets the same behaviour regardless of how its body is sent.
+# Transparently refreshes the token and retries once if Graph rejects it mid-run
+# (revoked, clock skew, or a race with local expiry). A transport failure (curl
+# non-zero) is turned into a JSON error so callers can surface it — but a
+# legitimately empty body (HTTP 204/202 from DELETE/send) is left empty, since
+# callers treat "no .error" as success.
+_api_call() {
+    local transport="$1"; shift
+    local response rc new_token
+    response=$("$transport" "$@") && rc=0 || rc=$?
+
+    if [ -z "${OUTLOOK_TOKEN_RETRIED:-}" ] && \
+       printf '%s' "$response" | jq -e 'objects | .error.code == "InvalidAuthenticationToken"' >/dev/null 2>&1; then
+        OUTLOOK_TOKEN_RETRIED=1
+        # Retry only with a new token. A failed refresh has explained itself on
+        # stderr and left credentials.json alone; the original error stands.
+        if new_token=$(refresh_access_token); then
+            ACCESS_TOKEN="$new_token"
+            response=$("$transport" "$@") && rc=0 || rc=$?
+        fi
+    fi
+
+    if [ "$rc" -ne 0 ] && [ -z "$response" ]; then
+        response='{"error":{"code":"NetworkError","message":"Request to Microsoft Graph failed (network error, timeout, or connectivity issue)."}}'
+    fi
+    printf '%s' "$response"
+}
+
+# API call helper: request body passed as an argv string.
+api_call() {
+    _api_call _graph_request "$@"
+}
+
+# As api_call, but streams the request body from a file. Used by the attachment
+# upload path, whose base64 payload would otherwise overflow MAX_ARG_STRLEN.
+api_call_file() {
+    _api_call _graph_request_file "$@"
+}
+
+# Fail loudly on a Graph error. These write commands used to pipe their response
+# to /dev/null and print "Marked as read" / "Message deleted" unconditionally, so
+# a REJECTED write still reported success and the caller believed a change had
+# been made that had not. Never claim a write succeeded without reading the
+# response. (A legitimately empty 204 body is success and stays silent.)
+die_on_error() {
+    local response="$1" context="$2"
+    if [ -n "$response" ] && printf '%s' "$response" | jq -e '.error' > /dev/null 2>&1; then
+        echo "Error $context:" >&2
+        printf '%s' "$response" | jq -r '.error.message // .error.code' >&2
+        exit 1
+    fi
+}
+
+# Cache message IDs from an API response for fast short-ID resolution.
+# Called after every listing command so that resolve_message_id can find
+# messages from any folder (inbox, subfolders, drafts, sent) without
+# expensive API cascading.
+# Written atomically: several agents/shells can share one ~/.dbhq/outlook/<account>/
+# and a plain `>` redirect lets a concurrent writer be observed mid-write, so a
+# reader can see a truncated (invalid) cache. Write to a temp file in the same
+# directory, then rename — rename is atomic, so a reader sees either the old
+# cache or the new one, never a half-written one.
+cache_message_ids() {
+    local response="$1" tmp
+    tmp=$(mktemp "$CONFIG_DIR/.id_cache.XXXXXX" 2>/dev/null) || return 0
+    if echo "$response" | jq -c '[.value[].id // empty]' > "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$ID_CACHE_FILE" 2>/dev/null || rm -f "$tmp"
+    else
+        rm -f "$tmp"
+    fi
+}
+
+# --- Folder resolution ------------------------------------------------------
+# One resolver, shared by folder/move/batch-move/rename/rmdir/mkdir so a folder
+# name resolves identically everywhere (the previous inline copies searched to
+# different depths, so a deeply-nested folder could be listable but not movable).
+
+# Breadth-first search for a folder whose displayName matches $1 (case-insensitive),
+# starting at all top-level folders and descending through childFolders up to
+# $2 levels (default 4). Ties resolve to the SHALLOWEST match; use a
+# Parent/Child path to disambiguate. Prints the ID + returns 0, or returns 1.
+#
+# The Deleted Items subtree is NEVER descended into for a bare name. Deleting a
+# folder in Outlook moves it (still named) into Deleted Items, so a mailbox that
+# has ever had a folder deleted keeps a same-named ghost in the bin. Graph lists
+# Deleted Items BEFORE Inbox, so without this prune a bare name could resolve to
+# the ghost — silently filing live mail into the bin on `move`, or renaming /
+# deleting the wrong folder. Target a binned folder deliberately with the path
+# form ("Deleted Items/Old Project"), which still resolves.
+_find_folder_by_name() {
+    local target="$1" max_depth="${2:-4}"
+    local resp match level_ids depth next_ids pid children deleted_id
+
+    resp=$(api_call GET "/me/mailFolders?\$top=200")
+    match=$(printf '%s' "$resp" | jq -r --arg n "$target" '.value[]? | select((.displayName|ascii_downcase)==($n|ascii_downcase)) | .id' | head -1)
+    [ -n "$match" ] && { printf '%s' "$match"; return 0; }
+
+    deleted_id=$(api_call GET "/me/mailFolders/deleteditems?\$select=id" | jq -r '.id // empty')
+    level_ids=$(printf '%s' "$resp" | jq -r --arg del "$deleted_id" '.value[]? | select(.id != $del) | .id')
+
+    depth=1
+    while [ "$depth" -le "$max_depth" ] && [ -n "$level_ids" ]; do
+        next_ids=""
+        for pid in $level_ids; do
+            children=$(api_call GET "/me/mailFolders/$pid/childFolders?\$top=200" 2>/dev/null)
+            match=$(printf '%s' "$children" | jq -r --arg n "$target" '.value[]? | select((.displayName|ascii_downcase)==($n|ascii_downcase)) | .id' 2>/dev/null | head -1)
+            [ -n "$match" ] && { printf '%s' "$match"; return 0; }
+            next_ids="$next_ids $(printf '%s' "$children" | jq -r '.value[]?.id' 2>/dev/null)"
+        done
+        level_ids="$next_ids"
+        depth=$((depth + 1))
+    done
+    return 1
+}
+
+# Walk a "Parent/Child/Grandchild" path, resolving each segment under the
+# previous. Prints the leaf ID + returns 0, or returns 1 if any segment misses.
+_resolve_folder_path() {
+    local path="$1" parent_id="" first=1 seg match oldIFS
+    oldIFS="$IFS"; IFS='/'; read -ra segs <<< "$path"; IFS="$oldIFS"
+    for seg in "${segs[@]}"; do
+        [ -z "$seg" ] && continue
+        if [ "$first" = 1 ]; then
+            match=$(resolve_folder_id "$seg") || match=""
+            first=0
+        else
+            match=$(api_call GET "/me/mailFolders/$parent_id/childFolders?\$top=200" | jq -r --arg n "$seg" '.value[]? | select((.displayName|ascii_downcase)==($n|ascii_downcase)) | .id' | head -1)
+        fi
+        [ -z "$match" ] && return 1
+        parent_id="$match"
+    done
+    [ -n "$parent_id" ] && { printf '%s' "$parent_id"; return 0; }
+    return 1
+}
+
+# Resolve a folder name (or "Parent/Child" path) to its ID. Order: path form,
+# then well-known aliases, then a case-insensitive BFS by name across the tree.
+# Prints the ID + returns 0 on a match; returns 1 on no match.
+resolve_folder_id() {
+    local name="$1"
+
+    if [[ "$name" == */* ]]; then
+        _resolve_folder_path "$name"
+        return $?
+    fi
+
+    local lc wid
+    lc=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')
+    case "$lc" in
+        inbox|drafts|sentitems|deleteditems|archive|junkemail)
+            wid=$(api_call GET "/me/mailFolders/$lc" | jq -r '.id // empty')
+            [ -n "$wid" ] && { printf '%s' "$wid"; return 0; }
+            ;;
+    esac
+
+    _find_folder_by_name "$name"
+}
+
+# --- HTML -> readable plain text ---------------------------------------------
+# A jq function, injected into the `read` filter. Block-level tags become line
+# breaks BEFORE tags are stripped; otherwise "</p><p>" collapses and the text
+# runs together ("Hello,This is..."), list items merge into one line, and a
+# reader can misjudge where one point ends and the next begins. That matters
+# here more than most places: this skill's core rule is to read the whole
+# message end-to-end, so the rendering must not garble it. Entities are decoded
+# so "&amp;" reads as "&".
+HTML_TO_TEXT='
+    def html_to_text:
+        gsub("(?is)<(script|style)[^>]*>.*?</(script|style)>"; " ")
+      | gsub("(?i)<br[^>]*>"; "\n")
+      | gsub("(?i)<li[^>]*>"; "\n- ")
+      | gsub("(?i)</(p|div|tr|h[1-6]|blockquote|ul|ol|table)>"; "\n")
+      | gsub("(?i)</t[dh]>"; " ")
+      | gsub("<[^>]*>"; "")
+      | gsub("&nbsp;"; " ") | gsub("&amp;"; "&") | gsub("&lt;"; "<")
+      | gsub("&gt;"; ">") | gsub("&quot;"; "\"") | gsub("&#39;"; "'"'"'")
+      | gsub("&#8217;"; "'"'"'")
+      | gsub("[ \t]+"; " ")
+      | gsub(" *\n *"; "\n")
+      | gsub("\n{3,}"; "\n\n")
+      | sub("^\\s+"; "") | sub("\\s+$"; "");
+'
+
+# Format message for display
+format_message() {
+    jq -r '
+        def short_id: .[-20:];
+        "[\(.id | short_id)] \(.receivedDateTime | split("T")[0]) | \(.from.emailAddress.address // "unknown") | \(.subject // "(no subject)") | \(if .isRead then "read" else "UNREAD" end)"
+    '
+}
+
+# Format message list
+format_messages() {
+    jq -r '
+        if .error then
+            "Error: \(.error.message // .error.code // "Unknown API error")"
+        elif (.value | length) == 0 then
+            "No messages found."
+        else
+            def short_id: .[-20:];
+            .value | to_entries | .[] |
+            "[\(.key + 1)] \(.value.id | short_id) | \(.value.receivedDateTime | split("T")[0]) | \(.value.from.emailAddress.address // "unknown") | \(.value.subject // "(no subject)")"
+        end
+    '
+}
+
+# Resolve short message ID to full ID
+# Strategy: cache-first (instant), then cascade through API endpoints.
+#
+# The cache is populated by every listing command (inbox, folder, drafts, sent,
+# search, etc.), so if you just listed messages from any folder, their full IDs
+# are available without any API call.
+#
+# If cache misses, we cascade through multiple API endpoints to find the
+# message regardless of which folder it's in (inbox, custom subfolder, drafts,
+# or sent items).
+#
+# Usage: full_id=$(resolve_message_id "short_id_or_full_id" "messages|drafts|sentitems")
+resolve_message_id() {
+    local msg_id="$1"
+    local folder="${2:-messages}"  # "messages" for all mail, "drafts" for drafts folder, "sentitems" for sent
+
+    # If it looks like a full ID (very long), return as-is
+    if [ ${#msg_id} -gt 100 ]; then
+        echo "$msg_id"
+        return 0
+    fi
+
+    local full_id=""
+    local search_limit=500
+
+    # 1. Check cache first (instant, no API call)
+    #    Cache is populated by listing commands (inbox, folder, drafts, sent, search, etc.)
+    if [ -f "$ID_CACHE_FILE" ]; then
+        full_id=$(jq -r ".[] | select(endswith(\"$msg_id\"))" "$ID_CACHE_FILE" 2>/dev/null | head -1)
+        if [ -n "$full_id" ]; then
+            echo "$full_id"
+            return 0
+        fi
+    fi
+
+    # 2. Search the hinted folder first
+    case "$folder" in
+        drafts)
+            full_id=$(api_call GET "/me/mailFolders/drafts/messages?\$top=$search_limit&\$select=id" | jq -r ".value[].id | select(endswith(\"$msg_id\"))" | head -1)
+            ;;
+        sentitems)
+            full_id=$(api_call GET "/me/mailFolders/sentitems/messages?\$top=$search_limit&\$select=id" | jq -r ".value[].id | select(endswith(\"$msg_id\"))" | head -1)
+            ;;
+        *)
+            full_id=$(api_call GET "/me/messages?\$top=$search_limit&\$select=id" | jq -r ".value[].id | select(endswith(\"$msg_id\"))" | head -1)
+            ;;
+    esac
+
+    if [ -n "$full_id" ]; then
+        echo "$full_id"
+        return 0
+    fi
+
+    # 3. Cascade: search other locations the hinted folder wouldn't cover
+    #    /me/messages does NOT include drafts, so always cascade to drafts.
+    #    Drafts/sentitems hints don't cover all-mail, so cascade to /me/messages.
+    if [ "$folder" != "drafts" ]; then
+        full_id=$(api_call GET "/me/mailFolders/drafts/messages?\$top=200&\$select=id" | jq -r ".value[].id | select(endswith(\"$msg_id\"))" | head -1)
+        if [ -n "$full_id" ]; then echo "$full_id"; return 0; fi
+    fi
+
+    if [ "$folder" != "sentitems" ]; then
+        full_id=$(api_call GET "/me/mailFolders/sentitems/messages?\$top=$search_limit&\$select=id" | jq -r ".value[].id | select(endswith(\"$msg_id\"))" | head -1)
+        if [ -n "$full_id" ]; then echo "$full_id"; return 0; fi
+    fi
+
+    if [ "$folder" = "drafts" ] || [ "$folder" = "sentitems" ]; then
+        full_id=$(api_call GET "/me/messages?\$top=$search_limit&\$select=id" | jq -r ".value[].id | select(endswith(\"$msg_id\"))" | head -1)
+        if [ -n "$full_id" ]; then echo "$full_id"; return 0; fi
+    fi
+
+    return 1
+}
+
+# Valid friendly colour names, listed in error output so a caller who guesses
+# wrong is told what to guess instead.
+CATEGORY_COLOUR_NAMES="red orange brown yellow green teal olive blue purple cranberry steel darksteel grey darkgrey black darkred darkorange darkbrown darkyellow darkgreen darkteal darkolive darkblue darkpurple darkcranberry"
+
+# Map a friendly colour name to the presetN value Graph stores. A raw presetN
+# passes straight through, so a preset Microsoft adds later is still reachable
+# without a code change. Spaces are ignored, so "dark blue" works as well as
+# "darkblue". Returns 1 and prints nothing when the value is not recognised.
+category_colour_to_preset() {
+    local v
+    v=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+    case "$v" in
+        preset[0-9]|preset1[0-9]|preset2[0-4]) printf '%s' "$v"; return 0 ;;
+        red)           printf 'preset0' ;;
+        orange)        printf 'preset1' ;;
+        brown)         printf 'preset2' ;;
+        yellow)        printf 'preset3' ;;
+        green)         printf 'preset4' ;;
+        teal)          printf 'preset5' ;;
+        olive)         printf 'preset6' ;;
+        blue)          printf 'preset7' ;;
+        purple)        printf 'preset8' ;;
+        cranberry)     printf 'preset9' ;;
+        steel)         printf 'preset10' ;;
+        darksteel)     printf 'preset11' ;;
+        grey|gray)     printf 'preset12' ;;
+        darkgrey|darkgray) printf 'preset13' ;;
+        black)         printf 'preset14' ;;
+        darkred)       printf 'preset15' ;;
+        darkorange)    printf 'preset16' ;;
+        darkbrown)     printf 'preset17' ;;
+        darkyellow)    printf 'preset18' ;;
+        darkgreen)     printf 'preset19' ;;
+        darkteal)      printf 'preset20' ;;
+        darkolive)     printf 'preset21' ;;
+        darkblue)      printf 'preset22' ;;
+        darkpurple)    printf 'preset23' ;;
+        darkcranberry) printf 'preset24' ;;
+        *) return 1 ;;
+    esac
+    return 0
+}
+
+# The master-category object whose display name matches, case-insensitively and
+# exactly. Prints nothing when there is no such category. Exact rather than
+# substring on purpose: a fuzzy match that deletes the wrong category is not
+# recoverable.
+category_json() {
+    local lc resp
+    lc=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    resp=$(api_call GET "/me/outlook/masterCategories")
+    if printf '%s' "$resp" | jq -e '.error' > /dev/null 2>&1; then
+        # Fail closed: an unreadable master list must never look like "no such
+        # category" to a caller. That confusion is what let mkcategory issue a
+        # duplicate create, and made rccategory/rmcategory print a
+        # self-contradictory "not found - run categories to check" for the
+        # very list that just failed to read. Print the error object and
+        # return non-zero so every caller can tell "unreadable" apart from
+        # "absent" (empty output, exit 0).
+        printf '%s' "$resp"
+        return 1
+    fi
+    printf '%s' "$resp" | jq -c --arg lc "$lc" 'first((.value // [])[] | select((.displayName | ascii_downcase) == $lc)) // empty'
+}
+
+# The id of a master category, by display name. Empty when absent.
+resolve_category_id() {
+    local json rc
+    # Piping category_json straight into jq (the old implementation) loses the
+    # error signal: jq succeeds on empty/error input either way, so the
+    # pipeline's exit status was always jq's, never category_json's. Capture
+    # output and exit code separately so a Graph error propagates here too.
+    json=$(category_json "$1") && rc=0 || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        printf '%s' "$json"
+        return 1
+    fi
+    printf '%s' "$json" | jq -r '.id // empty'
+}
+
+# Add one category to a message's category array, read from stdin. Order is
+# preserved and a category already present is not duplicated, compared
+# case-insensitively because Outlook treats category names that way.
+categories_add() {
+    jq -c --arg n "$1" \
+        'if any(.[]; ascii_downcase == ($n | ascii_downcase)) then . else . + [$n] end'
+}
+
+# Remove one category from a message's category array, read from stdin.
+# Everything else is left exactly as it was; removing an absent category is a
+# no-op rather than an error.
+categories_remove() {
+    jq -c --arg n "$1" 'map(select(ascii_downcase != ($n | ascii_downcase)))'
+}
+
+# Convert a comma/semicolon-separated address string into a JSON array of
+# Graph recipient objects. Trims surrounding whitespace and drops empties.
+# Usage: arr=$(recipients_to_json "a@x.com, b@y.com; c@z.com")
+recipients_to_json() {
+    jq -n --arg raw "$1" '
+        ($raw | gsub(";"; ",") | split(",")
+            | map(gsub("^\\s+|\\s+$"; ""))
+            | map(select(length > 0))
+            | map({emailAddress: {address: .}}))'
+}
+
+# parse_new_draft_args <verb> [args...]
+# The arguments of draft and mddraft: <to> <subject> [body], with --cc <list>
+# and --bcc <list> allowed anywhere after the verb. Every list is comma- or
+# semicolon-separated. Sets NEW_DRAFT_SUBJECT, NEW_DRAFT_BODY and
+# NEW_DRAFT_RECIPIENTS, a JSON object of toRecipients plus ccRecipients and
+# bccRecipients when given. Prints usage and returns 1 when the call is wrong.
+parse_new_draft_args() {
+    local verb="$1" to cc="" bcc="" pos=() to_json cc_json bcc_json
+    shift
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --cc|--bcc)
+                if [ $# -lt 2 ]; then
+                    echo "Error: $1 needs a comma- or semicolon-separated list of addresses"
+                    return 1
+                fi
+                if [ "$1" = "--cc" ]; then cc="$2"; else bcc="$2"; fi
+                shift 2 ;;
+            *) pos+=("$1"); shift ;;
+        esac
+    done
+    to="${pos[0]:-}"
+    NEW_DRAFT_SUBJECT="${pos[1]:-}"
+    NEW_DRAFT_BODY="${pos[2]:-}"
+    if [ -z "$to" ] || [ -z "$NEW_DRAFT_SUBJECT" ]; then
+        echo "Usage: outlook-mail.sh $verb <to> <subject> <body> [--cc <emails>] [--bcc <emails>]"
+        echo "       <to>, --cc and --bcc take one address or a comma/semicolon-separated list."
+        return 1
+    fi
+    to_json=$(recipients_to_json "$to")
+    if [ "$(printf '%s' "$to_json" | jq 'length')" -eq 0 ]; then
+        echo "Error: No valid email address in <to>: $to"
+        return 1
+    fi
+    cc_json=$(recipients_to_json "$cc")
+    bcc_json=$(recipients_to_json "$bcc")
+    NEW_DRAFT_RECIPIENTS=$(jq -cn --argjson to "$to_json" --argjson cc "$cc_json" --argjson bcc "$bcc_json" '
+        {toRecipients: $to}
+        + (if ($cc | length) > 0 then {ccRecipients: $cc} else {} end)
+        + (if ($bcc | length) > 0 then {bccRecipients: $bcc} else {} end)')
+}
+
+# The recipient lines a new draft prints, read back from what Graph returned.
+# shellcheck disable=SC2016 # jq program, not shell
+NEW_DRAFT_RECIPIENTS_JQ='
+    def addrs(f): [f[]?.emailAddress.address] | if length == 0 then "(none)" else join(", ") end;
+    "To: \(addrs(.toRecipients))", "Cc: \(addrs(.ccRecipients))", "Bcc: \(addrs(.bccRecipients))"'
+
+# URL-encode a string for safe use as a query-string value (spaces, &, #, :, +,
+# quotes, non-ASCII). Without this, a query like "Q3 & Q4" is silently truncated.
+urlencode() { jq -rn --arg s "$1" '$s|@uri'; }
+
+# --- Send-as-alias ----------------------------------------------------------
+# Every address this mailbox can send as, primary first, then each alias.
+# Graph tags the primary with an uppercase "SMTP:" prefix and aliases with
+# lowercase "smtp:" - that casing IS the marker, so the selects below are
+# deliberately case-sensitive. Non-SMTP proxy entries (X500:, sip:) are
+# directory plumbing rather than mail addresses and are dropped.
+#
+# The primary falls back to .mail/.userPrincipalName per-address rather than
+# only when the whole SMTP list is empty: a mailbox can return aliases with no
+# uppercase-tagged primary, and keying the fallback off an empty list would then
+# drop the primary entirely and leave the first ALIAS wearing the primary slot.
+# Output is empty (not an error) when the lookup fails - callers distinguish
+# "no addresses" from "this address is not yours".
+sendable_addresses() {
+    api_call GET "/me?\$select=mail,userPrincipalName,proxyAddresses" | jq -r '
+        [(.proxyAddresses // [])[] | select(startswith("SMTP:")) | sub("^SMTP:"; "")] as $tagged
+        | ((($tagged | first) // .mail // .userPrincipalName // "") as $primary
+           | [$primary] + [(.proxyAddresses // [])[] | select(startswith("smtp:")) | sub("^smtp:"; "")])
+        | map(select(length > 0))
+        | reduce .[] as $a ([]; if (map(ascii_downcase) | index($a | ascii_downcase)) then . else . + [$a] end)
+        | .[]'
+}
+
+# True when $1 appears in the newline-separated address list on stdin
+# (case-insensitive). Pure: the caller fetches the list, so a check costs no
+# extra Graph round-trip and the list can be inspected before matching.
+address_in_list() {
+    local want
+    want=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    tr '[:upper:]' '[:lower:]' | grep -qxF "$want"
+}
+
+# Build a Graph `from` object. A blank name is omitted rather than sent as
+# name:"", which makes Outlook render the bare address in place of the
+# mailbox's display name.
+from_to_json() {
+    jq -n --arg addr "$1" --arg name "${2:-}" '
+        {emailAddress: ({address: $addr}
+            + (if ($name | length) > 0 then {name: $name} else {} end))}'
+}
+
+# Warn, but never block, when an address is not one of the mailbox's own. A
+# shared-mailbox SendAs right is real but never appears in this mailbox's
+# proxyAddresses, so blocking would break a legitimate case. An unauthorised
+# sender still cannot leak out - Graph rejects it with ErrorSendAsDenied at send
+# time and nothing goes out.
+#
+# An empty list means the lookup itself failed, NOT that the address is wrong;
+# saying "that is not your address" there would blame a perfectly valid alias
+# for a network blip.
+warn_if_not_sendable() {
+    local addrs
+    addrs=$(sendable_addresses)
+    if [ -z "$addrs" ]; then
+        {
+            echo "Warning: could not read this mailbox's own addresses, so '$1' has not been checked."
+            echo "  Proceeding: if the address is not permitted, the send fails with ErrorSendAsDenied."
+        } >&2
+        return 0
+    fi
+    printf '%s\n' "$addrs" | address_in_list "$1" && return 0
+    {
+        echo "Warning: '$1' is not one of this mailbox's own addresses."
+        echo "  Run 'outlook-mail.sh aliases' to list the addresses it can send as."
+        echo "  Proceeding: SendAs rights on a shared mailbox do not appear in that list."
+        echo "  If the address is not permitted, the send fails with ErrorSendAsDenied."
+    } >&2
+}
+
+# The `from` fragment merged into a new draft's payload: {} normally, or
+# {from: {...}} when OUTLOOK_FROM_ADDRESS names an alias to send as. Keeping it
+# a mergeable fragment means the create paths carry no from-specific branching.
+draft_from_fragment() {
+    local addr="${OUTLOOK_FROM_ADDRESS:-}"
+    [ -n "$addr" ] || { echo '{}'; return 0; }
+    warn_if_not_sendable "$addr"
+    jq -n --argjson from "$(from_to_json "$addr" "${OUTLOOK_FROM_NAME:-}")" '{from: $from}'
+}
+
+# Set OUTLOOK_FROM_ADDRESS on a draft that already exists. reply, mdreply,
+# followup and forward get their draft from createReplyAll / createForward,
+# which take no `from`, so without this a user who had set the variable could
+# send a reply from the primary address without noticing. $1 is the draft ID,
+# $2 the draft JSON so far. Prints the draft JSON after the change (unchanged
+# when the variable is unset). On failure it says so and exits: the draft
+# exists, but it must not be left looking like it is ready to send.
+apply_from_to_draft() {
+    local draft_id="$1" draft_json="$2" fragment result
+    fragment=$(draft_from_fragment)
+    if [ "$fragment" = "{}" ]; then
+        printf '%s' "$draft_json"
+        return 0
+    fi
+    result=$(api_call PATCH "/me/messages/$draft_id" "$fragment")
+    if [ -z "$result" ] || printf '%s' "$result" | jq -e '.error' >/dev/null 2>&1; then
+        {
+            echo "Error: draft ${draft_id: -20} was created, but its From could not be set to $OUTLOOK_FROM_ADDRESS:"
+            printf '%s' "$result" | jq -r '.error.message // .error.code // "no response"' 2>/dev/null
+            echo "Set it with: outlook-mail.sh update ${draft_id: -20} from \"$OUTLOOK_FROM_ADDRESS\""
+        } >&2
+        exit 1
+    fi
+    printf '%s' "$result"
+}
+
+# The From line for a draft summary. A draft with no `from` goes out from the
+# mailbox's primary address, so say that rather than print nothing.
+DRAFT_FROM_JQ='(.from.emailAddress.address // "(mailbox default)")'
+
+# --- Markdown -> Outlook-safe HTML -------------------------------------------
+# Aptos is the Microsoft 365 default font since 2024; the stack falls back to
+# Segoe UI on older Outlook and Roboto / system sans elsewhere. All styles are
+# inline because Outlook strips <style> blocks, and every <p> gets an inline
+# margin because Outlook ignores paragraph margins that are not inline.
+FONT_STACK="'Aptos', 'Aptos Display', 'Segoe UI', Roboto, sans-serif"
+
+require_pandoc() {
+    command -v pandoc &> /dev/null && return 0
+    echo "Error: pandoc is required for markdown conversion"
+    echo "Install with: brew install pandoc (macOS) or apt install pandoc (Linux)"
+    exit 1
+}
+
+# Convert markdown ($1) to Outlook-safe HTML wrapped in a styled div.
+# $2 = line-height (default 1.5; replies use 1.6).
+md_to_html() {
+    local md="$1" lh="${2:-1.5}" html
+    html=$(printf '%s\n' "$md" | pandoc -f markdown+autolink_bare_uris -t html \
+        | sed 's/<p>/<p style="margin: 0 0 14px 0;">/g')
+    printf '<div style="font-family: %s; font-size: 14px; line-height: %s; color: #333;">\n%s\n</div>' \
+        "$FONT_STACK" "$lh" "$html"
+}
+
+# Run a Graph message $search and print the result object newest-first.
+# The whole query is wrapped in the double quotes Graph requires around a
+# $search value — this is the documented form for plain text AND for KQL field
+# operators alike ($search="subject:pizza", $search="from:john AND subject:x").
+# $search cannot be combined with $orderby server-side, so results (which come
+# back ranked/date-mixed across folders) are sorted client-side by
+# receivedDateTime desc. Follows @odata.nextLink to collect up to <count>
+# messages (hard cap 1000). Usage: run_message_search "<text-or-KQL>" [count|all]
+run_message_search() {
+    local query="$1" max="${2:-10}"
+    case "$max" in all|ALL) max=1000 ;; esac
+    [[ "$max" =~ ^[0-9]+$ ]] || max=10
+    [ "$max" -gt 1000 ] && max=1000
+    [ "$max" -lt 1 ] && max=1
+
+    # Strip any quotes the caller already wrapped the value in, then re-wrap so we
+    # never emit $search=""x"" (which Graph rejects).
+    query="${query%\"}"; query="${query#\"}"
+
+    local encoded page_size url merged page collected next
+    encoded=$(urlencode "\"$query\"")
+
+    page_size=100
+    [ "$max" -lt "$page_size" ] && page_size="$max"
+    url="/me/messages?\$search=${encoded}&\$top=${page_size}&\$select=id,subject,from,receivedDateTime,isRead,bodyPreview"
+    merged='[]'
+    while [ -n "$url" ]; do
+        page=$(api_call GET "$url")
+        if echo "$page" | jq -e '.error' >/dev/null 2>&1; then
+            echo "$page"              # propagate the error object unchanged
+            return 0
+        fi
+        merged=$(jq -n --argjson a "$merged" --argjson b "$(echo "$page" | jq '.value // []')" '$a + $b')
+        collected=$(echo "$merged" | jq 'length')
+        [ "$collected" -ge "$max" ] && break
+        next=$(echo "$page" | jq -r '."@odata.nextLink" // empty')
+        [ -z "$next" ] && break
+        url="${next#"$GRAPH_URL"}"    # nextLink is absolute; strip base for api_call
+    done
+    echo "$merged" | jq --argjson max "$max" '{value: (sort_by(.receivedDateTime) | reverse | .[0:$max])}'
+}
+
+# --- .eml export ------------------------------------------------------------
+# Staging filename for one exported message. outlook_to_md.py derives the archive
+# folder name from the message's own headers, so this name only has to be unique
+# and to sort chronologically in a directory listing. The short id is the same
+# 20-character slice the listing commands print, so an id copied off a listing
+# appears verbatim here. '/' is stripped because the id is server-supplied and
+# would otherwise let a crafted id escape the output directory.
+export_eml_filename() {
+    local received="$1" msg_id="$2" stamp short
+    stamp=$(printf '%s' "$received" | tr -d ':-' | sed 's/\.[0-9]*//; s/Z$//; s/T/_/')
+    short=$(printf '%s' "${msg_id: -20}" | tr -d '/')
+    printf '%s_%s.eml' "$stamp" "$short"
+}
+
+# Validate a --since value and print the Graph $filter fragment for it. The
+# validation is the point: an unparseable date reaches Graph as a filter that
+# either 400s or matches nothing, and "matches nothing" is indistinguishable
+# from "no new mail" - so a typo would silently look like a clean sync.
+export_since_filter() {
+    local since="$1"
+    case "$since" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+        *) echo "Error: --since expects YYYY-MM-DD, got '$since'" >&2; return 1 ;;
+    esac
+    printf 'receivedDateTime ge %sT00:00:00Z' "$since"
+}
+
+# List a folder's messages as {"value":[{id, receivedDateTime}, …]}, newest
+# first, capped at $3. Paging is not optional: $top caps at 1000 per page and a
+# real mail folder holds far more, so a single request would silently export a
+# prefix of the folder and look complete.
+#
+# Returns 1 (rather than printing an error object, as run_message_search does)
+# because the caller writes files: it must stop, not iterate over an error.
+export_list_messages() {
+    local folder_id="$1" since="$2" max="${3:-1000}"
+    [[ "$max" =~ ^[0-9]+$ ]] || max=1000
+    [ "$max" -lt 1 ] && max=1
+
+    local page_size url filter merged page collected next
+    page_size=200
+    [ "$max" -lt "$page_size" ] && page_size="$max"
+
+    url="/me/mailFolders/$folder_id/messages?\$top=${page_size}&\$orderby=receivedDateTime%20desc&\$select=id,receivedDateTime"
+    if [ -n "$since" ]; then
+        filter=$(export_since_filter "$since") || return 1
+        url="${url}&\$filter=$(urlencode "$filter")"
+    fi
+
+    merged='[]'
+    while [ -n "$url" ]; do
+        page=$(api_call GET "$url")
+        if echo "$page" | jq -e '.error' >/dev/null 2>&1; then
+            echo "Error: $(echo "$page" | jq -r '.error.message // .error.code')" >&2
+            return 1
+        fi
+        merged=$(jq -n --argjson a "$merged" --argjson b "$(echo "$page" | jq '.value // []')" '$a + $b')
+        collected=$(echo "$merged" | jq 'length')
+        [ "$collected" -ge "$max" ] && break
+        next=$(echo "$page" | jq -r '."@odata.nextLink" // empty')
+        [ -z "$next" ] && break
+        url="${next#"$GRAPH_URL"}"    # nextLink is absolute; strip base for api_call
+    done
+    echo "$merged" | jq --argjson max "$max" '{value: (sort_by(.receivedDateTime) | reverse | .[0:$max])}'
+}
+
+# List the messages that carry category $1, newest first, capped at $2.
+# Graph rejects $orderby alongside a categories/any() filter on some mailboxes
+# ("restriction or sort order is too complex"), so this pages through the
+# matches and sorts client-side. Asking Graph for only $2 unsorted messages
+# would return an arbitrary slice rather than the newest. The scan stops at
+# CATEGORY_SCAN_MAX, and the output says when it did.
+#
+# Prints {"value":[...], "total": N, "capped": bool}, or the Graph error object.
+CATEGORY_SCAN_MAX=1000
+category_messages() {
+    local name="$1" max="${2:-10}" escaped filter url merged page collected next capped=false
+    [[ "$max" =~ ^[0-9]+$ ]] && [ "$max" -ge 1 ] || max=10
+
+    # OData string literals escape a single quote by doubling it.
+    escaped=$(printf '%s' "$name" | sed "s/'/''/g")
+    filter="categories/any(c:c eq '$escaped')"
+    url="/me/messages?\$filter=$(urlencode "$filter")&\$top=100&\$select=id,subject,from,receivedDateTime,isRead,bodyPreview,categories"
+
+    merged='[]'
+    while [ -n "$url" ]; do
+        page=$(api_call GET "$url")
+        if printf '%s' "$page" | jq -e '.error' >/dev/null 2>&1; then
+            printf '%s' "$page"
+            return 0
+        fi
+        merged=$(jq -n --argjson a "$merged" --argjson b "$(printf '%s' "$page" | jq '.value // []')" '$a + $b')
+        next=$(printf '%s' "$page" | jq -r '."@odata.nextLink" // empty')
+        collected=$(printf '%s' "$merged" | jq 'length')
+        if [ -n "$next" ] && [ "$collected" -ge "$CATEGORY_SCAN_MAX" ]; then
+            capped=true
+            break
+        fi
+        url="${next#"$GRAPH_URL"}"    # nextLink is absolute; strip base for api_call
+    done
+    printf '%s' "$merged" | jq --argjson max "$max" --argjson capped "$capped" \
+        '{total: length, capped: $capped, value: (sort_by(.receivedDateTime) | reverse | .[0:$max])}'
+}
+
+# --- Attachments --------------------------------------------------------------
+# attach_file_to_draft <draft-id> <file> [content-id]
+# Uploads <file> to the draft: a single POST under 3 MB, an upload session above.
+# With a content-id the attachment is inline (isInline, contentId), so the body
+# can show it with <img src="cid:content-id">. `attach` and `signature` both use
+# it. Exits on any error, so call it directly, never in $(...).
+attach_file_to_draft() {
+    local draft_id="$1" file_path="$2" content_id="${3:-}"
+    local file_name file_size content_type SMALL_FILE_LIMIT b64_file payload_file result
+    local session_payload session_result upload_url CHUNK_SIZE offset chunk_end
+    local chunk_length progress bar_filled bar_empty chunk_result inline_note=""
+    [ -n "$content_id" ] && inline_note=" (inline, cid:$content_id)"
+
+    # Get file info
+    file_name=$(basename "$file_path")
+    file_size=$(stat -f%z "$file_path" 2>/dev/null || stat -c%s "$file_path" 2>/dev/null)
+
+    # Detect content type
+    content_type=$(file --mime-type -b "$file_path" 2>/dev/null || echo "application/octet-stream")
+
+    # Size threshold: 3MB = 3145728 bytes
+    SMALL_FILE_LIMIT=3145728
+
+    if [ "$file_size" -lt "$SMALL_FILE_LIMIT" ]; then
+        # Simple upload for small files
+        echo "Attaching $file_name ($(echo "scale=1; $file_size / 1024" | bc)KB)..."
+
+        # Base64 encode to a TEMP FILE, never a shell variable: a variable
+        # would be passed to jq/curl as an argv string and blow Linux's
+        # ~128KB MAX_ARG_STRLEN limit ("Argument list too long") for any
+        # attachment over ~96KB. Keep the bytes off the command line.
+        b64_file=$(mktemp) || { echo "Error: cannot create temp file"; exit 1; }
+        payload_file=$(mktemp) || { rm -f "$b64_file"; echo "Error: cannot create temp file"; exit 1; }
+
+        if base64 --help 2>&1 | grep -q GNU; then
+            base64 -w0 "$file_path" > "$b64_file"
+        else
+            base64 -i "$file_path" | tr -d '\n' > "$b64_file"
+        fi
+
+        jq -n \
+            --arg name "$file_name" \
+            --arg contentType "$content_type" \
+            --arg cid "$content_id" \
+            --rawfile contentBytes "$b64_file" \
+            '{
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": $name,
+                "contentType": $contentType,
+                "contentBytes": ($contentBytes | rtrimstr("\n"))
+            } + (if $cid != "" then {isInline: true, contentId: $cid} else {} end)' > "$payload_file"
+
+        result=$(api_call_file POST "/me/messages/$draft_id/attachments" "$payload_file")
+        rm -f "$b64_file" "$payload_file"
+
+        if echo "$result" | jq -e '.error' > /dev/null 2>&1; then
+            echo "Error attaching file:"
+            echo "$result" | jq -r '.error.message'
+            exit 1
+        fi
+
+        echo "Attached: $file_name to draft$inline_note"
+    else
+        # Chunked upload for large files (3MB - 150MB)
+        echo "Attaching $file_name ($(echo "scale=1; $file_size / 1048576" | bc)MB) via chunked upload..."
+
+        # Create upload session
+        session_payload=$(jq -n \
+            --arg name "$file_name" \
+            --argjson size "$file_size" \
+            --arg cid "$content_id" \
+            '{
+                "AttachmentItem": ({
+                    "attachmentType": "file",
+                    "name": $name,
+                    "size": $size
+                } + (if $cid != "" then {isInline: true, contentId: $cid} else {} end))
+            }')
+
+        session_result=$(api_call POST "/me/messages/$draft_id/attachments/createUploadSession" "$session_payload")
+
+        upload_url=$(echo "$session_result" | jq -r '.uploadUrl // empty')
+        if [ -z "$upload_url" ]; then
+            echo "Error creating upload session:"
+            echo "$session_result" | jq -r '.error.message // .'
+            exit 1
+        fi
+
+        # Upload in 4MB chunks
+        CHUNK_SIZE=4194304
+        offset=0
+
+        while [ "$offset" -lt "$file_size" ]; do
+            # Calculate chunk end
+            chunk_end=$((offset + CHUNK_SIZE - 1))
+            if [ "$chunk_end" -ge "$file_size" ]; then
+                chunk_end=$((file_size - 1))
+            fi
+            chunk_length=$((chunk_end - offset + 1))
+
+            # Progress indicator
+            progress=$((offset * 100 / file_size))
+            bar_filled=$((progress / 10))
+            bar_empty=$((10 - bar_filled))
+            printf "\rUploading: [%s%s] %d%%" "$(printf '#%.0s' $(seq 1 $bar_filled 2>/dev/null) || echo '')" "$(printf ' %.0s' $(seq 1 $bar_empty 2>/dev/null) || echo '')" "$progress"
+
+            # Read the chunk with tail and head, which GNU and BSD (macOS) both
+            # support. It was dd with iflag=skip_bytes,count_bytes, which BSD dd
+            # does not have, so a large attachment failed on a Mac. tail -c +N
+            # counts from 1, and seeks rather than reads on a regular file.
+            # Not through outlook_curl: the chunk arrives on stdin, so it
+            # cannot be sent a second time. It gets the longer transfer timeout.
+            chunk_result=$(tail -c +"$((offset + 1))" "$file_path" | head -c "$chunk_length" | \
+            curl -s --connect-timeout "$OUTLOOK_CONNECT_TIMEOUT" --max-time "$OUTLOOK_TRANSFER_MAX_TIME" \
+                -X PUT "$upload_url" \
+                -H "Content-Type: application/octet-stream" \
+                -H "Content-Length: $chunk_length" \
+                -H "Content-Range: bytes ${offset}-${chunk_end}/${file_size}" \
+                --data-binary @-)
+
+            # Check for errors in chunk upload
+            # Note: Successful uploads return empty body (HTTP 200) or JSON with nextExpectedRanges
+            # Errors return JSON with .error object
+            if [ -n "$chunk_result" ]; then
+                # Only check for errors if there's a response body
+                if echo "$chunk_result" | jq -e '.error' > /dev/null 2>&1; then
+                    echo ""
+                    echo "Error uploading chunk at offset $offset:"
+                    echo "$chunk_result" | jq '.'
+                    exit 1
+                fi
+            fi
+
+            offset=$((chunk_end + 1))
+        done
+
+        printf "\rUploading: [##########] 100%%\n"
+        echo "Attached: $file_name to draft$inline_note"
+    fi
+}
+
+# A content ID goes into the body as cid:<id> and into a MIME header, so keep it
+# to characters that need no escaping in either.
+valid_content_id() {
+    [[ "$1" =~ ^[A-Za-z0-9._@-]+$ ]]
+}
+
+# --- Signature block -----------------------------------------------------------
+# `signature` wraps the block it inserts in these two empty spans, the same way
+# mdreply marks where the quoted chain starts, so `update mdbody` can find the
+# block and keep it. Only the part of the body BEFORE the chain marker is
+# searched: a quoted earlier message of yours can carry a signature block too,
+# and that one belongs to the quote.
+CHAIN_MARKER='<span data-mdreply-chain-start="1"></span>'
+SIG_START='<span data-outlook-signature-start="1"></span>'
+SIG_END='<span data-outlook-signature-end="1"></span>'
+
+# signature_block_of <html>: prints the marked signature block, markers
+# included, from the part of <html> before the chain marker. Prints nothing if
+# there is none.
+signature_block_of() {
+    local head="$1" rest
+    [[ "$head" == *"$CHAIN_MARKER"* ]] && head="${head%%"$CHAIN_MARKER"*}"
+    [[ "$head" == *"$SIG_START"*"$SIG_END"* ]] || return 0
+    rest="${head#*"$SIG_START"}"
+    printf '%s' "${SIG_START}${rest%%"$SIG_END"*}${SIG_END}"
+}
+
+# Every quoted <img src> in an HTML file that points at a local file: not a URL,
+# not cid: and not data:. file:// is local. One per line, sorted, unique.
+# shellcheck disable=SC2016 # jq program, not shell
+SIG_LOCAL_SRCS='[scan("<img\\b[^>]*?\\bsrc\\s*=\\s*(?:\"([^\"]*)\"|\u0027([^\u0027]*)\u0027)"; "i") | (.[0] // .[1])]
+    | map(select(test("^file:"; "i") or (test("^(?:[a-z][a-z0-9+.-]*:|//)"; "i") | not)))
+    | unique | .[]'
+
+# Rewrites each quoted <img src> found in $map (src -> content id) to cid:<id>.
+# shellcheck disable=SC2016 # jq program, not shell
+SIG_REWRITE_SRCS='gsub("(?<pre><img\\b[^>]*?\\bsrc\\s*=\\s*)(?<q>[\"\u0027])(?<src>[^\"\u0027]*)[\"\u0027]";
+    "\(.pre)\(.q)\(if $map[.src] then "cid:" + $map[.src] else .src end)\(.q)"; "i")'
+
+# Commands
+case "$1" in
+    inbox)
+        count="${2:-10}"
+        echo "Fetching inbox ($count messages)..."
+        result=$(api_call GET "/me/mailFolders/inbox/messages?\$top=$count&\$orderby=receivedDateTime%20desc&\$select=id,subject,from,receivedDateTime,isRead,bodyPreview")
+        cache_message_ids "$result"
+        echo "$result" | format_messages
+        ;;
+
+    unread)
+        count="${2:-10}"
+        echo "Fetching unread messages..."
+        result=$(api_call GET "/me/mailFolders/inbox/messages?\$filter=isRead%20eq%20false&\$top=$count&\$orderby=receivedDateTime%20desc&\$select=id,subject,from,receivedDateTime,isRead,bodyPreview")
+        cache_message_ids "$result"
+        echo "$result" | format_messages
+        ;;
+
+    focused)
+        count="${2:-10}"
+        echo "Fetching focused inbox..."
+        # Graph rejects $orderby combined with an inferenceClassification $filter
+        # ("The restriction or sort order is too complex for this operation"),
+        # so sort newest-first client-side instead.
+        result=$(api_call GET "/me/mailFolders/inbox/messages?\$filter=inferenceClassification%20eq%20'focused'&\$top=$count&\$select=id,subject,from,receivedDateTime,isRead,bodyPreview" \
+            | jq 'if .error then . else {value: (.value | sort_by(.receivedDateTime) | reverse)} end')
+        cache_message_ids "$result"
+        echo "$result" | format_messages
+        ;;
+
+    sent)
+        count="${2:-10}"
+        echo "Fetching sent items ($count messages)..."
+        result=$(api_call GET "/me/mailFolders/sentitems/messages?\$top=$count&\$orderby=sentDateTime%20desc&\$select=id,subject,toRecipients,sentDateTime,bodyPreview")
+        cache_message_ids "$result"
+        echo "$result" | jq -r '
+            if .error then
+                "Error: \(.error.message // .error.code // "Unknown API error")"
+            elif (.value | length) == 0 then
+                "No sent messages found."
+            else
+                def short_id: .[-20:];
+                .value | to_entries | .[] |
+                "[\(.key + 1)] \(.value.id | short_id) | \(.value.sentDateTime | split("T")[0]) | To: \(.value.toRecipients[0].emailAddress.address // "unknown") | \(.value.subject // "(no subject)")"
+            end
+        '
+        ;;
+
+    from)
+        sender="$2"
+        count="${3:-10}"
+        if [ -z "$sender" ]; then
+            echo "Usage: outlook-mail.sh from <sender-email> [count]"
+            exit 1
+        fi
+        echo "Fetching emails from $sender (newest first)..."
+        result=$(run_message_search "from:$sender" "$count")
+        cache_message_ids "$result"
+        echo "$result" | format_messages
+        ;;
+
+    search)
+        query="$2"
+        count="${3:-10}"
+        if [ -z "$query" ]; then
+            echo "Usage: outlook-mail.sh search <query> [count]"
+            echo "  <query>  free text OR KQL field operators. Examples:"
+            echo "             search \"invoice March\"                  free text"
+            echo "             search 'subject:invoice AND from:jane@x.com'"
+            echo "             search 'to:me@x.com AND body:contract' 50"
+            echo "  [count]  results to return: default 10, max 1000, or 'all'"
+            echo "  Results come back ranked by Graph, then sorted newest-first."
+            exit 1
+        fi
+        # A bare email address -> precise from: match; otherwise free-text/KQL.
+        if [[ "$query" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+            echo "Searching for emails from $query (newest first)..."
+            result=$(run_message_search "from:$query" "$count")
+        else
+            echo "Searching for: $query (newest first)..."
+            result=$(run_message_search "$query" "$count")
+        fi
+        cache_message_ids "$result"
+        echo "$result" | format_messages
+        ;;
+
+    read)
+        msg_id="$2"
+        if [ -z "$msg_id" ]; then
+            echo "Usage: outlook-mail.sh read <message-id>"
+            exit 1
+        fi
+
+        # Resolve short ID to full ID
+        if ! msg_id=$(resolve_message_id "$msg_id" "messages"); then
+            echo "Error: Message not found with ID: $2"
+            exit 1
+        fi
+
+        echo "Reading message..."
+        # Expand attachments (metadata only) in the same call so image-only /
+        # attachment-only messages are never rendered as a blank body. Inline
+        # images (cid: refs) come back as attachments with isInline=true.
+        api_call GET "/me/messages/$msg_id?\$expand=attachments(\$select=id,name,size,contentType,isInline)" | jq -r "$HTML_TO_TEXT"'
+            def format_size:
+                if . == null then "?"
+                elif . < 1024 then "\(.)B"
+                elif . < 1048576 then "\((. / 1024 * 10 | floor) / 10)KB"
+                else "\((. / 1048576 * 10 | floor) / 10)MB"
+                end;
+            ( (.body.content // "") | html_to_text ) as $text
+            | ( .subject // "" ) as $subj
+            | ( .attachments // [] ) as $atts
+            | "Subject: \(if ($subj | length) > 0 then $subj else "(no subject)" end)",
+              "From: \(.from.emailAddress.name // "") <\(.from.emailAddress.address // "")>",
+              "To: \([.toRecipients[]?.emailAddress | "\(.name // "") <\(.address)>"] | join(", "))",
+              ( if (.ccRecipients // [] | length) > 0 then "Cc: \([.ccRecipients[]?.emailAddress | "\(.name // "") <\(.address)>"] | join(", "))" else empty end),
+              "Date: \(.receivedDateTime)",
+              "---",
+              ( if ($text | length) > 0 then $text
+                elif ($atts | length) > 0 then "(no text body - this message is \($atts | length) attachment(s)/inline image(s); listed below)"
+                else "(no text body)" end ),
+              ( if ($atts | length) > 0 then
+                  "",
+                  "--- Attachments (\($atts | length)) ---",
+                  ( $atts[] | "- \(.name // "(unnamed)") | \(.contentType) | \(.size | format_size)\(if .isInline then " | inline" else "" end)" ),
+                  "Download with: outlook-mail.sh download <message-id>   (saves to ./inbox/)"
+                else empty end )'
+        ;;
+
+    preview)
+        msg_id="$2"
+        if [ -z "$msg_id" ]; then
+            echo "Usage: outlook-mail.sh preview <message-id>"
+            exit 1
+        fi
+
+        # Resolve short ID to full ID
+        if ! msg_id=$(resolve_message_id "$msg_id" "messages"); then
+            echo "Error: Message not found with ID: $2"
+            exit 1
+        fi
+
+        api_call GET "/me/messages/$msg_id?\$select=id,subject,from,receivedDateTime,bodyPreview" | jq -r '
+            "Subject: \(.subject // "(no subject)")",
+            "From: \(.from.emailAddress.address // "")",
+            "Date: \(.receivedDateTime)",
+            "Preview: \(.bodyPreview)"'
+        ;;
+
+    aliases)
+        echo "Addresses account '$ACCOUNT' can send as:"
+        first=1
+        while IFS= read -r addr; do
+            if [ "$first" = 1 ]; then
+                echo "  $addr (primary)"
+                first=0
+            else
+                echo "  $addr"
+            fi
+        done < <(sendable_addresses)
+        if [ "$first" = 1 ]; then
+            echo "  (none found - could not read the mailbox's addresses)"
+            exit 1
+        fi
+        echo
+        echo "Send as one of these with: update <draft-id> from <email>"
+        ;;
+
+    draft)
+        parse_new_draft_args draft "${@:2}" || exit 1
+
+        echo "Creating draft..."
+        payload=$(jq -n \
+            --arg subject "$NEW_DRAFT_SUBJECT" \
+            --arg body "$NEW_DRAFT_BODY" \
+            --argjson recipients "$NEW_DRAFT_RECIPIENTS" \
+            --argjson from "$(draft_from_fragment)" \
+            '{
+                subject: $subject,
+                body: {
+                    contentType: "Text",
+                    content: $body
+                }
+            } + $recipients + $from')
+
+        result=$(api_call POST "/me/messages" "$payload")
+        draft_id=$(echo "$result" | jq -r '.id')
+
+        if [ -z "$draft_id" ] || [ "$draft_id" = "null" ]; then
+            echo "Error creating draft:"
+            echo "$result" | jq -r '.error.message // .'
+            exit 1
+        fi
+
+        echo "Draft created!"
+        echo "Draft ID: ${draft_id: -20}"
+        echo
+        echo "$result" | jq -r '"From: \('"$DRAFT_FROM_JQ"')"'
+        echo "$result" | jq -r "$NEW_DRAFT_RECIPIENTS_JQ"
+        echo "$result" | jq -r '"Subject: \(.subject)", "Body: \(.body.content)"'
+        ;;
+
+    mddraft)
+        parse_new_draft_args mddraft "${@:2}" || exit 1
+
+        require_pandoc
+
+        echo "Creating markdown draft..."
+        html_body=$(md_to_html "$NEW_DRAFT_BODY")
+
+        payload=$(jq -n \
+            --arg subject "$NEW_DRAFT_SUBJECT" \
+            --arg body "$html_body" \
+            --argjson recipients "$NEW_DRAFT_RECIPIENTS" \
+            --argjson from "$(draft_from_fragment)" \
+            '{
+                subject: $subject,
+                body: {
+                    contentType: "HTML",
+                    content: $body
+                }
+            } + $recipients + $from')
+
+        result=$(api_call POST "/me/messages" "$payload")
+        draft_id=$(echo "$result" | jq -r '.id')
+
+        if [ -z "$draft_id" ] || [ "$draft_id" = "null" ]; then
+            echo "Error creating draft:"
+            echo "$result" | jq -r '.error.message // .'
+            exit 1
+        fi
+
+        echo "Draft created (HTML from Markdown)!"
+        echo "Draft ID: ${draft_id: -20}"
+        echo
+        echo "$result" | jq -r '"From: \('"$DRAFT_FROM_JQ"')"'
+        echo "$result" | jq -r "$NEW_DRAFT_RECIPIENTS_JQ"
+        echo "$result" | jq -r '"Subject: \(.subject)"'
+        ;;
+
+    reply)
+        msg_id="$2"
+        body="$3"
+        if [ -z "$msg_id" ] || [ -z "$body" ]; then
+            echo "Usage: outlook-mail.sh reply <message-id> <body>"
+            exit 1
+        fi
+
+        # Resolve short ID to full ID
+        if ! msg_id=$(resolve_message_id "$msg_id" "messages"); then
+            echo "Error: Message not found with ID: $2"
+            exit 1
+        fi
+
+        echo "Creating reply-all draft..."
+        payload=$(jq -n --arg body "$body" '{comment: $body}')
+
+        result=$(api_call POST "/me/messages/$msg_id/createReplyAll" "$payload")
+        draft_id=$(echo "$result" | jq -r '.id')
+
+        if [ -z "$draft_id" ] || [ "$draft_id" = "null" ]; then
+            echo "Error creating reply:"
+            echo "$result" | jq -r '.error.message // .'
+            exit 1
+        fi
+        result=$(apply_from_to_draft "$draft_id" "$result")
+
+        echo "Reply draft created!"
+        echo "Draft ID: ${draft_id: -20}"
+        echo
+        echo "$result" | jq -r '
+            "From:    \('"$DRAFT_FROM_JQ"')",
+            "To:      \(.toRecipients | map(.emailAddress.address) | join(", "))",
+            (if (.ccRecipients | length) > 0 then "Cc:      \(.ccRecipients | map(.emailAddress.address) | join(", "))" else empty end),
+            (if (.bccRecipients | length) > 0 then "Bcc:     \(.bccRecipients | map(.emailAddress.address) | join(", "))" else empty end),
+            "Subject: \(.subject)"
+        '
+        ;;
+
+    update)
+        draft_id="$2"
+        field="$3"
+        value="$4"
+        if [ -z "$draft_id" ] || [ -z "$field" ]; then
+            echo "Usage: outlook-mail.sh update <draft-id> <field> <value>"
+            echo ""
+            echo "Fields:"
+            echo "  subject <text>     Update subject line"
+            echo "  body <text>        Replace body (plain text)"
+            echo "  mdbody <markdown>  Replace body (markdown -> HTML)"
+            echo "  to <emails>        Set To recipient(s) - comma/semicolon-separated; replaces the To line"
+            echo "  cc <emails>        Add CC recipient(s) - comma/semicolon-separated; dedups; empty string clears CC"
+            echo "  bcc <emails>       Add BCC recipient(s) - comma/semicolon-separated; dedups; empty string clears BCC"
+            echo "  from <email>       Send as an alias - must be an address this mailbox may send as (see: aliases)"
+            echo "  importance <level> Set message importance: low, normal, or high"
+            exit 1
+        fi
+
+        # Resolve short ID to full ID (search in drafts folder)
+        if ! draft_id=$(resolve_message_id "$draft_id" "drafts"); then
+            echo "Error: Draft not found with ID: $2"
+            exit 1
+        fi
+
+        case "$field" in
+            subject)
+                if [ -z "$value" ]; then
+                    echo "Error: Subject value required"
+                    exit 1
+                fi
+                echo "Updating subject..."
+                payload=$(jq -n --arg subject "$value" '{subject: $subject}')
+                ;;
+            body)
+                if [ -z "$value" ]; then
+                    echo "Error: Body value required"
+                    exit 1
+                fi
+                echo "Updating body (plain text)..."
+                payload=$(jq -n --arg body "$value" '{body: {contentType: "Text", content: $body}}')
+                ;;
+            mdbody)
+                if [ -z "$value" ]; then
+                    echo "Error: Body value required"
+                    exit 1
+                fi
+                require_pandoc
+                echo "Updating body (markdown -> HTML)..."
+                html_body=$(md_to_html "$value")
+
+                # Preserve reply chain if the draft was created via mdreply or followup.
+                # Those commands inject a `<span data-mdreply-chain-start="1"></span>`
+                # marker between the new message and the quoted history. If we find
+                # that marker, keep everything from the marker onwards.
+                # A block added by `signature` is kept too, between the new
+                # message and the chain, so an edit never drops it.
+                chain_marker="$CHAIN_MARKER"
+                existing_body=$(api_call GET "/me/messages/$draft_id?\$select=body" | jq -r '.body.content // ""')
+                sig_part=$(signature_block_of "$existing_body")
+                [ -n "$sig_part" ] && sig_part="<br/>${sig_part}"
+                if [[ "$existing_body" == *"$chain_marker"* ]]; then
+                    # Everything from the first occurrence of the marker onwards
+                    chain_part="${chain_marker}${existing_body#*"$chain_marker"}"
+                    full_body="${html_body}${sig_part}<br/>${chain_part}"
+                else
+                    full_body="${html_body}${sig_part}"
+                fi
+
+                payload=$(jq -n --arg body "$full_body" '{body: {contentType: "HTML", content: $body}}')
+                ;;
+            to)
+                if [ -z "$value" ]; then
+                    echo "Error: Email address required"
+                    exit 1
+                fi
+                # Accepts a comma/semicolon-separated list; replaces the To line.
+                new_recips=$(recipients_to_json "$value")
+                if [ "$(echo "$new_recips" | jq 'length')" -eq 0 ]; then
+                    echo "Error: No valid email address provided"
+                    exit 1
+                fi
+                echo "Updating To recipient(s)..."
+                payload=$(jq -n --argjson arr "$new_recips" '{toRecipients: $arr}')
+                ;;
+            cc)
+                # Empty value clears the CC line; otherwise accepts a
+                # comma/semicolon-separated list and appends to existing CC,
+                # skipping addresses already present (case-insensitive) so re-adding
+                # is a no-op rather than creating duplicate/malformed recipients.
+                if [ -z "$value" ]; then
+                    echo "Clearing CC recipients..."
+                    payload='{"ccRecipients": []}'
+                else
+                    new_recips=$(recipients_to_json "$value")
+                    if [ "$(echo "$new_recips" | jq 'length')" -eq 0 ]; then
+                        echo "Error: No valid email address provided"
+                        exit 1
+                    fi
+                    echo "Adding CC recipient(s)..."
+                    existing=$(api_call GET "/me/messages/$draft_id?\$select=ccRecipients" | jq '.ccRecipients // []')
+                    payload=$(jq -n --argjson ex "$existing" --argjson new "$new_recips" '
+                        ($ex | map(.emailAddress.address // "" | ascii_downcase)) as $have
+                        | {ccRecipients: ($ex + ($new | map(select((.emailAddress.address // "" | ascii_downcase) as $a | ($have | index($a)) | not))))}')
+                fi
+                ;;
+            bcc)
+                # Empty value clears the BCC line; otherwise accepts a
+                # comma/semicolon-separated list and appends to existing BCC,
+                # skipping addresses already present (case-insensitive).
+                if [ -z "$value" ]; then
+                    echo "Clearing BCC recipients..."
+                    payload='{"bccRecipients": []}'
+                else
+                    new_recips=$(recipients_to_json "$value")
+                    if [ "$(echo "$new_recips" | jq 'length')" -eq 0 ]; then
+                        echo "Error: No valid email address provided"
+                        exit 1
+                    fi
+                    echo "Adding BCC recipient(s)..."
+                    existing=$(api_call GET "/me/messages/$draft_id?\$select=bccRecipients" | jq '.bccRecipients // []')
+                    payload=$(jq -n --argjson ex "$existing" --argjson new "$new_recips" '
+                        ($ex | map(.emailAddress.address // "" | ascii_downcase)) as $have
+                        | {bccRecipients: ($ex + ($new | map(select((.emailAddress.address // "" | ascii_downcase) as $a | ($have | index($a)) | not))))}')
+                fi
+                ;;
+            from)
+                # Send as an alias. Works on ANY draft - including those made by
+                # reply/mdreply/forward/followup - because they all leave a draft
+                # behind to PATCH. The address must be one the mailbox may send
+                # as; warn_if_not_sendable explains why an unknown one is a
+                # warning rather than an error.
+                if [ -z "$value" ]; then
+                    echo "Error: Email address required"
+                    echo "Run 'outlook-mail.sh aliases' to list sendable addresses"
+                    exit 1
+                fi
+                warn_if_not_sendable "$value"
+                echo "Setting From address to $value..."
+                payload=$(jq -n --argjson from "$(from_to_json "$value" "${OUTLOOK_FROM_NAME:-}")" '{from: $from}')
+                ;;
+            importance)
+                lvl=$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')
+                case "$lvl" in
+                    low|normal|high) ;;
+                    *) echo "Error: importance must be low, normal, or high"; exit 1 ;;
+                esac
+                echo "Setting importance to $lvl..."
+                payload=$(jq -n --arg v "$lvl" '{importance: $v}')
+                ;;
+            *)
+                echo "Error: Unknown field '$field'"
+                echo "Valid fields: subject, body, mdbody, to, cc, bcc, from, importance"
+                exit 1
+                ;;
+        esac
+
+        result=$(api_call PATCH "/me/messages/$draft_id" "$payload")
+
+        if echo "$result" | jq -e '.error' > /dev/null 2>&1; then
+            echo "Error updating draft:"
+            echo "$result" | jq -r '.error.message'
+            exit 1
+        fi
+
+        echo "Draft updated!"
+        echo "$result" | jq -r '
+            (if (.from.emailAddress.address // "") != "" then "From:    \(.from.emailAddress.address)" else empty end),
+            "To:      \((.toRecipients // []) | map(.emailAddress.address) | join(", ") | (if . == "" then "none" else . end))",
+            (if ((.ccRecipients // []) | length) > 0 then "Cc:      \(.ccRecipients | map(.emailAddress.address) | join(", "))" else empty end),
+            (if ((.bccRecipients // []) | length) > 0 then "Bcc:     \(.bccRecipients | map(.emailAddress.address) | join(", "))" else empty end),
+            "Subject: \(.subject // "(no subject)")"
+        '
+        ;;
+
+    mdreply)
+        msg_id="$2"
+        body="$3"
+        if [ -z "$msg_id" ] || [ -z "$body" ]; then
+            echo "Usage: outlook-mail.sh mdreply <message-id> <markdown-body>"
+            exit 1
+        fi
+
+        require_pandoc
+
+        # Resolve short ID to full ID
+        if ! msg_id=$(resolve_message_id "$msg_id" "messages"); then
+            echo "Error: Message not found with ID: $2"
+            exit 1
+        fi
+
+        echo "Creating reply-all draft with markdown formatting..."
+
+        # Step 1: Create reply-all draft (empty comment to get thread headers)
+        # createReplyAll preserves all original To: and Cc: recipients - this is the
+        # correct default for litigation/business threads where dropping CCs is harmful.
+        # To reply to the sender only, use mdreply and then `update to <email>` after.
+        result=$(api_call POST "/me/messages/$msg_id/createReplyAll" '{}')
+        draft_id=$(echo "$result" | jq -r '.id')
+
+        if [ -z "$draft_id" ] || [ "$draft_id" = "null" ]; then
+            echo "Error creating reply:"
+            echo "$result" | jq -r '.error.message // .'
+            exit 1
+        fi
+
+        # Step 2: Get the existing body (contains the quoted thread)
+        existing_body=$(echo "$result" | jq -r '.body.content // ""')
+
+        # Step 3: Convert markdown to HTML and prepend to the existing thread.
+        # The `data-mdreply-chain-start` marker lets `update mdbody` find the
+        # boundary between the new message and the quoted chain so subsequent
+        # edits can replace the message without losing the chain.
+        html_body=$(md_to_html "$body" 1.6)
+        combined_body="${html_body}
+<br/>
+<span data-mdreply-chain-start=\"1\"></span>
+${existing_body}"
+
+        # Step 4: PATCH the draft to update body with combined HTML, and the
+        # From when OUTLOOK_FROM_ADDRESS is set (createReplyAll takes no from).
+        patch_payload=$(jq -n \
+            --arg body "$combined_body" \
+            --argjson from "$(draft_from_fragment)" \
+            '{
+                body: {
+                    contentType: "HTML",
+                    content: $body
+                }
+            } + $from')
+
+        patch_result=$(api_call PATCH "/me/messages/$draft_id" "$patch_payload")
+
+        if echo "$patch_result" | jq -e '.error' > /dev/null 2>&1; then
+            echo "Error updating draft body:"
+            echo "$patch_result" | jq -r '.error.message'
+            exit 1
+        fi
+
+        echo "Reply draft created (HTML from Markdown)!"
+        echo "Draft ID: ${draft_id: -20}"
+        echo
+        echo "$patch_result" | jq -r '
+            "From:    \('"$DRAFT_FROM_JQ"')",
+            "To:      \(.toRecipients | map(.emailAddress.address) | join(", "))",
+            (if (.ccRecipients | length) > 0 then "Cc:      \(.ccRecipients | map(.emailAddress.address) | join(", "))" else empty end),
+            (if (.bccRecipients | length) > 0 then "Bcc:     \(.bccRecipients | map(.emailAddress.address) | join(", "))" else empty end),
+            "Subject: \(.subject)"
+        '
+        ;;
+
+    followup)
+        msg_id="$2"
+        body="$3"
+        if [ -z "$msg_id" ]; then
+            echo "Usage: outlook-mail.sh followup <sent-message-id> [markdown-body]"
+            echo "       Creates a follow-up reply to your own sent email (chaser)"
+            echo "       Body defaults to a standard follow-up message if not provided"
+            exit 1
+        fi
+
+        require_pandoc
+
+        # Resolve short ID from sent items folder
+        if ! msg_id=$(resolve_message_id "$msg_id" "sentitems"); then
+            echo "Error: Sent message not found with ID: $2"
+            exit 1
+        fi
+
+        # Default follow-up body if not provided
+        if [ -z "$body" ]; then
+            body="Hi,
+
+Just following up on my email below.
+
+Please let me know if you have any questions or need any additional information."
+        fi
+
+        echo "Creating follow-up draft for sent message..."
+
+        # Step 1: Create reply draft using replyAll to include all original recipients
+        result=$(api_call POST "/me/messages/$msg_id/createReplyAll" '{}')
+        draft_id=$(echo "$result" | jq -r '.id')
+
+        if [ -z "$draft_id" ] || [ "$draft_id" = "null" ]; then
+            echo "Error creating follow-up:"
+            echo "$result" | jq -r '.error.message // .'
+            exit 1
+        fi
+
+        # Step 2: Get the existing body (contains the quoted thread)
+        existing_body=$(echo "$result" | jq -r '.body.content // ""')
+
+        # Step 3: Convert markdown to HTML and prepend to the existing thread.
+        # The `data-mdreply-chain-start` marker lets `update mdbody` find the
+        # boundary between the new message and the quoted chain so subsequent
+        # edits can replace the message without losing the chain.
+        html_body=$(md_to_html "$body" 1.6)
+        combined_body="${html_body}
+<br/>
+<span data-mdreply-chain-start=\"1\"></span>
+${existing_body}"
+
+        # Step 4: PATCH the draft to update body with combined HTML, and the
+        # From when OUTLOOK_FROM_ADDRESS is set (createReplyAll takes no from).
+        patch_payload=$(jq -n \
+            --arg body "$combined_body" \
+            --argjson from "$(draft_from_fragment)" \
+            '{
+                body: {
+                    contentType: "HTML",
+                    content: $body
+                }
+            } + $from')
+
+        patch_result=$(api_call PATCH "/me/messages/$draft_id" "$patch_payload")
+
+        if echo "$patch_result" | jq -e '.error' > /dev/null 2>&1; then
+            echo "Error updating draft body:"
+            echo "$patch_result" | jq -r '.error.message'
+            exit 1
+        fi
+
+        echo "Follow-up draft created!"
+        echo "Draft ID: ${draft_id: -20}"
+        echo
+        echo "$patch_result" | jq -r '
+            "From:    \('"$DRAFT_FROM_JQ"')",
+            "To:      \(.toRecipients | map(.emailAddress.address) | join(", "))",
+            (if (.ccRecipients | length) > 0 then "Cc:      \(.ccRecipients | map(.emailAddress.address) | join(", "))" else empty end),
+            (if (.bccRecipients | length) > 0 then "Bcc:     \(.bccRecipients | map(.emailAddress.address) | join(", "))" else empty end),
+            "Subject: \(.subject)"
+        '
+        echo
+        echo "Use 'outlook-mail.sh send ${draft_id: -20}' to send"
+        ;;
+
+    forward)
+        msg_id="$2"
+        to="$3"
+        body="$4"
+        if [ -z "$msg_id" ] || [ -z "$to" ]; then
+            echo "Usage: outlook-mail.sh forward <message-id> <to-emails> [markdown-comment]"
+            echo "       Creates a forward DRAFT with the full quoted message and any"
+            echo "       attachments. <to-emails> is comma/semicolon-separated. The"
+            echo "       optional comment is markdown, converted to styled HTML."
+            exit 1
+        fi
+
+        if ! msg_id=$(resolve_message_id "$msg_id" "messages"); then
+            echo "Error: Message not found with ID: $2"
+            exit 1
+        fi
+
+        recips=$(recipients_to_json "$to")
+        if [ "$(echo "$recips" | jq 'length')" -eq 0 ]; then
+            echo "Error: No valid recipient address provided"
+            exit 1
+        fi
+
+        echo "Creating forward draft..."
+        result=$(api_call POST "/me/messages/$msg_id/createForward" "$(jq -n --argjson r "$recips" '{toRecipients: $r}')")
+        draft_id=$(echo "$result" | jq -r '.id')
+
+        if [ -z "$draft_id" ] || [ "$draft_id" = "null" ]; then
+            echo "Error creating forward:"
+            echo "$result" | jq -r '.error.message // .'
+            exit 1
+        fi
+
+        # Optional markdown comment above the forwarded message, with the same
+        # chain marker mdreply uses so `update mdbody` can edit it safely.
+        if [ -n "$body" ]; then
+            require_pandoc
+            existing_body=$(echo "$result" | jq -r '.body.content // ""')
+            html_body=$(md_to_html "$body" 1.6)
+            combined_body="${html_body}
+<br/>
+<span data-mdreply-chain-start=\"1\"></span>
+${existing_body}"
+            patch_result=$(api_call PATCH "/me/messages/$draft_id" \
+                "$(jq -n --arg body "$combined_body" --argjson from "$(draft_from_fragment)" \
+                    '{body: {contentType: "HTML", content: $body}} + $from')")
+            if echo "$patch_result" | jq -e '.error' > /dev/null 2>&1; then
+                echo "Error adding comment to forward draft:"
+                echo "$patch_result" | jq -r '.error.message'
+                exit 1
+            fi
+            result="$patch_result"
+        else
+            result=$(apply_from_to_draft "$draft_id" "$result")
+        fi
+
+        echo "Forward draft created!"
+        echo "Draft ID: ${draft_id: -20}"
+        echo
+        echo "$result" | jq -r '
+            "From:    \('"$DRAFT_FROM_JQ"')",
+            "To:      \(.toRecipients | map(.emailAddress.address) | join(", "))",
+            "Subject: \(.subject)"
+        '
+        echo
+        echo "Use 'outlook-mail.sh send ${draft_id: -20}' to send"
+        ;;
+
+    send)
+        msg_id="$2"
+        if [ -z "$msg_id" ]; then
+            echo "Usage: outlook-mail.sh send <draft-id>"
+            exit 1
+        fi
+
+        # Resolve short ID to full ID (search in drafts folder)
+        if ! msg_id=$(resolve_message_id "$msg_id" "drafts"); then
+            echo "Error: Draft not found with ID: $2"
+            exit 1
+        fi
+
+        # Show exactly what is about to go out, read back from Graph rather than
+        # remembered, so a wrong identity or recipient is on screen before the
+        # send and not after. If the draft cannot be read, nothing is sent.
+        draft=$(api_call GET "/me/messages/$msg_id?\$select=from,toRecipients,ccRecipients,bccRecipients,subject,isDraft")
+        if ! printf '%s' "$draft" | jq -e 'type == "object" and (has("error") | not) and has("subject")' >/dev/null 2>&1; then
+            echo "Error: could not read the draft before sending, so nothing was sent:"
+            printf '%s' "$draft" | jq -r '.error.message // .error.code // "no response"' 2>/dev/null
+            exit 1
+        fi
+        if printf '%s' "$draft" | jq -e '.isDraft == false' >/dev/null 2>&1; then
+            echo "Error: ${msg_id: -20} is not a draft (it has already been sent). Nothing was sent."
+            exit 1
+        fi
+        from_addr=$(printf '%s' "$draft" | jq -r '.from.emailAddress.address // empty')
+        if [ -z "$from_addr" ]; then
+            from_addr="$(api_call GET "/me?\$select=mail,userPrincipalName" | jq -r '.mail // .userPrincipalName // "the mailbox primary address"' 2>/dev/null) (mailbox default)"
+        fi
+        attachments=$(api_call GET "/me/messages/$msg_id/attachments?\$select=name,isInline" \
+            | jq -r 'if .error then "(could not list: \(.error.message // .error.code))"
+                     else ([.value[]? | .name + (if .isInline then " (inline)" else "" end)] | if length == 0 then "(none)" else join(", ") end) end' 2>/dev/null)
+
+        echo "About to send:"
+        echo "  From:        $from_addr"
+        printf '%s' "$draft" | jq -r '
+            def addrs: if (. // []) | length == 0 then "(none)" else map(.emailAddress.address) | join(", ") end;
+            "  To:          \(.toRecipients | addrs)",
+            "  Cc:          \(.ccRecipients | addrs)",
+            "  Bcc:         \(.bccRecipients | addrs)",
+            "  Subject:     \(.subject // "(no subject)")"'
+        echo "  Attachments: ${attachments:-(none)}"
+        if [ -n "${OUTLOOK_FROM_ADDRESS:-}" ] \
+           && ! printf '%s\n' "${from_addr%% *}" | address_in_list "$OUTLOOK_FROM_ADDRESS"; then
+            echo "Warning: OUTLOOK_FROM_ADDRESS is $OUTLOOK_FROM_ADDRESS, but this draft sends from ${from_addr%% *}." >&2
+            echo "  Set it with: outlook-mail.sh update ${msg_id: -20} from \"$OUTLOOK_FROM_ADDRESS\"" >&2
+        fi
+
+        echo "Sending..."
+        result=$(api_call POST "/me/messages/$msg_id/send")
+
+        if [ -n "$result" ]; then
+            echo "Error sending:"
+            echo "$result" | jq -r '.error.message // .'
+            exit 1
+        fi
+
+        echo "Email sent successfully!"
+        ;;
+
+    drafts)
+        count="${2:-10}"
+        echo "Fetching drafts..."
+        result=$(api_call GET "/me/mailFolders/drafts/messages?\$top=$count&\$orderby=createdDateTime%20desc&\$select=id,subject,toRecipients,createdDateTime")
+        cache_message_ids "$result"
+        echo "$result" | jq -r '
+            if .error then
+                "Error: \(.error.message // .error.code // "Unknown API error")"
+            elif (.value | length) == 0 then
+                "No drafts found."
+            else
+                def short_id: .[-20:];
+                .value | to_entries | .[] |
+                "[\(.key + 1)] \(.value.id | short_id) | \(.value.createdDateTime | split("T")[0]) | To: \(.value.toRecipients[0].emailAddress.address // "none") | \(.value.subject // "(no subject)")"
+            end
+        '
+        ;;
+
+    markread)
+        msg_id="$2"
+        if [ -z "$msg_id" ]; then
+            echo "Usage: outlook-mail.sh markread <message-id>"
+            exit 1
+        fi
+
+        if ! msg_id=$(resolve_message_id "$msg_id" "messages"); then
+            echo "Error: Message not found with ID: $2"
+            exit 1
+        fi
+
+        die_on_error "$(api_call PATCH "/me/messages/$msg_id" '{"isRead": true}')" "marking as read"
+        echo "Marked as read"
+        ;;
+
+    markunread)
+        msg_id="$2"
+        if [ -z "$msg_id" ]; then
+            echo "Usage: outlook-mail.sh markunread <message-id>"
+            exit 1
+        fi
+
+        if ! msg_id=$(resolve_message_id "$msg_id" "messages"); then
+            echo "Error: Message not found with ID: $2"
+            exit 1
+        fi
+
+        die_on_error "$(api_call PATCH "/me/messages/$msg_id" '{"isRead": false}')" "marking as unread"
+        echo "Marked as unread"
+        ;;
+
+    flag)
+        msg_id="$2"
+        if [ -z "$msg_id" ]; then
+            echo "Usage: outlook-mail.sh flag <message-id>"
+            exit 1
+        fi
+        if ! msg_id=$(resolve_message_id "$msg_id" "messages"); then
+            echo "Error: Message not found with ID: $2"
+            exit 1
+        fi
+        die_on_error "$(api_call PATCH "/me/messages/$msg_id" '{"flag": {"flagStatus": "flagged"}}')" "flagging message"
+        echo "Flagged for follow-up"
+        ;;
+
+    unflag)
+        msg_id="$2"
+        if [ -z "$msg_id" ]; then
+            echo "Usage: outlook-mail.sh unflag <message-id>"
+            exit 1
+        fi
+        if ! msg_id=$(resolve_message_id "$msg_id" "messages"); then
+            echo "Error: Message not found with ID: $2"
+            exit 1
+        fi
+        die_on_error "$(api_call PATCH "/me/messages/$msg_id" '{"flag": {"flagStatus": "notFlagged"}}')" "clearing flag"
+        echo "Flag cleared"
+        ;;
+
+    flagged)
+        count="${2:-10}"
+        echo "Fetching flagged messages..."
+        # $orderby cannot be combined with this $filter on all mailboxes, so
+        # sort newest-first client-side.
+        result=$(api_call GET "/me/messages?\$filter=flag/flagStatus%20eq%20'flagged'&\$top=$count&\$select=id,subject,from,receivedDateTime,isRead,bodyPreview" \
+            | jq 'if .error then . else {value: (.value | sort_by(.receivedDateTime) | reverse)} end')
+        cache_message_ids "$result"
+        echo "$result" | format_messages
+        ;;
+
+    thread)
+        msg_id="$2"
+        count="${3:-25}"
+        if [ -z "$msg_id" ]; then
+            echo "Usage: outlook-mail.sh thread <message-id> [count]"
+            echo "       Lists every message in the same conversation, oldest first."
+            exit 1
+        fi
+        if ! msg_id=$(resolve_message_id "$msg_id" "messages"); then
+            echo "Error: Message not found with ID: $2"
+            exit 1
+        fi
+        conv_id=$(api_call GET "/me/messages/$msg_id?\$select=conversationId" | jq -r '.conversationId // empty')
+        if [ -z "$conv_id" ]; then
+            echo "Error: Could not determine conversation for message"
+            exit 1
+        fi
+        echo "Fetching conversation (up to $count messages, oldest first)..."
+        filter=$(urlencode "conversationId eq '$conv_id'")
+        result=$(api_call GET "/me/messages?\$filter=$filter&\$top=$count&\$select=id,subject,from,receivedDateTime,isRead,bodyPreview" \
+            | jq 'if .error then . else {value: (.value | sort_by(.receivedDateTime))} end')
+        cache_message_ids "$result"
+        echo "$result" | format_messages
+        ;;
+
+    category)
+        cat_name="$2"
+        count="${3:-10}"
+        if [ -z "$cat_name" ]; then
+            echo "Usage: outlook-mail.sh category <name> [count]"
+            echo "  Lists the messages that carry the category, in any folder, newest first."
+            exit 1
+        fi
+        echo "Fetching messages in category \"$cat_name\"..."
+        result=$(category_messages "$cat_name" "$count")
+        cache_message_ids "$result"
+        echo "$result" | format_messages
+        printf '%s' "$result" | jq -r --arg n "$cat_name" '
+            select(.error | not)
+            | if .capped then "Showing \(.value | length) of the first \(.total) found. The scan stops there; narrow it with search."
+              elif .total > (.value | length) then "Showing \(.value | length) of \(.total). Pass a larger count to see the rest: category \"\($n)\" \(.total)"
+              else empty end'
+        ;;
+
+    categories)
+        echo "Master category list:"
+        api_call GET "/me/outlook/masterCategories" | jq -r '
+            if .error then
+                "Error: \(.error.message // .error.code // "Unknown API error")"
+            elif (.value | length) == 0 then
+                "No categories defined."
+            else
+                .value[] | "- \(.displayName) (\(.color // "no colour"))"
+            end
+        '
+        ;;
+
+    categorize)
+        msg_id="$2"
+        if [ -z "$msg_id" ]; then
+            echo "Usage: outlook-mail.sh categorize <message-id> <categories>"
+            echo "       <categories> is comma-separated (must match names from"
+            echo "       'categories'); an empty string clears all categories."
+            echo "       categorize <message-id> --add <category>     add one, keep the rest"
+            echo "       categorize <message-id> --remove <category>  remove one, keep the rest"
+            exit 1
+        fi
+        if ! msg_id=$(resolve_message_id "$msg_id" "messages"); then
+            echo "Error: Message not found with ID: $2"
+            exit 1
+        fi
+        case "$3" in
+            --add|--remove)
+                one="$4"
+                if [ -z "$one" ]; then
+                    echo "Usage: outlook-mail.sh categorize <message-id> $3 <category>"
+                    exit 1
+                fi
+                if [ -n "$5" ]; then
+                    echo "Error: too many arguments for $3; expected exactly one category name" >&2
+                    echo "Usage: outlook-mail.sh categorize <message-id> $3 <category>" >&2
+                    exit 1
+                fi
+                # Note: get-then-patch is not atomic; concurrent --add/--remove calls on the
+                # same message can race and the later write may drop the earlier change.
+                # Graph offers no compare-and-swap, so this limitation is accepted for
+                # single-user automation. The fix would require server-side support.
+                current_raw=$(api_call GET "/me/messages/$msg_id?\$select=categories")
+                die_on_error "$current_raw" "reading current categories"
+                current=$(printf '%s' "$current_raw" | jq -c '.categories // []')
+                if [ "$3" = "--add" ]; then
+                    updated=$(printf '%s' "$current" | categories_add "$one")
+                    cat_id_check=$(resolve_category_id "$one") && cat_rc=0 || cat_rc=$?
+                    if [ "$cat_rc" -ne 0 ]; then
+                        # The master-list check is advisory only for --add: whether
+                        # the category is coloured is separate from whether it can
+                        # be applied to this message, so a failed check must not
+                        # block the write and must not be misreported as "not in
+                        # the master list" (we simply don't know).
+                        echo "Warning: could not check '$one' against the master category list:" >&2
+                        printf '%s' "$cat_id_check" | jq -r '.error.message // .error.code' >&2
+                    elif [ -z "$cat_id_check" ]; then
+                        echo "Note: '$one' is not in the master list, so it will show without a colour."
+                        echo "      Create it with: outlook-mail.sh mkcategory \"$one\" <colour>"
+                    fi
+                else
+                    updated=$(printf '%s' "$current" | categories_remove "$one")
+                fi
+                payload=$(jq -n --argjson c "$updated" '{categories: $c}')
+                ;;
+            -*)
+                # Anything else starting with '-' is a near-miss flag (wrong case,
+                # a typo, an unsupported verb), not a category name. Falling
+                # through to the replace form below would PATCH the message's
+                # categories to a single-element list containing the flag text
+                # itself, silently wiping every real category. Reject before any
+                # read or write.
+                echo "Error: unrecognised flag '$3' for categorize" >&2
+                echo "Valid flags: --add, --remove" >&2
+                echo "To replace the whole category list, pass a plain comma-separated value that does not start with '-'." >&2
+                exit 1
+                ;;
+            *)
+                cats="$3"
+                payload=$(jq -n --arg raw "$cats" \
+                    '{categories: ($raw | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)))}')
+                ;;
+        esac
+        result=$(api_call PATCH "/me/messages/$msg_id" "$payload")
+        if echo "$result" | jq -e '.error' > /dev/null 2>&1; then
+            echo "Error setting categories:"
+            echo "$result" | jq -r '.error.message'
+            exit 1
+        fi
+        echo "$result" | jq -r 'if (.categories | length) == 0 then "Categories cleared" else "Categories set: \(.categories | join(", "))" end'
+        ;;
+
+    mkcategory)
+        cat_name="$2"
+        cat_colour="$3"
+        if [ -z "$cat_name" ]; then
+            echo "Usage: outlook-mail.sh mkcategory <name> [colour]"
+            echo "       colour is a name (red, dark blue, ...) or a presetN value"
+            echo "       Names: $CATEGORY_COLOUR_NAMES"
+            exit 1
+        fi
+        preset=""
+        if [ -n "$cat_colour" ]; then
+            if ! preset=$(category_colour_to_preset "$cat_colour"); then
+                echo "Error: unknown colour '$cat_colour'" >&2
+                echo "Valid names: $CATEGORY_COLOUR_NAMES" >&2
+                echo "Or a raw preset0 to preset24 value." >&2
+                exit 1
+            fi
+        fi
+        existing=$(category_json "$cat_name") && cat_rc=0 || cat_rc=$?
+        if [ "$cat_rc" -ne 0 ]; then
+            echo "Error: could not read the master category list, so not creating '$cat_name'." >&2
+            printf '%s' "$existing" | jq -r '.error.message // .error.code' >&2
+            exit 1
+        fi
+        if [ -n "$existing" ]; then
+            existing_colour=$(printf '%s' "$existing" | jq -r '.color // "no colour"')
+            echo "Category already exists: $cat_name ($existing_colour)"
+            if [ -n "$preset" ] && [ "$preset" != "$existing_colour" ]; then
+                echo "Requested $preset differs; leaving it as it is. Use rccategory to change it."
+            fi
+            exit 0
+        fi
+        if [ -n "$preset" ]; then
+            payload=$(jq -n --arg n "$cat_name" --arg c "$preset" '{displayName: $n, color: $c}')
+        else
+            payload=$(jq -n --arg n "$cat_name" '{displayName: $n}')
+        fi
+        result=$(api_call POST "/me/outlook/masterCategories" "$payload")
+        die_on_error "$result" "creating category"
+        echo "$result" | jq -r '"Category created: \(.displayName) (\(.color // "no colour"))"'
+        ;;
+
+    rccategory)
+        cat_name="$2"
+        cat_colour="$3"
+        if [ -z "$cat_name" ] || [ -z "$cat_colour" ]; then
+            echo "Usage: outlook-mail.sh rccategory <name> <colour>"
+            echo "       colour is a name (red, dark blue, ...) or a presetN value"
+            echo "       Names: $CATEGORY_COLOUR_NAMES"
+            exit 1
+        fi
+        if ! preset=$(category_colour_to_preset "$cat_colour"); then
+            echo "Error: unknown colour '$cat_colour'" >&2
+            echo "Valid names: $CATEGORY_COLOUR_NAMES" >&2
+            echo "Or a raw preset0 to preset24 value." >&2
+            exit 1
+        fi
+        cat_id=$(resolve_category_id "$cat_name") && cat_rc=0 || cat_rc=$?
+        if [ "$cat_rc" -ne 0 ]; then
+            echo "Error: could not read the master category list, so not recolouring '$cat_name'." >&2
+            printf '%s' "$cat_id" | jq -r '.error.message // .error.code' >&2
+            exit 1
+        fi
+        if [ -z "$cat_id" ]; then
+            echo "Error: no category named '$cat_name'" >&2
+            echo "Run 'categories' to see the master list." >&2
+            exit 1
+        fi
+        result=$(api_call PATCH "/me/outlook/masterCategories/$cat_id" \
+            "$(jq -n --arg c "$preset" '{color: $c}')")
+        die_on_error "$result" "recolouring category"
+        echo "$result" | jq -r '"Category recoloured: \(.displayName) (\(.color // "no colour"))"'
+        ;;
+
+    rmcategory)
+        cat_name="$2"
+        if [ -z "$cat_name" ]; then
+            echo "Usage: outlook-mail.sh rmcategory <name>"
+            exit 1
+        fi
+        cat_id=$(resolve_category_id "$cat_name") && cat_rc=0 || cat_rc=$?
+        if [ "$cat_rc" -ne 0 ]; then
+            echo "Error: could not read the master category list, so not deleting '$cat_name'." >&2
+            printf '%s' "$cat_id" | jq -r '.error.message // .error.code' >&2
+            exit 1
+        fi
+        if [ -z "$cat_id" ]; then
+            echo "Error: no category named '$cat_name'" >&2
+            echo "Run 'categories' to see the master list." >&2
+            exit 1
+        fi
+        result=$(api_call DELETE "/me/outlook/masterCategories/$cat_id")
+        die_on_error "$result" "deleting category"
+        echo "Category deleted from the master list: $cat_name"
+        echo "Messages already carrying this label keep it. Strip one with:"
+        echo "  outlook-mail.sh categorize <message-id> --remove \"$cat_name\""
+        ;;
+
+    junk)
+        msg_id="$2"
+        if [ -z "$msg_id" ]; then
+            echo "Usage: outlook-mail.sh junk <message-id>"
+            exit 1
+        fi
+        if ! msg_id=$(resolve_message_id "$msg_id" "messages"); then
+            echo "Error: Message not found with ID: $2"
+            exit 1
+        fi
+        junk_id=$(api_call GET "/me/mailFolders/junkemail" | jq -r '.id // empty')
+        if [ -z "$junk_id" ]; then
+            echo "Error: Junk Email folder not found"
+            exit 1
+        fi
+        die_on_error "$(api_call POST "/me/messages/$msg_id/move" "{\"destinationId\": \"$junk_id\"}")" "moving to junk"
+        echo "Moved to Junk Email"
+        ;;
+
+    notjunk)
+        msg_id="$2"
+        if [ -z "$msg_id" ]; then
+            echo "Usage: outlook-mail.sh notjunk <message-id>"
+            exit 1
+        fi
+        if ! msg_id=$(resolve_message_id "$msg_id" "messages"); then
+            echo "Error: Message not found with ID: $2"
+            exit 1
+        fi
+        inbox_id=$(api_call GET "/me/mailFolders/inbox" | jq -r '.id // empty')
+        die_on_error "$(api_call POST "/me/messages/$msg_id/move" "{\"destinationId\": \"$inbox_id\"}")" "moving to inbox"
+        echo "Moved back to Inbox"
+        ;;
+
+    delete)
+        msg_id="$2"
+        if [ -z "$msg_id" ]; then
+            echo "Usage: outlook-mail.sh delete <message-id>"
+            exit 1
+        fi
+
+        if ! msg_id=$(resolve_message_id "$msg_id" "messages"); then
+            echo "Error: Message not found with ID: $2"
+            exit 1
+        fi
+
+        # A move to Deleted Items, as Outlook's Delete key does, so the user can
+        # get the message back from there. A Graph DELETE on a message skips
+        # Deleted Items and goes straight to Recoverable Items, which is
+        # Shift+Delete and not what anyone asking to "delete" an email expects.
+        die_on_error "$(api_call POST "/me/messages/$msg_id/move" '{"destinationId": "deleteditems"}')" "moving message to Deleted Items"
+        echo "Moved to Deleted Items"
+        ;;
+
+    archive)
+        msg_id="$2"
+        if [ -z "$msg_id" ]; then
+            echo "Usage: outlook-mail.sh archive <message-id>"
+            exit 1
+        fi
+
+        if ! msg_id=$(resolve_message_id "$msg_id" "messages"); then
+            echo "Error: Message not found with ID: $2"
+            exit 1
+        fi
+
+        # Get archive folder ID
+        archive_id=$(api_call GET "/me/mailFolders/archive" | jq -r '.id')
+
+        if [ -z "$archive_id" ] || [ "$archive_id" = "null" ]; then
+            echo "Error: Archive folder not found"
+            exit 1
+        fi
+
+        die_on_error "$(api_call POST "/me/messages/$msg_id/move" "{\"destinationId\": \"$archive_id\"}")" "archiving message"
+        echo "Message archived"
+        ;;
+
+    folders)
+        echo "Mail folders:"
+        api_call GET "/me/mailFolders?\$top=50" | jq -r '
+            if .error then
+                "Error: \(.error.message // .error.code // "Unknown API error")"
+            elif (.value | length) == 0 then
+                "No folders found."
+            else
+                .value[] | "[\(.displayName)] \(.totalItemCount) total, \(.unreadItemCount) unread"
+            end
+        '
+        ;;
+
+    subfolders)
+        parent="${2:-inbox}"
+        echo "Subfolders of $parent:"
+
+        # Handle well-known folder names or folder IDs
+        case "$parent" in
+            inbox|drafts|sentitems|deleteditems|archive|junkemail)
+                endpoint="/me/mailFolders/$parent/childFolders?\$top=100"
+                ;;
+            *)
+                # Try to find folder by name (search all folders)
+                folder_id=$(api_call GET "/me/mailFolders?\$top=100" | jq -r --arg name "$parent" '.value[] | select(.displayName | ascii_downcase == ($name | ascii_downcase)) | .id' | head -1)
+                if [ -z "$folder_id" ]; then
+                    # Search in inbox subfolders
+                    folder_id=$(api_call GET "/me/mailFolders/inbox/childFolders?\$top=100" | jq -r --arg name "$parent" '.value[] | select(.displayName | ascii_downcase == ($name | ascii_downcase)) | .id' | head -1)
+                fi
+                if [ -z "$folder_id" ]; then
+                    echo "Error: Folder '$parent' not found"
+                    exit 1
+                fi
+                endpoint="/me/mailFolders/$folder_id/childFolders?\$top=100"
+                ;;
+        esac
+
+        result=$(api_call GET "$endpoint")
+        count=$(echo "$result" | jq -r '.value | length')
+
+        if [ "$count" = "0" ]; then
+            echo "No subfolders found"
+        else
+            echo "$result" | jq -r '.value[] | "[\(.displayName)] \(.totalItemCount) total, \(.unreadItemCount) unread"'
+        fi
+        ;;
+
+    folder)
+        folder_name="$2"
+        count="${3:-10}"
+        if [ -z "$folder_name" ]; then
+            echo "Usage: outlook-mail.sh folder <folder-name> [count]"
+            exit 1
+        fi
+
+        echo "Finding folder '$folder_name'..."
+
+        folder_id=$(resolve_folder_id "$folder_name") || true
+
+        if [ -z "$folder_id" ]; then
+            echo "Error: Folder '$folder_name' not found"
+            exit 1
+        fi
+
+        echo "Fetching messages from '$folder_name' ($count messages)..."
+        result=$(api_call GET "/me/mailFolders/$folder_id/messages?\$top=$count&\$orderby=receivedDateTime%20desc&\$select=id,subject,from,receivedDateTime,isRead,bodyPreview")
+        cache_message_ids "$result"
+        echo "$result" | format_messages
+        ;;
+
+    stats)
+        echo "Inbox statistics:"
+        api_call GET "/me/mailFolders/inbox" | jq -r '
+            if .error then
+                "Error: \(.error.message // .error.code // "Unknown API error")"
+            else
+                "Total: \(.totalItemCount)", "Unread: \(.unreadItemCount)"
+            end
+        '
+        ;;
+
+    move)
+        msg_id="$2"
+        folder_name="$3"
+        if [ -z "$msg_id" ] || [ -z "$folder_name" ]; then
+            echo "Usage: outlook-mail.sh move <message-id> <folder-name>"
+            exit 1
+        fi
+
+        # Resolve message ID
+        if ! msg_id=$(resolve_message_id "$msg_id" "messages"); then
+            echo "Error: Message not found with ID: $2"
+            exit 1
+        fi
+
+        echo "Finding folder '$folder_name'..."
+
+        dest_folder_id=$(resolve_folder_id "$folder_name") || true
+
+        if [ -z "$dest_folder_id" ]; then
+            echo "Error: Folder '$folder_name' not found"
+            exit 1
+        fi
+
+        # Move the message
+        result=$(api_call POST "/me/messages/$msg_id/move" "{\"destinationId\": \"$dest_folder_id\"}")
+
+        if echo "$result" | jq -e '.error' > /dev/null 2>&1; then
+            echo "Error moving message:"
+            echo "$result" | jq -r '.error.message'
+            exit 1
+        fi
+
+        echo "Moved message to '$folder_name'"
+        ;;
+
+    batch-move|bulk-move)
+        folder_name="$2"
+        if [ -z "$folder_name" ]; then
+            echo "Usage: outlook-mail.sh batch-move <folder-name> <id1> [id2 ...]"
+            echo "       Message IDs may be given as arguments OR piped via stdin"
+            echo "       (newline- or space-separated). The destination folder is"
+            echo "       resolved once; moves run in batches of 20 via the Graph"
+            echo "       \$batch endpoint."
+            exit 1
+        fi
+        shift 2
+
+        # Gather message IDs: from remaining args, else from stdin if piped
+        ids=("$@")
+        if [ ${#ids[@]} -eq 0 ] && [ ! -t 0 ]; then
+            while read -r line; do
+                for tok in $line; do
+                    [ -n "$tok" ] && ids+=("$tok")
+                done
+            done
+        fi
+        if [ ${#ids[@]} -eq 0 ]; then
+            echo "Error: no message IDs provided (as arguments or via stdin)"
+            exit 1
+        fi
+
+        # Listings print SHORT (20-char) IDs, so resolve each to its full ID.
+        # The resolver is cache-first, and every listing command populates the
+        # cache, so the common list-then-move flow costs no extra API calls.
+        # `given` keeps the ID as the user wrote it, so a failure can name it.
+        resolved=()
+        given=()
+        skipped=0
+        for id in "${ids[@]}"; do
+            if [ ${#id} -le 25 ]; then
+                if full=$(resolve_message_id "$id" "messages"); then
+                    resolved+=("$full")
+                    given+=("$id")
+                else
+                    echo "  WARNING: could not resolve short ID '$id' - skipped"
+                    skipped=$((skipped + 1))
+                fi
+            else
+                resolved+=("$id")
+                given+=("$id")
+            fi
+        done
+        ids=("${resolved[@]}")
+        if [ ${#ids[@]} -eq 0 ]; then
+            echo "Error: none of the provided IDs could be resolved"
+            exit 1
+        fi
+
+        echo "Finding folder '$folder_name'..."
+        dest_folder_id=$(resolve_folder_id "$folder_name") || true
+        if [ -z "$dest_folder_id" ]; then
+            echo "Error: Folder '$folder_name' not found"
+            exit 1
+        fi
+
+        total=${#ids[@]}
+        echo "Moving $total message(s) to '$folder_name' (batches of 20)..."
+        moved=0
+        failed=0
+        i=0
+        while [ $i -lt "$total" ]; do
+            # Up to 20 messages per batch. Each sub-request's id is the
+            # message's index in $ids, so a response maps straight back to it.
+            pending=()
+            while [ ${#pending[@]} -lt 20 ] && [ $i -lt "$total" ]; do
+                pending+=("$i")
+                i=$((i + 1))
+            done
+
+            # A batch goes out once, then again for any messages Graph
+            # throttled (429), after their Retry-After, up to
+            # OUTLOOK_MAX_RETRIES times. Each request inside a $batch carries
+            # its own headers, so each one asks for immutable IDs itself, as
+            # outlook_curl does for every other call.
+            round=0
+            while [ ${#pending[@]} -gt 0 ]; do
+                requests=$(for idx in "${pending[@]}"; do printf '%s\t%s\n' "$idx" "${ids[$idx]}"; done \
+                    | jq -Rn --arg dest "$dest_folder_id" \
+                        '[inputs | split("\t") | {id: .[0], method: "POST", url: ("/me/messages/" + .[1] + "/move"), headers: {"Content-Type": "application/json", "Prefer": "IdType=\"ImmutableId\""}, body: {destinationId: $dest}}]')
+                body=$(jq -n --argjson reqs "$requests" '{requests: $reqs}')
+                resp=$(api_call POST "/\$batch" "$body")
+
+                # No .responses array means the batch itself failed (an error,
+                # a network failure, a body that is not JSON). Graph moved
+                # none of it that we can prove, so every message in it failed.
+                if ! printf '%s' "$resp" | jq -e 'objects | .responses | arrays' > /dev/null 2>&1; then
+                    err=$(printf '%s' "$resp" | jq -r '.error.message // .error.code // empty' 2>/dev/null) || err=""
+                    [ -n "$err" ] || err="no usable response from Microsoft Graph"
+                    echo "  ERROR: the whole batch of ${#pending[@]} failed: $err"
+                    for idx in "${pending[@]}"; do
+                        echo "  FAILED ${given[$idx]}: $err"
+                    done
+                    failed=$((failed + ${#pending[@]}))
+                    break
+                fi
+
+                ok=$(printf '%s' "$resp" | jq '[.responses[] | select(.status >= 200 and .status < 300)] | length')
+                moved=$((moved + ok))
+
+                # A sub-request with no response at all is a failure too.
+                throttled=()
+                wait_for=0
+                for idx in "${pending[@]}"; do
+                    item=$(printf '%s' "$resp" | jq -c --arg id "$idx" 'first(.responses[] | select((.id | tostring) == $id)) // empty')
+                    status=$(printf '%s' "$item" | jq -r '.status // 0' 2>/dev/null) || status=0
+                    [ -n "$status" ] || status=0
+                    if [ "$status" -ge 200 ] && [ "$status" -lt 300 ]; then
+                        continue
+                    fi
+                    if [ "$status" -eq 429 ] && [ "$round" -lt "$OUTLOOK_MAX_RETRIES" ]; then
+                        throttled+=("$idx")
+                        after=$(printf '%s' "$item" | jq -r '(.headers // {}) | to_entries[] | select(.key | ascii_downcase == "retry-after") | .value' 2>/dev/null | head -1)
+                        w=$(outlook_retry_wait "$after" "$round")
+                        [ "$w" -gt "$wait_for" ] && wait_for="$w"
+                        continue
+                    fi
+                    if [ -z "$item" ]; then
+                        msg="no response for this message in the batch"
+                    else
+                        msg=$(printf '%s' "$item" | jq -r '.body.error.message // .body.error.code // "unknown error"')
+                    fi
+                    echo "  FAILED ${given[$idx]} [$status]: $msg"
+                    failed=$((failed + 1))
+                done
+
+                pending=()
+                if [ ${#throttled[@]} -gt 0 ]; then
+                    round=$((round + 1))
+                    echo "  throttled: ${#throttled[@]} message(s), retrying in ${wait_for}s (retry $round of $OUTLOOK_MAX_RETRIES)"
+                    sleep "$wait_for"
+                    pending=("${throttled[@]}")
+                fi
+            done
+            echo "  progress: $moved/$total moved"
+        done
+
+        summary="Done: $moved moved, $failed failed."
+        [ "$skipped" -gt 0 ] && summary="$summary $skipped skipped (unresolvable short ID)."
+        echo "$summary"
+        [ "$failed" -eq 0 ] && [ "$skipped" -eq 0 ] || exit 1
+        ;;
+
+    mkdir)
+        folder_name="$2"
+        parent_folder="$3"
+        if [ -z "$folder_name" ]; then
+            echo "Usage: outlook-mail.sh mkdir <folder-name> [parent-folder]"
+            echo "       Without parent-folder, creates a top-level folder"
+            exit 1
+        fi
+
+        if [ -z "$parent_folder" ]; then
+            # Create top-level folder
+            echo "Creating top-level folder '$folder_name'..."
+            payload=$(jq -n --arg name "$folder_name" '{"displayName": $name}')
+            result=$(api_call POST "/me/mailFolders" "$payload")
+        else
+            # Find parent folder ID (shared resolver: aliases, name, or path)
+            echo "Finding parent folder '$parent_folder'..."
+            parent_id=$(resolve_folder_id "$parent_folder") || true
+
+            if [ -z "$parent_id" ]; then
+                echo "Error: Parent folder '$parent_folder' not found"
+                exit 1
+            fi
+
+            echo "Creating subfolder '$folder_name' under '$parent_folder'..."
+            payload=$(jq -n --arg name "$folder_name" '{"displayName": $name}')
+            result=$(api_call POST "/me/mailFolders/$parent_id/childFolders" "$payload")
+        fi
+
+        if echo "$result" | jq -e '.error' > /dev/null 2>&1; then
+            echo "Error creating folder:"
+            echo "$result" | jq -r '.error.message'
+            exit 1
+        fi
+
+        new_folder_id=$(echo "$result" | jq -r '.id')
+        echo "Created folder '$folder_name'"
+        echo "Folder ID: ${new_folder_id: -20}"
+        ;;
+
+    rename)
+        old_name="$2"
+        new_name="$3"
+        if [ -z "$old_name" ] || [ -z "$new_name" ]; then
+            echo "Usage: outlook-mail.sh rename <folder-name> <new-name>"
+            exit 1
+        fi
+        case "$(echo "$old_name" | tr '[:upper:]' '[:lower:]')" in
+            inbox|drafts|sentitems|sent\ items|deleteditems|deleted\ items|archive|junkemail|junk\ email|outbox)
+                echo "Refusing to rename well-known system folder '$old_name'"
+                exit 1
+                ;;
+        esac
+        fid=$(resolve_folder_id "$old_name") || true
+        if [ -z "$fid" ]; then
+            echo "Error: Folder '$old_name' not found"
+            exit 1
+        fi
+        result=$(api_call PATCH "/me/mailFolders/$fid" "$(jq -n --arg n "$new_name" '{displayName: $n}')")
+        if echo "$result" | jq -e '.error' > /dev/null 2>&1; then
+            echo "Error renaming folder:"
+            echo "$result" | jq -r '.error.message'
+            exit 1
+        fi
+        echo "Renamed '$old_name' -> '$new_name'"
+        ;;
+
+    rmdir)
+        target="$2"
+        force="$3"
+        if [ -z "$target" ]; then
+            echo "Usage: outlook-mail.sh rmdir <folder-name> [--force]"
+            echo "       Moves the folder, with everything in it, to Deleted Items."
+            echo "       Refuses a folder that holds messages unless --force is given."
+            exit 1
+        fi
+        case "$(echo "$target" | tr '[:upper:]' '[:lower:]')" in
+            inbox|drafts|sentitems|sent\ items|deleteditems|deleted\ items|archive|junkemail|junk\ email|outbox)
+                echo "Refusing to delete well-known system folder '$target'"
+                exit 1
+                ;;
+        esac
+        fid=$(resolve_folder_id "$target") || true
+        if [ -z "$fid" ]; then
+            echo "Error: Folder '$target' not found"
+            exit 1
+        fi
+        count=$(api_call GET "/me/mailFolders/$fid?\$select=totalItemCount" | jq -r '.totalItemCount // 0')
+        if [ "${count:-0}" -gt 0 ] && [ "$force" != "--force" ]; then
+            echo "Refusing to delete '$target': it contains $count message(s)."
+            echo "Re-run with --force to move it, and everything in it, to Deleted Items."
+            exit 1
+        fi
+        # A move to Deleted Items, as deleting a folder in Outlook does, so the
+        # folder and its messages can be restored from there. Graph's docs do
+        # not say where a DELETE on a folder sends its contents, and a DELETE on
+        # a message skips Deleted Items, so this moves the folder instead. That
+        # keeps the message below true by construction.
+        result=$(api_call POST "/me/mailFolders/$fid/move" '{"destinationId": "deleteditems"}')
+        if [ -n "$result" ] && echo "$result" | jq -e '.error' > /dev/null 2>&1; then
+            echo "Error moving folder to Deleted Items:"
+            echo "$result" | jq -r '.error.message'
+            exit 1
+        fi
+        echo "Moved folder '$target' to Deleted Items"
+        ;;
+
+    attachments)
+        msg_id="$2"
+        if [ -z "$msg_id" ]; then
+            echo "Usage: outlook-mail.sh attachments <message-id>"
+            exit 1
+        fi
+
+        # Resolve short ID to full ID
+        if ! msg_id=$(resolve_message_id "$msg_id" "messages"); then
+            echo "Error: Message not found with ID: $2"
+            exit 1
+        fi
+
+        echo "Fetching attachments..."
+        result=$(api_call GET "/me/messages/$msg_id/attachments?\$select=id,name,size,contentType")
+
+        count=$(echo "$result" | jq -r '.value | length')
+        if [ "$count" = "0" ]; then
+            echo "No attachments on this message"
+            exit 0
+        fi
+
+        echo "$result" | jq -r '
+            def format_size:
+                if . < 1024 then "\(.)B"
+                elif . < 1048576 then "\((. / 1024 * 10 | floor) / 10)KB"
+                else "\((. / 1048576 * 10 | floor) / 10)MB"
+                end;
+            .value | to_entries | .[] |
+            "[\(.key + 1)] \(.value.id[-20:]) | \(.value.name) | \(.value.size | format_size) | \(.value.contentType)"
+        '
+        ;;
+
+    download)
+        msg_id="$2"
+        attachment_id="$3"
+        if [ -z "$msg_id" ]; then
+            echo "Usage: outlook-mail.sh download <message-id> [attachment-id]"
+            echo "       Without attachment-id, downloads ALL attachments"
+            exit 1
+        fi
+
+        # Resolve short ID to full ID
+        if ! msg_id=$(resolve_message_id "$msg_id" "messages"); then
+            echo "Error: Message not found with ID: $2"
+            exit 1
+        fi
+
+        # Destination directory
+        PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+        DOWNLOAD_DIR="$PROJECT_ROOT/inbox"
+        mkdir -p "$DOWNLOAD_DIR"
+
+        # Get attachments list (don't request contentBytes in listing - causes some attachments to be omitted)
+        attachments=$(api_call GET "/me/messages/$msg_id/attachments?\$select=id,name,size,contentType")
+
+        count=$(echo "$attachments" | jq -r '.value | length')
+        if [ "$count" = "0" ]; then
+            echo "No attachments on this message"
+            exit 0
+        fi
+
+        # Filter to specific attachment if provided
+        if [ -n "$attachment_id" ]; then
+            # Find full attachment ID if short
+            if [ ${#attachment_id} -le 25 ]; then
+                full_att_id=$(echo "$attachments" | jq -r ".value[].id | select(endswith(\"$attachment_id\"))" | head -1)
+                if [ -z "$full_att_id" ]; then
+                    echo "Error: Attachment not found with ID ending in: $attachment_id"
+                    exit 1
+                fi
+                attachment_id="$full_att_id"
+            fi
+            attachments=$(echo "$attachments" | jq --arg id "$attachment_id" '{value: [.value[] | select(.id == $id)]}')
+            count=1
+        fi
+
+        echo "Downloading $count attachment(s)..."
+
+        # Download each attachment
+        echo "$attachments" | jq -c '.value[]' | while read -r att; do
+            att_id=$(echo "$att" | jq -r '.id')
+            att_name=$(echo "$att" | jq -r '.name')
+            att_size=$(echo "$att" | jq -r '.size')
+
+            # Sanitize server-supplied name: prevent path traversal out of $DOWNLOAD_DIR
+            att_name=$(basename "$att_name" | sed 's/\.\.//g')
+            if [ -z "$att_name" ] || [ "$att_name" = "." ]; then
+                att_name="attachment"
+            fi
+
+            # Handle filename collisions
+            base_name="${att_name%.*}"
+            extension="${att_name##*.}"
+            if [ "$base_name" = "$att_name" ]; then
+                extension=""
+            fi
+
+            dest_path="$DOWNLOAD_DIR/$att_name"
+            counter=1
+            while [ -f "$dest_path" ]; do
+                if [ -n "$extension" ] && [ "$extension" != "$base_name" ]; then
+                    dest_path="$DOWNLOAD_DIR/${base_name}_${counter}.${extension}"
+                else
+                    dest_path="$DOWNLOAD_DIR/${att_name}_${counter}"
+                fi
+                counter=$((counter + 1))
+            done
+
+            # Always fetch via raw content endpoint (contentBytes not requested
+            # in listing). -f makes curl fail on an HTTP error instead of
+            # silently saving the Graph error JSON as the attachment file.
+            # outlook_curl retries a throttled download; the body is in the
+            # file, so its stdout is only ever an error and is dropped.
+            if ! OUTLOOK_CURL_MAX_TIME="$OUTLOOK_TRANSFER_MAX_TIME" \
+                 outlook_curl GET -f -X GET "${GRAPH_URL}/me/messages/$msg_id/attachments/$att_id/\$value" \
+                -H "Authorization: Bearer $ACCESS_TOKEN" \
+                -o "$dest_path" > /dev/null; then
+                rm -f "$dest_path"
+                echo "FAILED: $att_name (download error from Graph)"
+                continue
+            fi
+
+            # Format size for display
+            if [ "$att_size" -lt 1024 ]; then
+                size_str="${att_size}B"
+            elif [ "$att_size" -lt 1048576 ]; then
+                size_str="$(echo "scale=1; $att_size / 1024" | bc)KB"
+            else
+                size_str="$(echo "scale=1; $att_size / 1048576" | bc)MB"
+            fi
+
+            echo "Saved: $dest_path ($size_str)"
+        done
+        ;;
+
+    export)
+        folder_name="$2"
+        out_dir="$3"
+        if [ -z "$folder_name" ] || [ -z "$out_dir" ]; then
+            echo "Usage: outlook-mail.sh export <folder> <output-dir> [--since YYYY-MM-DD] [--count N]"
+            echo "       Writes each message as raw .eml for outlook-to-md to append."
+            exit 1
+        fi
+        shift 3
+
+        since=""
+        cap=1000
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --since) [ -n "$2" ] || { echo "Error: --since requires a date" >&2; exit 1; }; since="$2"; shift 2 ;;
+                --count) [ -n "$2" ] || { echo "Error: --count requires a number" >&2; exit 1; }; cap="$2"; shift 2 ;;
+                *) echo "Error: unknown option '$1'" >&2; exit 1 ;;
+            esac
+        done
+
+        if ! folder_id=$(resolve_folder_id "$folder_name"); then
+            echo "Error: Folder not found: $folder_name" >&2
+            exit 1
+        fi
+
+        # The staging sub-path becomes the archive's folder grouping, so mirror
+        # the folder the user named. '..' is stripped and leading slashes
+        # trimmed so a folder name cannot climb out of $out_dir.
+        rel_dir=$(printf '%s' "$folder_name" | sed 's#\.\.##g; s#^/*##; s#/*$##')
+        dest_dir="$out_dir/$rel_dir"
+        mkdir -p "$dest_dir"
+
+        messages=$(export_list_messages "$folder_id" "$since" "$cap") || exit 1
+        total=$(printf '%s' "$messages" | jq '.value | length')
+        if [ "$total" = "0" ]; then
+            echo "No messages to export from '$folder_name'."
+            exit 0
+        fi
+
+        echo "Exporting $total message(s) from '$folder_name' to $dest_dir ..."
+        written=0
+        failed=0
+        # Set once a token refresh has been attempted, so a genuinely dead
+        # token (revoked, bad creds) costs one failed refresh call for the
+        # whole export rather than one per remaining message.
+        token_refreshed=0
+        # Process substitution, NOT a pipe: a piped `while` runs in a subshell,
+        # so $written and $failed would be discarded and the summary would
+        # always report zero.
+        while IFS=$'\t' read -r msg_id received; do
+            [ -n "$msg_id" ] || continue
+            fname=$(export_eml_filename "$received" "$msg_id")
+            # -f so an HTTP error is a curl failure rather than a Graph error
+            # body saved as an .eml, which the next step would parse as mail.
+            # A throttled fetch is retried inside outlook_curl.
+            if OUTLOOK_CURL_MAX_TIME="$OUTLOOK_TRANSFER_MAX_TIME" \
+               outlook_curl GET -f -X GET "${GRAPH_URL}/me/messages/$msg_id/\$value" \
+                -H "Authorization: Bearer $ACCESS_TOKEN" \
+                -o "$dest_dir/$fname" > /dev/null; then
+                written=$((written + 1))
+                continue
+            fi
+
+            # This curl bypasses api_call's reactive refresh (that refresh
+            # happens inside export_list_messages's own command-substitution
+            # subshell and is lost to this parent), so on a long export the
+            # snapshotted $ACCESS_TOKEN can go stale mid-run. Refresh once
+            # and retry this one message before counting it as failed.
+            retry_ok=1
+            if [ "$token_refreshed" -eq 0 ]; then
+                token_refreshed=1
+                if new_token=$(refresh_access_token); then
+                    ACCESS_TOKEN="$new_token"
+                fi
+                if OUTLOOK_CURL_MAX_TIME="$OUTLOOK_TRANSFER_MAX_TIME" \
+                   outlook_curl GET -f -X GET "${GRAPH_URL}/me/messages/$msg_id/\$value" \
+                    -H "Authorization: Bearer $ACCESS_TOKEN" \
+                    -o "$dest_dir/$fname" > /dev/null; then
+                    retry_ok=0
+                fi
+            fi
+
+            if [ "$retry_ok" -eq 0 ]; then
+                written=$((written + 1))
+                continue
+            fi
+
+            rm -f "$dest_dir/$fname"
+            echo "FAILED: $fname (MIME fetch error from Graph)"
+            failed=$((failed + 1))
+        done < <(printf '%s' "$messages" | jq -r '.value[] | "\(.id)\t\(.receivedDateTime)"')
+
+        echo "Wrote $written .eml file(s) to $dest_dir"
+        if [ "$failed" -gt 0 ]; then
+            echo "$failed message(s) failed and were not written."
+        fi
+        echo
+        echo "Append to a markdown archive with:"
+        echo "  outlook_to_md.py $out_dir <archive-dir> --append"
+        # A caller chaining `export && outlook_to_md.py --append` must not
+        # proceed past a partial export, so a non-zero failed count is a
+        # non-zero exit - checked explicitly (not `[ … ] && exit 1`) because
+        # that form as the branch's last command would itself trip `set -e`
+        # when the test is false, i.e. on the success path.
+        if [ "$failed" -gt 0 ]; then
+            exit 1
+        fi
+        ;;
+
+    signature)
+        draft_id="$2"
+        sig_file="$3"
+        if [ -z "$draft_id" ] || [ -z "$sig_file" ]; then
+            echo "Usage: outlook-mail.sh signature <draft-id> <html-file>"
+            echo "       Adds the HTML signature in <html-file> to an HTML draft. Every <img>"
+            echo "       whose quoted src is a local file is uploaded as an inline attachment"
+            echo "       and shown with cid:, so it displays without loading remote images."
+            echo "       Relative paths are read from the HTML file's own directory. Running"
+            echo "       it again replaces the block, and update mdbody keeps it."
+            exit 1
+        fi
+        if [ ! -f "$sig_file" ]; then
+            echo "Error: File not found: $sig_file"
+            exit 1
+        fi
+        if ! draft_id=$(resolve_message_id "$draft_id" "drafts"); then
+            echo "Error: Draft not found with ID: $2"
+            exit 1
+        fi
+
+        # The draft must already be HTML: a signature with images cannot go in
+        # a plain-text body.
+        current=$(api_call GET "/me/messages/$draft_id?\$select=body")
+        die_on_error "$current" "reading the draft"
+        if [ "$(printf '%s' "$current" | jq -r '.body.contentType // "" | ascii_downcase')" != "html" ]; then
+            echo "Error: this draft has a plain-text body, and a signature needs HTML."
+            echo "  Create the draft with mddraft or mdreply, then add the signature."
+            exit 1
+        fi
+        body=$(printf '%s' "$current" | jq -r '.body.content // ""')
+
+        sig_dir=$(cd "$(dirname "$sig_file")" && pwd)
+        sig_html=$(cat "$sig_file")
+
+        # Check every local image exists before uploading any, so a typo in
+        # the file leaves the draft as it was.
+        srcs=()
+        while IFS= read -r src; do
+            [ -n "$src" ] && srcs+=("$src")
+        done < <(printf '%s' "$sig_html" | jq -Rrs "$SIG_LOCAL_SRCS")
+        paths=()
+        missing=""
+        for src in "${srcs[@]}"; do
+            path="${src#file://}"
+            case "$path" in /*) ;; *) path="$sig_dir/$path" ;; esac
+            [ -f "$path" ] || missing="$missing
+  $src"
+            paths+=("$path")
+        done
+        if [ -n "$missing" ]; then
+            echo "Error: these images in $sig_file were not found:$missing"
+            echo "Nothing was uploaded and the draft is unchanged."
+            exit 1
+        fi
+
+        # Content IDs already on the draft, so a second run does not upload
+        # the same images again.
+        have_cids=$(api_call GET "/me/messages/$draft_id/attachments?\$select=contentId,isInline" \
+            | jq -r '.value[]? | select(.isInline == true) | .contentId // empty')
+
+        map='{}'
+        i=0
+        for src in "${srcs[@]}"; do
+            path="${paths[$i]}"
+            i=$((i + 1))
+            cid="sig-$i-$(basename "$path" | tr -c 'A-Za-z0-9._\n-' '-' | tr -d '\n')"
+            map=$(jq -cn --argjson m "$map" --arg s "$src" --arg c "$cid" '$m + {($s): $c}')
+            if printf '%s\n' "$have_cids" | grep -qxF -- "$cid"; then
+                echo "Already attached: $(basename "$path") (cid:$cid)"
+            else
+                attach_file_to_draft "$draft_id" "$path" "$cid"
+            fi
+        done
+
+        block="${SIG_START}$(printf '%s' "$sig_html" | jq -Rrs --argjson map "$map" "$SIG_REWRITE_SRCS")${SIG_END}"
+
+        # Replace a block this command added before; otherwise put it just
+        # above the quoted chain, or at the end of the body.
+        if [[ "$body" == *"$CHAIN_MARKER"* ]]; then
+            head="${body%%"$CHAIN_MARKER"*}"
+            tail="${CHAIN_MARKER}${body#*"$CHAIN_MARKER"}"
+        else
+            head="$body"
+            tail=""
+        fi
+        old_block=$(signature_block_of "$head")
+        if [ -n "$old_block" ]; then
+            head="${head%%"$SIG_START"*}${block}${head#*"$SIG_END"}"
+        elif [ -n "$tail" ]; then
+            head="${head}<br/>${block}<br/>"
+        elif [[ "$head" == *"</body>"* ]]; then
+            head="${head%</body>*}<br/>${block}</body>${head##*</body>}"
+        else
+            head="${head}<br/>${block}"
+        fi
+
+        payload=$(jq -n --arg b "${head}${tail}" '{body: {contentType: "HTML", content: $b}}')
+        die_on_error "$(api_call PATCH "/me/messages/$draft_id" "$payload")" "adding the signature"
+        echo "Signature added with ${#srcs[@]} inline image(s)."
+        ;;
+
+    attach)
+        # --inline <cid> may sit anywhere after the verb.
+        content_id=""
+        pos=()
+        shift
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --inline)
+                    [ -n "${2:-}" ] || { echo "Error: --inline needs a content ID, e.g. --inline logo"; exit 1; }
+                    content_id="$2"; shift 2 ;;
+                *) pos+=("$1"); shift ;;
+            esac
+        done
+        draft_id="${pos[0]:-}"
+        file_path="${pos[1]:-}"
+        if [ -z "$draft_id" ] || [ -z "$file_path" ]; then
+            echo "Usage: outlook-mail.sh attach <draft-id> <file-path> [--inline <content-id>]"
+            echo "       --inline uploads it as an inline image, which the body shows"
+            echo "       with <img src=\"cid:<content-id>\">."
+            exit 1
+        fi
+        if [ -n "$content_id" ] && ! valid_content_id "$content_id"; then
+            echo "Error: content ID '$content_id' may only use letters, digits, '.', '_', '-' and '@'"
+            exit 1
+        fi
+
+        # Verify file exists
+        if [ ! -f "$file_path" ]; then
+            echo "Error: File not found: $file_path"
+            exit 1
+        fi
+
+        # Resolve short ID to full ID (search in drafts folder)
+        if ! draft_id=$(resolve_message_id "$draft_id" "drafts"); then
+            echo "Error: Draft not found with ID: ${pos[0]}"
+            exit 1
+        fi
+
+        attach_file_to_draft "$draft_id" "$file_path" "$content_id"
+        ;;
+
+    *)
+        echo "Outlook Mail Operations"
+        echo
+        echo "Usage: outlook-mail.sh <command> [args]"
+        echo
+        echo "Reading:"
+        echo "  inbox [count]              List inbox messages"
+        echo "  unread [count]             List unread messages"
+        echo "  focused [count]            List focused inbox"
+        echo "  sent [count]               List sent items"
+        echo "  folder <name> [count]      List messages in any folder by name"
+        echo "  from <email> [count]       Filter by sender"
+        echo "  search <query> [count]     Search emails"
+        echo "  flagged [count]            List messages flagged for follow-up"
+        echo "  category <name> [count]    List messages carrying a category, any folder"
+        echo "  thread <id> [count]        List the whole conversation, oldest first"
+        echo "  read <id>                  Read full message"
+        echo "  preview <id>               Quick preview"
+        echo "  export <folder> <dir>      Write folder's messages as .eml for archiving"
+        echo
+        echo "Sending:"
+        echo "  draft <to> <subject> <body>    Create plain text draft"
+        echo "  mddraft <to> <subject> <body>  Create draft with markdown formatting"
+        echo "                             Both take --cc <emails> and --bcc <emails>; <to>,"
+        echo "                             --cc and --bcc are comma/semicolon-separated lists"
+        echo "  reply <id> <body>              Create reply draft (plain text)"
+        echo "  mdreply <id> <body>            Create reply draft with markdown formatting"
+        echo "  forward <id> <to> [comment]    Create forward draft (markdown comment optional)"
+        echo "  followup <sent-id> [body]      Create chaser reply to your sent email"
+        echo "  update <draft-id> <field> <value>  Update draft (subject/body/mdbody/to/cc/bcc/from/importance)"
+        echo "  send <draft-id>                Send draft"
+        echo "  drafts [count]                 List drafts"
+        echo "  aliases                        List addresses this mailbox can send as"
+        echo
+        echo "Attachments:"
+        echo "  attachments <id>           List attachments on message"
+        echo "  download <id> [att-id]     Download attachment(s) to ./inbox/"
+        echo "  attach <draft-id> <file> [--inline <cid>]"
+        echo "                             Add attachment to draft (up to 150MB); --inline"
+        echo "                             makes it an image the body shows as cid:<cid>"
+        echo "  signature <draft-id> <html-file>"
+        echo "                             Add an HTML signature; its local images go inline"
+        echo
+        echo "Management:"
+        echo "  markread <id>              Mark as read"
+        echo "  markunread <id>            Mark as unread"
+        echo "  flag <id>                  Flag for follow-up"
+        echo "  unflag <id>                Clear follow-up flag"
+        echo "  categorize <id> <cats>     Set categories (comma-separated; \"\" clears)"
+        echo "  categorize <id> --add <c>      Add one category, keep the rest"
+        echo "  categorize <id> --remove <c>   Remove one category, keep the rest"
+        echo "  categories                 List the mailbox's master categories"
+        echo "  mkcategory <name> [colour] Create a master category"
+        echo "  rccategory <name> <colour> Recolour a master category"
+        echo "  rmcategory <name>          Delete a master category"
+        echo "  junk <id>                  Move message to Junk Email"
+        echo "  notjunk <id>               Move message back to Inbox"
+        echo "  delete <id>                Move a message to Deleted Items"
+        echo "  archive <id>               Archive message"
+        echo "  move <id> <folder>         Move message to folder"
+        echo "  batch-move <folder> <ids>  Move many messages (args or stdin) via \$batch"
+        echo "  mkdir <name> [parent]      Create folder (subfolder if parent given)"
+        echo "  rename <folder> <new>      Rename a folder"
+        echo "  rmdir <folder> [--force]   Move a folder to Deleted Items (--force if non-empty)"
+        echo "  folders                    List top-level mail folders"
+        echo "  subfolders [parent]        List subfolders (default: inbox)"
+        echo "  stats                      Inbox statistics"
+        echo
+        echo "OUTLOOK_READ_ONLY=1 refuses every command that changes the mailbox or sends."
+        echo "Commands that only read still work: the listings, read, preview, search,"
+        echo "thread, drafts, aliases, attachments, download and export."
+        ;;
+esac

@@ -1,0 +1,161 @@
+---
+name: filler
+description: Use when preparing, validating, filling, diagnosing, retrying, or handing off completed social content for Xiaohongshu, Douyin, WeChat Channels, WeChat Official Account, WeChat sticker posts, or dry-run publishing.
+---
+
+# Filler
+
+Use this skill for finished social works that need platform copy, draft plans,
+browser draft filling, result summaries, diagnostics, or teammate handoff.
+
+## Hard Boundaries
+
+- Do not click an immediate public publish/submit button from automation.
+- Multi-work or multi-platform scheduled runs must confirm the platform's
+  scheduled publish button after page readback verifies the requested time and
+  every critical draft-fill step is done or intentionally skipped. Single-item
+  scheduled runs still require explicit `-ConfirmScheduledPublish`.
+- Immediate runs must save or temporarily store the draft, verify that save, and
+  close the dedicated browser profile. If a platform cannot verify draft saving,
+  stop with `needs_human`; do not pretend success.
+- Do not bypass CAPTCHA, login checks, private APIs, or platform risk controls.
+- Do not commit or distribute Chrome profiles, cookies, local storage, account
+  configs, real work dirs, logs, screenshots, DOM artifacts, temp outputs, or
+  `node_modules`.
+- Keep platform adapters separate. Share only generic helpers such as logging,
+  upload validation, profile handling, screenshots, status output, and retries.
+- Treat `publish-result.json` and `draft-fill-result.json` as local evidence,
+  not as files to commit.
+
+## Guided Intake Before Real Runs
+
+Do not dump a long form or ask the user to fill a template. First inspect the
+work directory, manifest, draft plan, known profiles, collection cache, and the
+user's latest request. Infer safe defaults, then ask only the unresolved
+decisions.
+
+- Ask at most 1-3 questions in one round. Prefer clickable single-choice
+  options when the client supports them; otherwise present the same choices as
+  short numbered bullets.
+- Put the recommended option first and mark it clearly. Avoid free-form input
+  unless the operator must provide a path, exact time, or exact collection name.
+- Confirm inferred facts instead of asking for them: target platforms, account
+  profile, asset folder/order, title source, tags, collection, schedule, and
+  final publish boundary.
+- Before any real browser work, run `preflight`. It now performs config checks
+  for draft-fill package files, Playwright availability, profile validity, and
+  profile creation. If a profile is missing, it is created automatically and the
+  user is only asked to log in once.
+- Login itself is never bypassed. Platform adapters check the opened page for
+  login/auth URLs and stop with `needs_human` instead of failing mysteriously.
+- Never equate a matching platform URL or `page_signature` step with a logged-in
+  publish editor. Say "opened the target URL" until the same profile has visible
+  composer controls, upload controls, or editable title/body fields. If those
+  controls are absent, treat it as login/profile state unverified and stop or
+  ask the operator to log in with `open-profile`.
+- If scheduling is absent, warn that Douyin desktop Creator Center may not
+  preserve drafts like Xiaohongshu. A Douyin batch may require scheduling or
+  finalizing one item before preparing the next. Xiaohongshu can usually save
+  drafts. WeChat Channels draft retention is unknown until the logged-in profile
+  proves it.
+- Final immediate publish is never automated. For immediate runs, automation now
+  prepares the draft, saves it, verifies the save, and closes the profile. For
+  multi-work or multi-platform scheduled runs, automation confirms scheduled
+  publishing when the schedule and all critical steps are verified.
+- WeChat Channels can land on the image management page after login. The image
+  publish entry is often an outer-page, upper-right `发布图文` button, not only a
+  button inside the micro-app iframe. Inspect and click the outer-page entry
+  first, then fall back to iframe matching. Never match plain `发表`, because
+  that is also the final publish boundary.
+
+Good intake shape:
+
+```text
+我已识别：小红书 + 抖音，素材来自 21-40 的 18 个子文件夹，
+每组按 1.png 到 5.png 上传；标题默认从首图/文件夹名优化；
+即时发布按钮由人工点击；多条定时发布由 CLI 验证后确认定时发布。
+还需要你点选 3 项：
+1. 是否定时：不定时 (Recommended) / 单条定时 / 批量定时
+2. 平台：小红书+抖音 (Recommended) / 三平台 / 自定义
+3. 合集策略：自动选择宽泛合集 (Recommended) / 跳过合集 / 我指定合集
+```
+
+## Command Shape
+
+Resolve the CLI entry before running commands. Prefer the repository copy when
+the current workspace is the skills repo; otherwise fall back to the locally
+registered skill under `$HOME\.codex\skills\filler`.
+
+When working inside the canonical skills repository and updating this skill,
+refresh the local registration with:
+
+```powershell
+& powershell -NoProfile -ExecutionPolicy Bypass -File ".\skills\filler\scripts\register-local-skill.ps1" -Json
+```
+
+```powershell
+$RepoPublisher = Join-Path (Get-Location) "skills\filler\scripts\filler.ps1"
+$LocalPublisher = Join-Path $HOME ".codex\skills\filler\scripts\filler.ps1"
+$Publisher = if (Test-Path -LiteralPath $RepoPublisher) { $RepoPublisher } else { $LocalPublisher }
+if (-not (Test-Path -LiteralPath $Publisher)) { throw "filler CLI not found: $Publisher" }
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Publisher setup-draft-fill -Json
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Publisher open-profile -ProfileName "xhs-main" -Platform "xiaohongshu" -Json
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Publisher copy-generate -WorkDir ".\work" -Json
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Publisher copy-select -WorkDir ".\work" -TargetId "xhs-main-note" -CandidateId "xhs-main-note-2" -Json
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Publisher draft-plan -WorkDir ".\work" -TargetId "xhs-main-note" -Json
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Publisher preflight -WorkDir ".\work" -TargetId "xhs-main-note" -ProfileName "xhs-main" -Json
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Publisher inspect-collections -WorkDir ".\work" -TargetId "xhs-main-note" -ProfileName "xhs-main" -Json
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Publisher draft-fill -WorkDir ".\work" -TargetId "xhs-main-note" -ProfileName "xhs-main" -ConfirmIntake -Json
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Publisher batch-draft-fill -BatchPath ".\batch.json" -ConfirmIntake -Json
+# Scheduled confirmation is a separate, strict runtime decision:
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Publisher draft-fill -WorkDir ".\work" -TargetId "xhs-main-note" -ProfileName "xhs-main" -ConfirmIntake -ConfirmScheduledPublish -Json
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Publisher result-summary -WorkDir ".\work" -Json
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Publisher diagnose-failure -WorkDir ".\work" -TargetId "xhs-main-note" -Json
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Publisher robustness-matrix -Json
+```
+
+Use `-DryRun` before opening real platform pages. Real non-dry `draft-fill`
+requires `-ConfirmIntake`; only pass it after the operator answered preflight
+questions and reviewed confirmations. Use `-ConfirmAccountFingerprint`
+only after the operator has verified that the current profile is the intended
+account and `draft-plan.json` contains the expected `account_fingerprint`.
+Multi-work or multi-platform scheduled `draft-fill` / `batch-draft-fill` runs
+automatically confirm scheduled publishing after all runtime gates pass. Use
+`-ConfirmScheduledPublish` only to opt a single scheduled target into the same
+confirmation behavior. It is not allowed for immediate publishing.
+
+For collection choice, prefer `inspect-collections` first. The CLI trusts only a
+fresh account-bound collection cache, then runs deterministic semantic matching
+against the built-in taxonomy or `draft-plan.collection_taxonomy_path`. It picks
+an existing broad collection only on high confidence; ambiguity, stale cache, or
+no match returns `needs_human`.
+
+Use `open-profile` or its alias `login-profile` when the operator needs to log
+in before a real run. It opens the exact persistent profile path used later by
+`preflight`, `inspect-collections`, and `draft-fill`, including when the skill
+is installed under a workspace path with spaces. Ask the user to close that
+browser after login so the profile lock is released cleanly.
+
+`needs_human` and exit code `4` mean the tool stopped intentionally for an
+operator decision or manual platform step. Read `questions`, `confirmations`,
+and `steps`; do not retry blindly.
+
+## Reference Map
+
+- Teammate quickstart and production flow: `README.md`.
+- Production readiness and migration checklist:
+  `references/production-readiness.md`.
+- Failure triage, exit codes, profile locks, and artifact reading:
+  `references/failure-diagnostics.md`.
+- Xiaohongshu real runbook: `references/xhs-real-publish-runbook.md`.
+- Douyin real runbook: `references/douyin-real-publish-runbook.md`.
+- WeChat Channels real runbook:
+  `references/wechat-channels-real-publish-runbook.md`.
+
+Run docs-safe verification after documentation changes, such as `rg` checks for
+required handoff terms and Markdown/link sanity. Run the full test script only
+when code behavior changed or the user asks for it:
+
+```powershell
+rg -n "needs_human|final publish boundary|inspect-collections|robustness-matrix" skills/filler
+```

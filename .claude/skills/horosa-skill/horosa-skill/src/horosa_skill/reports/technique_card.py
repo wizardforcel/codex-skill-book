@@ -1,0 +1,656 @@
+"""技法依据卡 —— 每次技法响应内联的「这一盘是怎么来的」。
+
+与 `reports/builder.py` 的**咨询报告**是两种文档，不要混：
+  * 咨询报告 = AI 写正文的解盘结论，`references/reports.md` 明令正文里不许出现 run_id / schema /
+    算源这类机器元数据；没有 `ai_report` 时服务端拒绝出终稿（防「假装完成的解读」）。
+  * 技法依据卡 = **确定性**的方法与出处：用了什么技法、什么口径、谁算的、产了哪些段、契约干不干净、
+    版本链是什么。零 AI 成分，所以可以随每次输出直接给出。
+
+算源口径（唯一容易做错的地方）：**运行期实测优先于声明**。`contracts/technique_provenance.json` 说的是
+「这个工具**应该**由谁算」，而 `pan.source` / `jinkou.source` / `data.compute_sources` 是这一次**实际**
+由谁算的。ken 端点失败也回 HTTP 200（AGENTS §4），静默回退本地脚手架正是「声明与实测不一致」的形状——
+所以两者都记，不一致时如实标 `matches_declaration: false`，不替任何一边圆场。
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from datetime import datetime, timezone
+from functools import lru_cache
+from horosa_skill.auxlab_vocab import ZODIAC_UNUSED_CHART_KEYS, transform_field_applies
+from horosa_skill.contracts_locator import contract_path
+from horosa_skill.schemas.tools.astro import INDIA_RECTIFY_DEAD_KEYS
+from horosa_skill.schemas.tools.cn_divination import SUZHAN_DEAD_CLASSICAL_KEYS
+from typing import Any
+
+TECHNIQUE_CARD_SCHEMA = "horosa.skill.technique_card.v1"
+# 不起盘的工具所在的域（知识库检索 / 导出注册表与解析）：不挂技法卡。
+CARDLESS_DOMAINS = frozenset({"knowledge", "export"})
+
+_PROVENANCE_PATH = contract_path("technique_provenance.json")  # 源码树 / wheel 内副本（contracts_locator，v0.40.0 P1）
+
+# 结果敏感设置：改了它们结论就变，所以必须逐条回显给用户看。
+# 键 → (标签, 适用的工具 domain)。`None` = 所有 domain 都适用。
+#
+# ⚠ 为什么要按 domain 收窄：`BirthInput` 是共享基类，`tradition`/`predictive`/`zodiacal`/`hsys`
+# 这些西占字段对**每个**继承它的技法都会带着默认值出现在 `input_normalized` 里——照单全印，
+# 会给灵棋经这种纯干支技法印出「黄道制=0；分宫制=1」，读者会以为这盘真按那个口径算过。
+# 卡片的全部价值就是「如实说明这一盘是怎么来的」，印一条没参与计算的口径比不印更糟。
+#
+# 晚子时双开关只在 hour == 23 生效，但对中式技法**照样回显**——用户换过开关时报告里没有这一行，
+# 等于把「为什么两次结果不同」这个问题藏起来（AGENTS §10）。
+_CN_DOMAINS = frozenset({"cn", "shenshu"})
+_ASTRO_DOMAINS = frozenset({"astro", "predict", "chart"})
+_RESULT_SENSITIVE_FIELDS: tuple[tuple[str, str, frozenset[str] | None], ...] = (
+    ("after23NewDay", "晚子时·日柱开关", _CN_DOMAINS),
+    ("lateZiHourUseNextDay", "晚子时·时干开关", _CN_DOMAINS),
+    ("guirengType", "贵人法", _CN_DOMAINS),
+    ("southMonth", "南半球月令", _CN_DOMAINS),
+    ("tianyiSchool", "天医口径", _CN_DOMAINS),   # v3.13.1 八字（BaZi.js:437 快照行同名）
+    ("timeAlg", "时间算法", None),
+    ("pdMethod", "主限法", _ASTRO_DOMAINS),
+    ("tradition", "古典口径", _ASTRO_DOMAINS),
+    ("predictive", "预测数据", _ASTRO_DOMAINS),
+    ("zodiacal", "黄道制", _ASTRO_DOMAINS),
+    ("hsys", "分宫制", _ASTRO_DOMAINS),
+    # v3.13.1：日出 / 日没口径（classicalParamSpec.js:107；缺省 center 由 BirthInput 校验器归一成 None → 只有 apparent 才回显）、
+    # 龙盘宫位口径（AstroDraconicLab.js:24；whole/shift 改各星落宫）。
+    ("sunriseMode", "日出 / 日没口径", None),
+    ("draconicHouses", "龙盘宫位口径", _ASTRO_DOMAINS),
+    # v3.14.0 [盘面细节] 五项口径（utils/chartDetails.js CHART_DETAIL_OPTIONS；只挂本命盘 / 重置盘 / 占星地图的输入模型，给了才回显）。
+    ("detailFaces", "盘面细节·面的算法", _ASTRO_DOMAINS),
+    ("detailVariant", "盘面细节·算法", _ASTRO_DOMAINS),
+    ("detailLunar", "盘面细节·月亮日算法", _ASTRO_DOMAINS),
+    ("detailMundo", "盘面细节·世俗位置", _ASTRO_DOMAINS),
+    ("detailMidpoint", "盘面细节·中点坐标", _ASTRO_DOMAINS),
+    # v3.14.0：容许度整体倍率对合盘（跨盘相位 / 映点 / 中点接触 = 1° × 倍率，关系量化同认）与各西占盘一并生效，给了就回显。
+    ("orbScale", "容许度整体倍率", _ASTRO_DOMAINS),
+    ("gender", "性别", None),
+    ("school", "流派", None),
+    ("profile", "传本", None),
+)
+# 日界/晚子时两开关缺省不下发（v0.40 F2：上游出厂缺省 1/1，引擎侧同缺省）——这些工具的引擎在缺键时
+# 按 1 起算，卡片照样回显「缺省=1」，否则缺省调用的卡片里这一行凭空消失（AGENTS §10：用户换过开关时
+# 报告里没有这一行 = 把「两次结果为何不同」藏起来）。只列真读这两键、且缺省确为 1 的工具。
+# ⚠ jieqi_year 不在此列：[二十四节气] 四柱由 Java JieQiController.setupBazi 以 after23NewDay=false 硬编码起算
+# （上游同，JieQiController.java:98），印「缺省=1」就是替没参与计算的口径作证。
+_DAY_BOUNDARY_DEFAULT_TOOLS = frozenset({
+    "bazi_birth", "bazi_direct", "ziwei_birth", "liureng_gods", "liureng_runyear", "jinkou",
+    "nongli_time", "qimen", "taiyi", "sanshiunited",
+})
+# 字段在这些工具上是死键（不参与计算）→ 卡片不回显。宿占：上游 techniqueMountSettings.js:1722 SUZHAN_DEAD_CLASSICAL_KEYS
+# 整表（41 键，含 sunriseMode；宿占挂载齿轮隐去、recordPayloadKeys 不带，:1774）；runners/guolao._run_suzhan_tool 同样不下发。
+# 印度校时：问事 / 年盘 / 三旗 11 键 /india/rectify 不读（schemas/tools/astro.INDIA_RECTIFY_DEAD_KEYS 注释引了上游行号）；runners/western 同样不下发。
+_FIELD_DEAD_FOR_TOOLS: dict[str, frozenset[str]] = {
+    key: frozenset(tool for tool, dead in (("suzhan", SUZHAN_DEAD_CLASSICAL_KEYS), ("india_rectify", INDIA_RECTIFY_DEAD_KEYS)) if key in dead)
+    for key in (*SUZHAN_DEAD_CLASSICAL_KEYS, *INDIA_RECTIFY_DEAD_KEYS)
+}
+# 黄道制（上游 v3.14.0）：宫制 / 黄道 / 岁差不参与分段（auxlab_vocab.ZODIAC_UNUSED_CHART_KEYS，附实测）→ 卡片不回显。
+for _key in ZODIAC_UNUSED_CHART_KEYS:
+    _FIELD_DEAD_FOR_TOOLS[_key] = _FIELD_DEAD_FOR_TOOLS.get(_key, frozenset()) | {"zodiacsystems"}
+# 闸门状态：调用方声称「设置已与用户确认」还是「接受默认」，是报告里最该留痕的一项。
+_GATE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("agent_confirmed_settings", "已与用户确认设置"),
+    ("defaults_accepted", "用户接受默认值"),
+    ("clarification_notes", "澄清备注"),
+)
+
+
+@lru_cache(maxsize=1)
+def load_provenance_table() -> dict[str, Any]:
+    try:
+        return json.loads(_PROVENANCE_PATH.read_text(encoding="utf-8")).get("tools") or {}
+    except (OSError, json.JSONDecodeError, ValueError):
+        # 声明表读不到不是致命错：卡片退到「只报实测」，绝不因为一份元数据文件让技法调用失败。
+        return {}
+
+
+def _measured_compute(response_data: dict[str, Any]) -> dict[str, Any]:
+    """从**这一次的响应**里读真实算源。声明表说应该是谁，这里说实际是谁。"""
+    measured: dict[str, str] = {}
+    pan = response_data.get("pan")
+    if isinstance(pan, dict) and isinstance(pan.get("source"), str):
+        measured["pan"] = pan["source"]
+    jinkou = response_data.get("jinkou")
+    if isinstance(jinkou, dict) and isinstance(jinkou.get("source"), str):
+        measured["jinkou"] = jinkou["source"]
+    sources = response_data.get("compute_sources")
+    if isinstance(sources, dict):
+        for key, value in sources.items():
+            if isinstance(value, str):
+                measured[str(key)] = value
+    return measured
+
+
+# ---- 结果敏感设置的全表（v0.50.0 深审 F10）：从闸门指引表推出来，不另列 -------------------------------------------------
+# 「闸门会问的设置」= TOOL_GUIDANCE[tool] 的 ask_if_missing（带选项的问题；自由文本问题是事实 / 输入，不是设置）+ safe_defaults。
+# 时刻 / 地点类键（出生数据、起课时刻）不算设置：卡片另有起盘时刻与 place_resolution。伪名按闸门同一张别名表展开，
+# 纯确认类（「技法设置是否沿用默认」）没有对应的键，不列。闸门不拦的问题（NON_BLOCKING：只筛输出 / 只作标注）不算改结果。
+_MOMENT_KEYS = frozenset({"date", "time", "zone", "lat", "lon", "gpsLat", "gpsLon", "place", "location", "datetime"})
+SOURCE_TEXT = {"user": "用户给定", "profile": "命主档案", "place": "按地点推得", "default": "缺省"}
+SOURCE_TEXT_EN = {"user": "given by the user", "profile": "from the saved profile", "place": "derived from the place", "default": "default"}
+_UNSENT = "未下发，引擎按自己的缺省算"
+# 指引表里没有中文问题文字可取的键（只出现在 safe_defaults）：给读者的叫法。
+_EXTRA_LABELS = {
+    "ad": "纪年", "lifespanMethod": "寿命格局取主法", "gender": "性别", "sex": "性别", "timeAlg": "时间算法",
+    "zeriSnapshotMaxRows": "命中清单行数", "zeriSnapshotExplainRows": "判读树行数", "seed": "起卦种子",
+    "orbScale": "容许度整体倍率", "orbs": "逐星容许度",
+    "transformKind": "变换种类", "transformPlanet": "基准星", "transformShift": "宫位同转", "transformHouse": "对应宫头",
+    "transformVariant": "变换口径", "zodiacVersion": "黄道版本",
+    # 审计 O-13：字段说明里取不到叫法的设置键（含 options 里的嵌套键），逐个按闸门问题与引擎词表的含义写。
+    "technique": "导出技法", "action": "检索动作", "category": "问事类别", "deck": "牌组", "desc": "排序", "limit": "条数上限",
+    "paiPanType": "排盘方式", "options": "口径覆写", "options.timeBasis": "时间基准", "options.style": "盘式", "options.tn": "太乙扫描口径",
+    "options.school": "流派", "options.wuxing": "五行口径", "options.流派五键": "流派五项", "options.castMethod": "起课法",
+    "options.timeAlg": "时间算法", "liureng_options.guirengType": "六壬贵人取法", "liureng_options.castMethod": "六壬起课法",
+    "qimen_options.qijuMethod": "奇门起局法", "taiyi_options.timeBasis": "太乙时间基准",
+    "taiyin": "太阴卦", "taiyang": "太阳卦", "shaoyang": "少阳卦", "shaoyin": "少阴卦",
+    "doubingSu28": "二十八宿度制", "houseStartMode": "人事十二宫起法", "lines": "爻（摇卦结果）", "gua_code": "卦码",
+    "dayunLength": "大运年数", "shenshaLayer": "神煞层", "fenyeVersion": "算命学藏干表", "ichingMerge": "易卦星盘合卦方式",
+    "mayanCorrelation": "玛雅历关联常数", "hdTrueNode": "人类图交点", "spiritQuadrant": "灵名字母象限",
+    "qiMode": "起局方式", "yongGong": "用宫", "qiguaShu": "起卦两数模式", "piKoujing": "闢卦口径", "lsMode": "地方空间线算法",
+    "orb": "容许度", "targetDate": "推运目标日", "targetTime": "推运目标时刻", "tlVariant": "时间主算法", "lifespan": "寿命基准",
+    "userAyanDeg": "自定义岁差度", "quesitedHouse": "所问之宫", "readingScope": "判读范围", "zodiacSystem": "黄道制",
+    "dirLat": "目标地纬度", "dirLon": "目标地经度", "dirZone": "目标时区", "pdTimeKey": "度数换算",
+    "startMode": "起运方式", "orderType": "排序方式", "dayMethod": "日计法", "sign": "星座", "house": "宫位", "planet": "行星",
+    "request": "整包载荷", "godKeyPos": "神煞主位", "minggongMethod": "命宫起法", "byLon": "按经度校时",
+    "adjustJieqi": "节气按纬度调整", "jieqis": "节气",
+}
+
+
+@lru_cache(maxsize=None)
+def _described_label(tool_name: str, key: str) -> str:
+    """没有专门叫法的设置键：取它的字段说明 / options_keys 说明里「：」之前那一截当读者看的名字（审计 O-13：114 张卡里 64 张
+    至少印了一项原始键名——maxSpanDays、godKeyPos、byLon…——同样的字印在报告封面「关键设置」与附录里）。都取不到才用键名。"""
+    from horosa_skill.engine.registry import TOOL_DEFINITIONS
+
+    leaf = key.split(".")[-1]
+    texts: list[str] = []
+    definition = TOOL_DEFINITIONS.get(tool_name)
+    if definition is not None:
+        field = definition.input_model.model_fields.get(key)
+        if field is not None and field.description:
+            texts.append(field.description)
+    try:
+        from horosa_skill.agent_guidance import build_tool_input_contract
+
+        docs = build_tool_input_contract(tool_name).get("options_keys") or {}
+        for name in (key, leaf):
+            if isinstance(docs.get(name), str):
+                texts.append(docs[name])
+    except Exception:  # noqa: BLE001 — 说明取不到就退回键名，技法卡照出
+        texts = texts or []
+    for text in texts:
+        head = re.split(r"[：:（(；;，,。]", str(text).strip(), maxsplit=1)[0].strip()
+        head = re.sub(r"\s+[A-Za-z0-9_./–-]+$", "", head).strip()   # 「年数 1–40」「目标时刻 HH」→ 只留叫法
+        if head and head != key and head != leaf and len(head) <= 14 and not re.fullmatch(r"[A-Za-z0-9_./ -]+", head):
+            return head
+    return key
+
+
+def _field_keys(tool_name: str, field: str) -> list[str]:
+    from horosa_skill.agent_guidance.questions import _ALIASES, CONFIRM_ONLY_PARTS
+
+    keys: list[str] = []
+    for alternative in field.split(" / "):
+        for part in (piece.strip() for piece in re.split(r"/|\+", alternative)):
+            if not part or part in CONFIRM_ONLY_PARTS:
+                continue
+            expanded = [key for group in _ALIASES.get(part, ((part,),)) for key in group]
+            for key in expanded:
+                key = key.lstrip("@")
+                if key not in _MOMENT_KEYS and key != "location" and key not in keys:
+                    keys.append(key)
+    return keys
+
+
+@lru_cache(maxsize=None)
+def result_setting_specs(tool_name: str) -> tuple[dict[str, Any], ...]:
+    """这个技法会改变结果的设置（闸门指引表推出）：每项 {key, options?, values?, default?, meaning?}。"""
+    from horosa_skill.agent_guidance.policies import FREE_TEXT_GATE_FIELDS
+    from horosa_skill.agent_guidance.questions import NON_BLOCKING
+    from horosa_skill.agent_guidance.tool_table import TOOL_GUIDANCE
+
+    policy = TOOL_GUIDANCE.get(tool_name) or {}
+    specs: dict[str, dict[str, Any]] = {}
+    for question in policy.get("ask_if_missing") or []:
+        field_text = str((question or {}).get("field") or "").strip()
+        if not field_text or field_text in FREE_TEXT_GATE_FIELDS or (tool_name, field_text) in NON_BLOCKING:
+            continue
+        keys = _field_keys(tool_name, field_text)
+        for key in keys:
+            spec = specs.setdefault(key, {"key": key})
+            if len(keys) == 1 and question.get("question"):
+                spec.setdefault("label", re.split(r"[？?（(，,；]", str(question["question"]))[0][:24])
+            if len(keys) == 1 and isinstance(question.get("options"), list) and isinstance(question.get("values"), list):
+                spec.setdefault("options", list(question["options"]))
+                spec.setdefault("values", list(question["values"]))
+    for default in policy.get("safe_defaults") or []:
+        for key in _field_keys(tool_name, str((default or {}).get("field") or "")):
+            spec = specs.setdefault(key, {"key": key})
+            if "value" in default and "default" not in spec:
+                spec["default"] = default["value"]
+                spec["meaning"] = default.get("meaning")
+    return tuple(specs.values())
+
+
+def _lookup(payload: dict[str, Any], key: str) -> Any:
+    node: Any = payload
+    for part in key.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
+def _same(a: Any, b: Any) -> bool:
+    if isinstance(a, bool) or isinstance(b, bool):
+        return str(int(a) if isinstance(a, bool) else a).lower() == str(int(b) if isinstance(b, bool) else b).lower()
+    return str(a) == str(b)
+
+
+def setting_text(key: str, value: Any, spec: dict[str, Any] | None = None) -> str:
+    """一项设置的人读写法：闸门问题的选项（值对得上时）> 缺省值的说明 > 报告的码表（宫制 / 性别 / 布尔）> 原值。"""
+    from horosa_skill.reports.source import setting_reader_text
+
+    spec = spec or {}
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return _UNSENT
+    if isinstance(value, (list, tuple)) and not value:
+        return "空（没给）"
+    if isinstance(value, (list, tuple)):
+        # 结构化输入（六爻逐爻、神煞名单…）：标量列表照写，结构列表只说给了几项（原值在 input_normalized）。
+        if all(isinstance(item, (str, int, float)) for item in value):
+            joined = "、".join(str(item) for item in value)
+            return joined if len(joined) <= 60 else joined[:60] + "…"
+        return f"已给 {len(value)} 项（原值见 input_normalized）"
+    if isinstance(value, dict):
+        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        return text if len(text) <= 80 else text[:80] + "…"
+    # 性别的 true / false 是 男 / 女，不是 是 / 否（紫微的 `gender: false` 曾原样印在卡上）。
+    mapped = setting_reader_text(key, str(value).lower() if key in ("gender", "sex") else value, standalone=True)
+    if mapped and mapped != str(value):
+        return mapped  # 码表（宫制 / 黄道 / 时间算法 / 性别 / 布尔）
+    if "default" in spec and spec.get("meaning") and _same(spec["default"], value):
+        return str(spec["meaning"])
+    for option, candidate in zip(spec.get("options") or [], spec.get("values") or []):
+        if candidate is not None and _same(candidate, value):
+            return str(option)
+    return str(value)
+
+
+def _settings_used(
+    input_normalized: dict[str, Any], response_data: dict[str, Any], domain: str | None, tool_name: str | None = None
+) -> dict[str, Any]:
+    used: dict[str, Any] = {}
+    labels = {field: label for field, label, _domains in _RESULT_SENSITIVE_FIELDS}
+    if tool_name:
+        from horosa_skill.agent_guidance.questions import GENDER_FACT_TOOLS, gender_required
+
+        for spec in result_setting_specs(tool_name):
+            key = spec["key"]
+            if key in ("gender", "sex") and tool_name in GENDER_FACT_TOOLS and not gender_required(tool_name, input_normalized):
+                continue  # 这次调用不依赖性别（如神数正传·铁算心易）：不印
+            if tool_name in _FIELD_DEAD_FOR_TOOLS.get(key, ()):
+                continue
+            if tool_name == "transformchart" and not transform_field_applies(input_normalized, key):
+                continue  # 这种变换用不上的选项（倒置盘的「对应宫头」…）：没参与计算，不印
+            value = _lookup(input_normalized, key)
+            sent = value is not None and not (isinstance(value, str) and not value.strip())
+            if not sent and "default" in spec:
+                value = spec["default"]
+            used[key] = {"label": labels.get(key) or _EXTRA_LABELS.get(key) or spec.get("label") or _described_label(tool_name, key),
+                         "value": value, "text": setting_text(key, value, spec), "source": "default"}
+    for field, label, domains in _RESULT_SENSITIVE_FIELDS:
+        if domains is not None and (domain or "") not in domains:
+            continue
+        if tool_name in _FIELD_DEAD_FOR_TOOLS.get(field, ()):
+            continue
+        if field in input_normalized and input_normalized[field] is not None:
+            used[field] = {"label": label, "value": input_normalized[field],
+                           "text": setting_text(field, input_normalized[field], _spec(tool_name, field)), "source": "default"}
+        elif field in ("after23NewDay", "lateZiHourUseNextDay") and tool_name in _DAY_BOUNDARY_DEFAULT_TOOLS:
+            used[field] = {"label": f"{label}（缺省）", "value": 1, "text": setting_text(field, 1, _spec(tool_name, field)), "source": "default"}
+    # 时区口径（v0.40 F17，上游 utils/timezone.js unifyCnZone）：Asia/Urumqi 归并北京时间时回显，
+    # 否则读者看到 +08:00 不知道这是法定北京时间口径、不是新疆当地惯用的 +06:00。
+    if input_normalized.get("zoneAdvisory") == "cn-unified":
+        unified = f"北京时间统一（{input_normalized.get('geoZone') or 'Asia/Urumqi'}→Asia/Shanghai）"
+        used["zoneAdvisory"] = {"label": "时区口径", "value": unified, "text": unified, "source": "place"}
+    # 岁差/恒星黄道：西占与印占**字段名不同**（AGENTS §4），必须分别读，且不许硬编码岁差名。
+    chart = response_data.get("chart") if isinstance(response_data.get("chart"), dict) else {}
+    # 引擎回报空串（回归黄道时不报岁差）不覆盖上面按指引表补的缺省岁差——v0.49 卡上印的是「岁差=」。
+    if isinstance(chart.get("siderealAyanamsa"), (str, int, float)) and str(chart["siderealAyanamsa"]).strip():
+        value = chart["siderealAyanamsa"]
+        used["siderealAyanamsa"] = {"label": "岁差（西占）", "value": value,
+                                    "text": setting_text("siderealAyanamsa", value, _spec(tool_name, "siderealAyanamsa")),
+                                    "source": (used.get("siderealAyanamsa") or {}).get("source", "default")}
+    elif "siderealAyanamsa" in used:
+        used["siderealAyanamsa"]["label"] = "岁差（西占）"
+    if isinstance(chart.get("siderealModeKey"), (str, int, float)):
+        used["siderealModeKey"] = {"label": "岁差模式（印占）", "value": chart["siderealModeKey"],
+                                   "text": str(chart["siderealModeKey"]), "source": "default"}
+        if chart.get("ayanamsaValue") is not None:
+            used["ayanamsaValue"] = {"label": "岁差值（印占）", "value": chart["ayanamsaValue"],
+                                     "text": str(chart["ayanamsaValue"]), "source": "default"}
+    # runner 实际钉住的口径（sync311 F16）：调用方没给、却由 skill 按上游缺省**替它定下**的值——
+    # 起筮种子（时刻派生）、「今年」流年/大运年、演法农历月……不回显就无从解释「同样输入明年结果为何变」。
+    applied = response_data.get("settings_applied")
+    if isinstance(applied, dict):
+        for field, item in applied.items():
+            if isinstance(item, dict) and "value" in item:
+                # runner 替调用方钉下的值（今年、时刻派生的起筮种子…）：来源是缺省（skill 按上游规则定的）。
+                used[str(field)] = {"label": str(item.get("label") or field), "value": item["value"],
+                                    "text": setting_text(str(field), item["value"], _spec(tool_name, str(field))), "source": "default"}
+    # 一个工具装着多种方法、每种方法只读其中几项设置时（时主轮转十二法）：runner 报出这次**没读**的键，卡上不印——
+    # 指引表的 safe_defaults 是全表，照印会把「轨主走法：单轮」写在一张轮主期表的依据里。
+    for field in response_data.get("settings_not_applicable") or ():
+        used.pop(str(field), None)
+    return used
+
+
+def _spec(tool_name: str | None, key: str) -> dict[str, Any] | None:
+    return next((spec for spec in result_setting_specs(tool_name) if spec["key"] == key), None) if tool_name else None
+
+
+def annotate_setting_sources(
+    card: dict[str, Any], *, explicit_paths: set[str] | frozenset[str], profile_keys: set[str], place_keys: set[str],
+) -> None:
+    """技法卡每项设置的来源：用户给的 / 命主档案 / 地点推得 / 缺省。run_tool 在知道这些之后补（卡在存档之前挂好、同一份存进 memory）。"""
+    for key, item in (card.get("settings") or {}).items():
+        if not isinstance(item, dict) or item.get("source") == "place":
+            continue
+        top = key.split(".")[0]
+        if top in profile_keys:
+            source = "profile"
+        elif top in place_keys:
+            source = "place"
+        elif key in explicit_paths:
+            source = "user"
+        else:
+            source = "default"
+        item["source"] = source
+
+
+def _gate_state(input_normalized: dict[str, Any]) -> dict[str, Any]:
+    state: dict[str, Any] = {}
+    for field, label in _GATE_FIELDS:
+        if field in input_normalized and input_normalized[field] not in (None, ""):
+            state[field] = {"label": label, "value": input_normalized[field]}
+    return state
+
+
+def _sections_health(export_snapshot: dict[str, Any]) -> dict[str, Any]:
+    detected = export_snapshot.get("section_titles_detected")
+    selected = export_snapshot.get("selected_sections")
+    missing = export_snapshot.get("missing_selected_sections") or []
+    unknown = export_snapshot.get("unknown_detected_sections") or []
+    return {
+        "selected_count": len(selected) if isinstance(selected, list) else 0,
+        "detected_count": len(detected) if isinstance(detected, list) else 0,
+        "titles": list(detected) if isinstance(detected, list) else [],
+        "missing_selected_sections": list(missing),
+        "unknown_detected_sections": list(unknown),
+        # 「干净」= 该出的都出了、出的都认识。这是导出契约的验收判据（AGENTS §8）。
+        "contract_clean": not missing and not unknown,
+        "format_source": export_snapshot.get("format_source"),
+    }
+
+
+def build_technique_card(
+    *,
+    tool_name: str,
+    technique_key: str | None,
+    input_normalized: dict[str, Any],
+    response_data: dict[str, Any],
+    skill_version: str,
+    envelope_schema: str,
+    domain: str | None = None,
+    runtime_version: str | None = None,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """构造技法依据卡。纯函数：只读入参，不发请求、不算盘。"""
+    from horosa_skill.exports.registry import get_technique_info
+
+    export_snapshot = response_data.get("export_snapshot")
+    export_snapshot = export_snapshot if isinstance(export_snapshot, dict) else {}
+    technique_info = get_technique_info(technique_key) if technique_key else None
+
+    declared = load_provenance_table().get(tool_name) or {}
+    measured = _measured_compute(response_data)
+    declared_engines = list(declared.get("engines") or [])
+    # 一致性判据：声明了引擎名就要在实测值里出现；实测为空（如离线/无该字段）不算矛盾，标 unknown。
+    if not measured:
+        matches: bool | None = None
+    elif declared_engines:
+        matches = any(value in declared_engines for value in measured.values())
+    else:
+        matches = None
+
+    return {
+        "schema": TECHNIQUE_CARD_SCHEMA,
+        "tool": tool_name,
+        "technique": {
+            "key": technique_key,
+            "label": (technique_info or {}).get("label") if technique_info else None,
+        },
+        "compute": {
+            "declared_class": declared.get("compute_class"),
+            "declared_engines": declared_engines,
+            "declared_endpoints": list(declared.get("endpoints") or []),
+            "measured": measured,
+            "matches_declaration": matches,
+            "notes": declared.get("notes"),
+        },
+        "settings": _settings_used(input_normalized, response_data, domain, tool_name),
+        "gate": _gate_state(input_normalized),
+        "sections": _sections_health(export_snapshot),
+        "versions": {
+            "skill": skill_version,
+            "tool_envelope_schema": envelope_schema,
+            "export_settings": export_snapshot.get("bundle_version"),
+            "runtime": runtime_version,
+        },
+        "generated_at": generated_at or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+def render_technique_card_markdown(card: dict[str, Any], *, reader: bool = False) -> str:
+    """把卡片渲染成一段可直接贴进回答尾部的 Markdown。
+
+    reader=True（技法依据报告，给人读）：设置写成字（与完整报告同一个 source.setting_reader_text），空值不列；
+    「设置确认」与运行 id 这类开发者记录不印（机读 JSON 里照旧都在）；有起盘时刻 / 地点就加一行（评审 R-09）。"""
+    technique = card.get("technique") or {}
+    label = technique.get("label") or technique.get("key") or card.get("tool")
+    compute = card.get("compute") or {}
+    sections = card.get("sections") or {}
+    versions = card.get("versions") or {}
+
+    measured = compute.get("measured") or {}
+    if measured:
+        engines = "、".join(f"{key}={value}" for key, value in sorted(measured.items()))
+    else:
+        engines = "、".join(compute.get("declared_engines") or []) or (compute.get("declared_class") or "未标注")
+    lines = [
+        f"**本次所用技法**：{label}（`{card.get('tool')}`）",
+        f"- 算源：{engines}"
+        + ("" if compute.get("matches_declaration") is not False else "　⚠ 与声明不一致，请核对"),
+    ]
+    settings = card.get("settings") or {}
+    if reader:
+        from horosa_skill.reports.source import setting_reader_text
+
+        if card.get("moment"):
+            lines.append(f"- 盘：{card['moment']}")
+        words = [(item["label"], item.get("text") or setting_reader_text(key, item.get("value"), standalone=True)) for key, item in settings.items()]
+        rendered = "；".join(f"{label}：{text}" for label, text in words if text)
+        if rendered:
+            lines.append(f"- 口径：{rendered}")
+    elif settings:
+        rendered = "；".join(
+            f"{item['label']}：{item.get('text') or item['value']}" + (f"（{SOURCE_TEXT[item['source']]}）" if item.get("source") in SOURCE_TEXT else "")
+            for item in settings.values()
+        )
+        lines.append(f"- 口径：{rendered}")
+    gate = card.get("gate") or {}
+    if gate and not reader:
+        rendered = "；".join(f"{item['label']}={item['value']}" for item in gate.values())
+        lines.append(f"- 设置确认：{rendered}")
+    profiles = [item for item in card.get("profiles") or [] if isinstance(item, dict)]
+    if profiles:
+        # 出生信息出处（命主档案，horosa_skill/profiles.py）：只写档案名与填了哪些键，不写备注。
+        parts = []
+        for item in profiles:
+            slot = item.get("slot")
+            parts.append(f"「{item.get('name')}」" + ("" if slot in (None, "", "subject") else f"（{slot}）"))
+        lines.append(f"- 出生信息：取自命主档案{'；'.join(parts)}")
+    health = "干净" if sections.get("contract_clean") else "有缺口"
+    detail = ""
+    if sections.get("missing_selected_sections"):
+        detail += f"，缺 {'/'.join(sections['missing_selected_sections'])}"
+    if sections.get("unknown_detected_sections"):
+        detail += f"，多出 {'/'.join(sections['unknown_detected_sections'])}"
+    lines.append(f"- 段落：{sections.get('detected_count', 0)} 段，导出契约{health}{detail}")
+    version_bits = [f"skill {versions.get('skill')}"]
+    if versions.get("export_settings") is not None:
+        version_bits.append(f"导出契约 v{versions['export_settings']}")
+    if versions.get("runtime"):
+        version_bits.append(f"runtime {versions['runtime']}")
+    lines.append(f"- 版本：{'　·　'.join(version_bits)}")
+    refs = card.get("refs") or {}
+    if refs.get("run_id") and not reader:
+        lines.append(f"- 本次运行：`{refs['run_id']}`")
+    return "\n".join(lines)
+
+
+TECHNIQUE_REPORT_SCHEMA = "horosa.skill.technique_report.v1"
+# 会话里最值得报出来的一致性问题：同一次问答跨技法用了**不同**的口径。
+# 晚子时开关不同 = 两张盘的日柱/时干可能就不是同一天，结论根本不可比——而这在多技法交叉时
+# 完全不会有任何报错，只会安静地给出两套说法。
+_CROSS_RUN_CRITICAL_FIELDS = ("after23NewDay", "lateZiHourUseNextDay", "guirengType", "timeAlg")
+
+
+def build_technique_report(
+    *,
+    cards: list[dict[str, Any]],
+    scope: str,
+    scope_id: str | None,
+    title: str | None = None,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """把一张或多张技法卡汇总成一份可渲染的技法依据报告。
+
+    `scope` = "run"（单次调用）或 "group"（整个会话）。会话态额外做**口径冲突**检查。
+    """
+    conflicts: list[dict[str, Any]] = []
+    if len(cards) > 1:
+        for field in _CROSS_RUN_CRITICAL_FIELDS:
+            seen: dict[str, list[str]] = {}
+            for card in cards:
+                item = (card.get("settings") or {}).get(field)
+                if not item:
+                    continue
+                seen.setdefault(f"{item.get('value')}", []).append(str(card.get("tool")))
+            if len(seen) > 1:
+                label = next(
+                    ((c.get("settings") or {})[field]["label"] for c in cards if (c.get("settings") or {}).get(field)),
+                    field,
+                )
+                conflicts.append({
+                    "field": field,
+                    "label": label,
+                    "values": {value: tools for value, tools in sorted(seen.items())},
+                    "why_it_matters": "同一会话内该口径不一致 —— 各技法的结论建立在不同前提上，不可直接互证。",
+                })
+
+    techniques = [
+        {
+            "tool": card.get("tool"),
+            "technique": card.get("technique"),
+            "compute": card.get("compute"),
+            "sections": {
+                key: value for key, value in (card.get("sections") or {}).items() if key != "titles"
+            },
+            "settings": card.get("settings"),
+            "gate": card.get("gate"),
+            "refs": card.get("refs"),
+        }
+        for card in cards
+    ]
+    unclean = [t["tool"] for t in techniques if not (t["sections"] or {}).get("contract_clean")]
+    mismatched = [t["tool"] for t in techniques if (t["compute"] or {}).get("matches_declaration") is False]
+    return {
+        "schema": TECHNIQUE_REPORT_SCHEMA,
+        "title": title or ("会话技法依据报告" if scope == "group" else "技法依据报告"),
+        "scope": scope,
+        "scope_id": scope_id,
+        "technique_count": len(techniques),
+        "techniques": techniques,
+        "cards": cards,
+        "consistency": {
+            "setting_conflicts": conflicts,
+            "export_contract_unclean": unclean,
+            "compute_mismatched": mismatched,
+            # 「全绿」只有在三项都空时才成立——别把「没检查」说成「没问题」。
+            "all_clear": not conflicts and not unclean and not mismatched,
+        },
+        "generated_at": generated_at or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+def render_technique_report_markdown(report: dict[str, Any]) -> str:
+    lines = [f"# {report.get('title')}", ""]
+    scope = report.get("scope")
+    lines.append(
+        f"- 范围：{'整个会话' if scope == 'group' else '单次运行'}"
+        + (f"（`{report.get('scope_id')}`）" if report.get("scope_id") else "")
+    )
+    lines.append(f"- 技法数：{report.get('technique_count')}")
+    lines.append(f"- 生成时间：{report.get('generated_at')}")
+    lines.append("")
+
+    consistency = report.get("consistency") or {}
+    lines.append("## 一致性检查")
+    lines.append("")
+    if consistency.get("all_clear"):
+        lines.append("本报告涵盖的技法口径一致，导出契约干净，算源与声明相符。")
+    else:
+        for conflict in consistency.get("setting_conflicts") or []:
+            detail = "；".join(f"{value} ← {'、'.join(tools)}" for value, tools in conflict["values"].items())
+            lines.append(f"- ⚠ **{conflict['label']} 口径不一致**：{detail}。{conflict['why_it_matters']}")
+        if consistency.get("export_contract_unclean"):
+            lines.append(f"- ⚠ 导出契约有缺口：{'、'.join(consistency['export_contract_unclean'])}")
+        if consistency.get("compute_mismatched"):
+            lines.append(f"- ⚠ 实测算源与声明不符：{'、'.join(consistency['compute_mismatched'])}")
+    lines.append("")
+
+    lines.append("## 技法一览")
+    lines.append("")
+    lines.append("| 技法 | 工具 | 算源 | 段数 | 导出契约 |")
+    lines.append("| --- | --- | --- | --- | --- |")
+    for item in report.get("techniques") or []:
+        technique = item.get("technique") or {}
+        compute = item.get("compute") or {}
+        sections = item.get("sections") or {}
+        measured = compute.get("measured") or {}
+        engines = "、".join(sorted(measured.values())) or "、".join(compute.get("declared_engines") or []) \
+            or (compute.get("declared_class") or "—")
+        clean = "干净" if sections.get("contract_clean") else "有缺口"
+        lines.append(
+            f"| {technique.get('label') or technique.get('key') or '—'} | `{item.get('tool')}` | "
+            f"{engines} | {sections.get('detected_count', 0)} | {clean} |"
+        )
+    lines.append("")
+
+    for card in report.get("cards") or []:
+        technique = card.get("technique") or {}
+        lines.append(f"## {technique.get('label') or technique.get('key') or card.get('tool')}")
+        lines.append("")
+        lines.append(render_technique_card_markdown(card, reader=True))
+        compute = card.get("compute") or {}
+        if compute.get("notes"):
+            lines.append(f"- 算源说明：{compute['notes']}")
+        titles = (card.get("sections") or {}).get("titles") or []
+        if titles:
+            lines.append(f"- 产出段目录：{'、'.join(titles)}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"

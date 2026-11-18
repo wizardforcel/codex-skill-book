@@ -1,0 +1,14 @@
+interface:
+  display_name: "PPT\u5168\u6D41\u7A0B\u5236\u4F5C"
+  short_description: "\u4ECE\u8D44\u6599\u68B3\u7406\u3001\u65B9\u6848\u786E\u8BA4\
+    \u548C\u9010\u9875\u9884\u89C8\u5230\u53EF\u7F16\u8F91PPT\u5B8C\u6574\u4EA4\u4ED8"
+  default_prompt: Use $build-ppt-from-sources to create a presentation from my uploaded
+    source files through outline, preview approval, asset confirmation, and editable
+    PPT delivery.
+policy:
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
+  allow_implicit_invocation: true

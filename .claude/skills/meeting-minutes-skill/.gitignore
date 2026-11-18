@@ -1,0 +1,22 @@
+# 密钥 / 本地配置 —— 永远不要提交
+*.env
+.env
+meeting-minutes.env
+!*.env.example
+
+# 运行产物
+outputs/
+*.docx
+*.m4a
+*.mp3
+*.wav
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 系统
+.DS_Store
+Thumbs.db

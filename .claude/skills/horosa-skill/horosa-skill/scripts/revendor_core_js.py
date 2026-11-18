@@ -1,0 +1,1032 @@
+#!/usr/bin/env python
+"""Re-vendor a 星阙 frontend JS file into `horosa-core-js/src/vendor/` with the headless transform.
+
+The transform is the one AGENTS.md §5 spells out, applied mechanically so every re-vendor is identical
+and reviewable:
+
+1. sibling/relative imports get an explicit `.js` (Node ESM needs it; the browser bundler does not);
+2. backend-only imports are dropped (`utils/request`, `{ServerRoot,ResultKey}`, `buildKentangEndpoint`)
+   — Python does the fetching, the JS layer never speaks HTTP;
+3. exported `fetch*Pan` network helpers are removed wholesale (same reason);
+4. everything else — especially the `normalize*` overlays and every `build*SnapshotText` — is copied
+   **verbatim**, because byte-identical formatting is the whole point of vendoring instead of porting.
+
+Usage:  python scripts/revendor_core_js.py <upstream-src-root> <relative/path/File.js> [more...]
+        (`--check` reports what would change without writing)
+        python scripts/revendor_core_js.py <upstream-src-root> --from-manifest [--only <prefix>] [--check]
+        python scripts/revendor_core_js.py <upstream-src-root> --restamp <vendor/rel.js>... | --restamp-all
+        (`--restamp` records the upstream source sha of a hand-made entry — run it only after re-auditing)
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import sys
+
+# Windows 控制台默认 cp1252/cp936：脚本自己 print 的中文会抛 UnicodeEncodeError 并让脚本 exit 1
+# （v0.38.0 的 repack 脚本在「打印成功信息」那一步失败过）。统一在入口把两条流改成 UTF-8。
+for _stream in (sys.stdout, sys.stderr):
+    _reconfigure = getattr(_stream, "reconfigure", None)
+    if _reconfigure is not None:
+        _reconfigure(encoding="utf-8", errors="replace")
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+VENDOR_ROOT = REPO_ROOT / "horosa-skill/horosa-core-js/src/vendor"
+MANIFEST = REPO_ROOT / "horosa-skill/contracts/vendor_manifest.json"
+
+_DROP_IMPORT_PATTERNS = (
+    re.compile(r"^import\s+request\s+from\s+['\"][^'\"]*utils/request['\"];?\s*$", re.M),
+    re.compile(r"^import\s+\{[^}]*\b(?:ServerRoot|ResultKey)\b[^}]*\}\s+from\s+['\"][^'\"]+['\"];?\s*$", re.M),
+    re.compile(r"^import\s+\{[^}]*buildKentangEndpoint[^}]*\}\s+from\s+['\"][^'\"]+['\"];?\s*$", re.M),
+    # namespace 形式：`import * as Constants from './constants'`（其 ServerRoot 是后端地址）。
+    # 具名形式已在上面覆盖，但上游 utils/*AiSnapshot.js 这一支用的是 namespace 写法。
+    re.compile(r"^import\s+\*\s+as\s+Constants\s+from\s+['\"][^'\"]*constants['\"];?\s*$", re.M),
+    re.compile(r"^import\s+\w+\s+from\s+['\"][^'\"]*utils/request['\"];?\s*$", re.M),
+    re.compile(r"^import\s+\w+\s+from\s+['\"]\./request['\"];?\s*$", re.M),
+    # `momentPipeline` 是纯网络编排模块（import request + services/astro + DateTime 组件），
+    # 按 §5 归 Python；引用它的求根循环由 _strip_network_orchestrators 连带剥掉。
+    re.compile(r"^import\s+\{[^}]*\}\s+from\s+['\"][^'\"]*momentPipeline['\"];?\s*$", re.M),
+)
+_RELATIVE_IMPORT = re.compile(r"(from\s+['\"])(\.[^'\"]*?)(['\"])")
+_DYNAMIC_RELATIVE_IMPORT = re.compile(r"(import\(\s*(?:/\*.*?\*/\s*)?['\"])(\.[^'\"]*?)(['\"])", re.S)
+# 裸副作用导入 `import '../../utils/pageSettingsStore';`（只为执行模块顶层登记，不取名字）：没有 `from`，上面那条抓不到
+# ——上游 v3.12.0 的 LiuRengMain 用它注册页面设置；漏了就既不补 `.js` 也不重指，loadcheck 报 Cannot find module。
+_BARE_RELATIVE_IMPORT = re.compile(r"(^[ \t]*import\s+['\"])(\.[^'\"]*?)(['\"])", re.M)
+
+
+def _strip_fetch_helpers(text: str) -> tuple[str, list[str]]:
+    """Remove `export async function fetch*Pan(...) { … }` blocks by brace matching."""
+    removed: list[str] = []
+    # 命名放宽到任意导出的 `fetch*`：AGENTS §5 的契约是「Python 发请求，JS 层不说 HTTP」，
+    # 按 `fetch` 前缀识别比维护一张函数名清单稳。此前只认 `fetch*Pan`，于是
+    # `fetchBabylonEphemeris` / `fetchRiseSetAt` 漏网，vendored 模块带着 ServerRoot 引用不可加载。
+    pattern = re.compile(r"^export\s+(?:async\s+)?function\s+(fetch\w+)\s*\(", re.M)
+    while True:
+        match = pattern.search(text)
+        if not match:
+            return text, removed
+        start = match.start()
+        brace = text.index("{", match.end() - 1)
+        depth, index = 1, brace + 1
+        while depth and index < len(text):
+            if text[index] == "{":
+                depth += 1
+            elif text[index] == "}":
+                depth -= 1
+            index += 1
+        removed.append(match.group(1))
+        text = text[:start] + text[index:].lstrip("\n")
+
+
+def _strip_network_orchestrators(text: str, removed: list[str]) -> tuple[str, list[str]]:
+    """剥掉引用了已删 `fetch*` 的导出 async 编排函数（`buildXForFields` 一类）。
+
+    这些函数的职责就是「发几个请求再拼数据」，headless 侧由 Python 承担。留着它们不会在加载期报错
+    （自由变量到调用期才解析），但会让 vendored 模块看起来还提供一个根本不能用的入口——比留个坏
+    import 更隐蔽。按「引用了被删符号」判定，不写死函数名。
+    """
+    notes: list[str] = []
+    if not removed:
+        return text, notes
+    while True:
+        hit = None
+        # 也认非导出的 `async function`：上游有「async function X(){} … export { X }」的写法
+        # （vedicMundane.js 的 solveVedicSolarIngress），只认 `export async function` 会漏掉它，
+        # 留下一个一调用就 ReferenceError 的导出入口。
+        for match in re.finditer(r"^(?:export\s+)?async\s+function\s+(\w+)\s*\(", text, re.M):
+            start = match.start()
+            brace = text.index("{", match.end() - 1)
+            depth, index = 1, brace + 1
+            while depth and index < len(text):
+                if text[index] == "{":
+                    depth += 1
+                elif text[index] == "}":
+                    depth -= 1
+                index += 1
+            body = text[brace:index]
+            if any(re.search(rf"\b{re.escape(name)}\b", body) for name in removed):
+                hit = (match.group(1), start, index)
+                break
+        if not hit:
+            return text, notes
+        name, start, end = hit
+        removed.append(name)
+        notes.append(f"stripped network orchestrator {name}")
+        text = text[:start] + text[end:].lstrip("\n")
+
+
+_NAMED_IMPORT = re.compile(
+    # 行尾注释同上：不吃它就等于放过一整类孤儿具名 import。
+    r"^import\s+\{\s*([^}]+?)\s*\}\s+from\s+['\"]([^'\"]+)['\"];?[ \t]*(?://[^\n]*)?$", re.M
+)
+
+
+def _drop_orphaned_imports(text: str) -> tuple[str, list[str]]:
+    """Remove named imports whose symbols are no longer referenced after the fetch strip.
+
+    Stripping `fetch*Pan` orphans its network-layer helpers (e.g. `cachedKentangFetch` from
+    `utils/kentangCache`). Leaving the import behind makes the module unloadable headless — the
+    referenced file simply is not in the vendor tree. Keyed on *actual usage* rather than a filename
+    denylist, so the next upstream helper is handled without editing this script.
+
+    🔴 每删一条都必须**重新搜索**，不能先 materialize 一批 match 再拿旧偏移去切新字符串——删掉第一条
+    之后 text 变短，后面那些 match.start()/end() 全部失效。实测后果不是「漏删」而是**毁文件**：
+    两个孤儿 namespace import 会把
+        import * as d3 from 'd3';\\nimport * as lodash from 'lodash';\\nexport function f(){…}
+    切成  \\nimport * as lodash from 'urn 1; }  —— 整个模块体没了。具名分支同样的病，症状轻些
+    （第 2 条起静默残留，留下 utils/kentangCache 这类不在 vendor 树里的 import → ERR_MODULE_NOT_FOUND）。
+    """
+    notes: list[str] = []
+
+    def _drop_all(pattern: re.Pattern[str], is_orphan, describe) -> None:
+        nonlocal text
+        while True:
+            for match in pattern.finditer(text):
+                body = text[: match.start()] + text[match.end() :]
+                if is_orphan(match, body):
+                    text = body
+                    notes.append(describe(match))
+                    break  # 重新搜索：偏移量已失效
+            else:
+                return
+
+    _drop_all(
+        _NAMED_IMPORT,
+        lambda m, body: (syms := [s.strip().split(" as ")[-1].strip() for s in m.group(1).split(",") if s.strip()])
+        and not any(re.search(rf"\b{re.escape(sym)}\b", body) for sym in syms),
+        lambda m: "dropped orphaned import {"
+        + ", ".join(s.strip().split(" as ")[-1].strip() for s in m.group(1).split(",") if s.strip())
+        + "}",
+    )
+    # namespace 形式 `import * as X from '…'` 同理。上游偶有**死 import**（ZiWeiHelper.js 引了 d3
+    # 却一次没用），headless 侧 d3 不在依赖里 → 模块直接加载失败。按「实际是否被引用」判定，
+    # 不写死包名黑名单。
+    _drop_all(
+        re.compile(r"^import\s+\*\s+as\s+(\w+)\s+from\s+['\"][^'\"]+['\"];?\s*$", re.M),
+        lambda m, body: not re.search(rf"\b{re.escape(m.group(1))}\s*\.", body),
+        lambda m: f"dropped orphaned namespace import {m.group(1)}",
+    )
+    return text, notes
+
+
+_INLINE_REQUIRE = re.compile(
+    r"^([ \t]*)const\s*\{\s*([^}]+?)\s*\}\s*=\s*require\(\s*['\"]([^'\"]+)['\"]\s*\);?[ \t]*\n",
+    re.M,
+)
+
+
+_INLINE_PACKAGE_REQUIRE = re.compile(
+    r"^[ \t]*const\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*['\"]([^'\".][^'\"]*)['\"]\s*\);?[ \t]*\n",
+    re.M,
+)
+
+
+def _core_js_dependencies() -> set[str]:
+    try:
+        package = json.loads((VENDOR_ROOT.parents[1] / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    return set((package.get("dependencies") or {}).keys())
+
+
+def _rewrite_package_requires(text: str, dependencies: set[str] | None = None) -> tuple[str, list[str]]:
+    """函数体内的 `const moment = require('moment');`（整包默认导出）→ 顶层一条 `import moment from 'moment';`。
+
+    上游 v3.12.0 的 utils/civilMoment.js 在三个函数里各惰性 require 一次 moment；ESM 下 `require` 未定义，Balbillus /
+    三分主星 / 月相推运一跑就 `require is not defined`。只改**本包 package.json 声明了的依赖**（moment、lunar-javascript…）：
+    没声明的第三方包照旧留给人工判断——静默改成 import 会在加载时才报缺包。
+    """
+    deps = _core_js_dependencies() if dependencies is None else dependencies
+    notes: list[str] = []
+    hoisted: dict[str, str] = {}
+    def drop(match: re.Match[str]) -> str:
+        name, package = match.group(1), match.group(2)
+        if package not in deps:
+            return match.group(0)
+        if hoisted.setdefault(name, package) != package:
+            return match.group(0)  # 同名绑定指向不同包：不猜
+        return ""
+    text = _INLINE_PACKAGE_REQUIRE.sub(drop, text)
+    for name, package in hoisted.items():
+        if not re.search(rf"^import\s+{re.escape(name)}\s+from\s+['\"]{re.escape(package)}['\"]", text, re.M):
+            text = f"import {name} from '{package}';\n" + text
+        notes.append(f"package require→import {name} from '{package}'")
+    return text, notes
+
+
+def _rewrite_inline_requires(text: str) -> tuple[str, list[str]]:
+    """把函数体内的惰性 `const {X} = require('…')` 改写成顶层静态 import。
+
+    `horosa-core-js` 是 `"type": "module"`，ESM 下 `require` 根本没有定义 → 运行到那一行就
+    `ReferenceError`。上游用惰性 require 是为了断模块环（如 `data/accidentalDignity` ↔
+    `engine/conditions` 互引），但两处都只在**函数体内**调用符号，而 ESM 的 live binding 对
+    这种「求值期不用、调用期才用」的循环本来就安全 —— 静态 import 是等价且可加载的。
+
+    不处理这条的后果不是「少一段」，而是净回归：`horary/timing.js` 的 require 落在 `[应期方位]`
+    —— 一个当前已经能用的段，重 vendor 会把它炸掉。
+    """
+    notes: list[str] = []
+    imports: list[str] = []
+    for match in list(_INLINE_REQUIRE.finditer(text)):
+        symbols = match.group(2).strip()
+        target = match.group(3)
+        if not target.startswith("."):
+            continue  # 第三方包（moment 之类）不在 vendor 闭包里，留给人工判断
+        suffixed = target if target.endswith((".js", ".json", ".mjs")) else f"{target}.js"
+        # 去重：上游偶有「顶层已静态 import 某符号，函数体内又惰性 require 同一符号」的写法
+        # （astroClassicalDerived.js 的 SIGNS）。此时只删 require 行、不再造第二条 import——
+        # 否则 `Identifier 'X' has already been declared`，整个模块图加载失败。
+        symbol_names = [s.strip().split(" as ")[-1].strip() for s in symbols.split(",") if s.strip()]
+        rest = text.replace(match.group(0), "", 1)
+        already = all(
+            re.search(rf"^import\s+(?:\{{[^}}]*\b{re.escape(name)}\b[^}}]*\}}|\*\s+as\s+{re.escape(name)}\b|{re.escape(name)}\b)[^\n]*from\s", rest, re.M)
+            for name in symbol_names
+        )
+        text = rest
+        if already:
+            notes.append(f"require dropped (already imported): {{{symbols}}}")
+            continue
+        stmt = f"import {{ {symbols} }} from '{suffixed}';"
+        # 同一文件里同一符号可能被惰性 require **多次**（topicModule.js 的 DIR_BY_ELEMENT ×2）——
+        # 队列内也要去重，否则 hoist 出两条相同 import → `Identifier 'X' has already been declared`。
+        queued = {n for s in imports for n in re.findall(r"\{\s*([^}]+?)\s*\}", s) for n in [x.strip().split(" as ")[-1].strip() for x in n.split(",")]}
+        if stmt in imports or any(name in queued for name in symbol_names):
+            notes.append(f"require dropped (queued dup): {{{symbols}}}")
+            continue
+        imports.append(stmt)
+        notes.append(f"require→import {{{symbols}}} from {target}")
+    # 第三种形态：**表达式内** `require('./x').prop`（既非顶层也非解构语句，直接嵌在表达式里——
+    # ZiWeiHelper.js 的 `require('./ziweiOptions').ZWEngineOptions.kuiYue`）。语句形正则抓不到它，
+    # ESM 下运行到就 ReferenceError。改写：hoist 成命名空间 import，表达式处换成别名。
+    expr_targets: dict[str, str] = {}
+    def _expr_alias(match: re.Match[str]) -> str:
+        target = match.group(1)
+        if not target.startswith("."):
+            return match.group(0)  # 第三方包留给人工
+        if target not in expr_targets:
+            expr_targets[target] = f"__req{len(expr_targets)}"
+        return expr_targets[target]
+    text = re.sub(r"require\(\s*['\"]([^'\"]+)['\"]\s*\)", _expr_alias, text)
+    for target, alias in expr_targets.items():
+        suffixed = target if target.endswith((".js", ".json", ".mjs")) else f"{target}.js"
+        imports.append(f"import * as {alias} from '{suffixed}';")
+        notes.append(f"require-expr→namespace import {alias} ← {target}")
+    if imports:
+        # 插在最后一条**完整** import 语句之后；文件若无 import 则置顶。
+        # 🔴 插入点必须按完整语句匹配（含多行 `import {\n …\n} from '…';` 形态）——按单行匹配时，
+        # 多行块的首行 `import {` 也命中，「最后一条 import 之后」会落在块**中间**，把它劈成
+        # 两截 → SyntaxError: Unexpected token '}'（lifespanEngine.js 实测踩到）。
+        last = None
+        for m in re.finditer(r"^import\b[^;'\"]*(?:['\"][^'\"]*['\"])?;?\s*?\n|^import\s*\{[^}]*\}\s*from\s*['\"][^'\"]+['\"];?\s*?\n|^import\b[\s\S]*?from\s*['\"][^'\"]+['\"];?\s*?\n", text, re.M):
+            last = m
+        block = "\n".join(imports) + "\n"
+        text = (text[: last.end()] + block + text[last.end() :]) if last else block + text
+    return text, notes
+
+
+def _prune_default_export(text: str, removed: list[str]) -> tuple[str, list[str]]:
+    """把已剥掉的符号从末尾的 `export default { … }` 聚合对象里摘掉。
+
+    只删函数体不够：上游多数模块末尾有一行 `export default { A, B, C }` 汇总导出，其中若仍列着
+    被剥掉的网络函数，模块**加载期**就 `ReferenceError`（本轮 solunar.js 踩到）——比留个坏 import
+    更早炸，且报错信息只说「X is not defined」，不指向 vendor 流程。
+
+    🔴 与 _drop_orphaned_imports 同一个坑：改一条就要重新搜索，否则第二条 `export { … };` 会拿失效
+    偏移去切，产出 `export {export { q };` 这种语法错误（整个模块解析不了）。
+    🔴 另一个坑：head 必须由**匹配到的是哪个 pattern** 决定，不能用 `"default" in match.group(0)`
+    子串判断——名单里出现 `defaultRules` / `defaultOrb` 这类符号就会把具名导出清单翻成
+    `export default { … }`，随后所有 `import { x } from …` 全报 does not provide an export named。
+    """
+    notes: list[str] = []
+    if not removed:
+        return text, notes
+    removed_set = set(removed)
+    for pattern, head in (
+        (r"^export default \{([^}]*)\};?\s*$", "export default { "),
+        (r"^export \{([^}]*)\};?\s*$", "export { "),
+    ):
+        compiled = re.compile(pattern, re.M)
+        while True:
+            for match in compiled.finditer(text):
+                names = [s.strip() for s in match.group(1).split(",") if s.strip()]
+                kept = [n for n in names if n.split(":")[0].split(" as ")[0].strip() not in removed_set]
+                if len(kept) == len(names):
+                    continue
+                notes.append(f"pruned export list ×{len(names) - len(kept)}")
+                replacement = (head + ", ".join(kept) + " };") if kept else ""
+                text = text[: match.start()] + replacement + text[match.end():]
+                break  # 重新搜索：偏移量已失效
+            else:
+                break
+    # 第三种形态：`export default fetchReturnSet;`（裸标识符，v3.11.0 returnCharts.js 首见）。
+    # 聚合对象的两条正则都不匹配它，被剥的函数名就留在默认导出里 → 模块**加载期** ReferenceError。
+    # 标识符已被剥 → 整行删掉（默认导出只服务上游 UI 的 `import X from`，vendored 调用方一律具名导入）。
+    bare = re.compile(r"^export default ([A-Za-z_$][\w$]*)\s*;?\s*$", re.M)
+    while True:
+        match = next((m for m in bare.finditer(text) if m.group(1) in removed_set), None)
+        if not match:
+            break
+        notes.append(f"pruned bare default export {match.group(1)}")
+        text = text[: match.start()] + text[match.end():]
+    return text, notes
+
+
+def transform(text: str) -> tuple[str, list[str]]:
+    notes: list[str] = []
+    text, require_notes = _rewrite_inline_requires(text)
+    notes.extend(require_notes)
+    text, package_notes = _rewrite_package_requires(text)
+    notes.extend(package_notes)
+    dropped_symbols: list[str] = []
+    for pattern in _DROP_IMPORT_PATTERNS:
+        # 先收走该 import 带进来的具名符号：它们是后端层的东西，任何仍在引用它们的导出 async
+        # 编排函数（求根循环一类）也该一并剥掉，否则留下的入口在 headless 下一调用就 ReferenceError。
+        for match in pattern.finditer(text):
+            inner = re.search(r"\{([^}]*)\}", match.group(0))
+            if inner:
+                dropped_symbols += [s.strip().split(" as ")[-1].strip() for s in inner.group(1).split(",") if s.strip()]
+        text, count = pattern.subn("", text)
+        if count:
+            notes.append(f"dropped {count} backend import(s)")
+    text, removed = _strip_fetch_helpers(text)
+    removed = removed + dropped_symbols
+    if removed:
+        notes.append("stripped " + ", ".join(removed))
+    text, orch_notes = _strip_network_orchestrators(text, removed)
+    notes.extend(orch_notes)
+    text, prune_notes = _prune_default_export(text, removed)
+    notes.extend(prune_notes)
+    text, orphan_notes = _drop_orphaned_imports(text)
+    notes.extend(orphan_notes)
+
+    def add_suffix(match: re.Match[str]) -> str:
+        target = match.group(2)
+        if target.endswith((".js", ".json", ".mjs")):
+            return match.group(0)
+        return f"{match.group(1)}{target}.js{match.group(3)}"
+
+    text, count = _RELATIVE_IMPORT.subn(add_suffix, text)
+    if count:
+        notes.append(f"suffixed {count} relative import(s)")
+    # 动态形态 `import('./x')` 同一条规则：bundler 解析无扩展名，原生 Node ESM 不解析 → ERR_MODULE_NOT_FOUND。
+    # 懒加载路径 loadcheck 抓不到（模块照样加载），只在调用时炸：`gua/data/liuyaoDoctrineCache.js` 的
+    # `import('./tianjiDoctrine')` 即此例（v0.40.0 前无人消费而潜伏）。
+    text, dyn_rel = _DYNAMIC_RELATIVE_IMPORT.subn(add_suffix, text)
+    if dyn_rel:
+        notes.append(f"suffixed {dyn_rel} dynamic relative import(s)")
+    text, bare_rel = _BARE_RELATIVE_IMPORT.subn(add_suffix, text)
+    if bare_rel:
+        notes.append(f"suffixed {bare_rel} bare side-effect import(s)")
+
+    # 原生 Node ESM 要求 JSON import 显式带 `with { type: 'json' }`；bundler 不需要，所以上游没有。
+    # 漏了它模块直接加载失败（"needs an import attribute of type: json"）——AGENTS §5 的老坑，机械化掉。
+    text, json_count = re.subn(
+        r"(^import\s+[^;\n]*?from\s+['\"][^'\"]+\.json['\"])(\s*;)",
+        r"\1 with { type: 'json' }\2",
+        text,
+        flags=re.M,
+    )
+    if json_count:
+        notes.append(f"added json import attribute ×{json_count}")
+
+    # 同一条规则的**动态** import 形态：`import('./x.json')` 在原生 Node ESM 同样要显式属性。
+    # 上游常带 `/* webpackChunkName: … */` 注释（纯 bundler 提示），一并去掉。
+    # 静态形态的正则要求同行以 `;` 收尾，天然覆盖不到这里 —— 漏了它模块**能加载**（因为是懒加载），
+    # 只在真正调用那条路径时才炸，selfcheck 才抓得到，loadcheck 抓不到（zhengchuan 条文库正是此例）。
+    text, dyn_count = re.subn(
+        r"import\(\s*(?:/\*.*?\*/\s*)?(['\"][^'\"]+\.json['\"])\s*\)",
+        r"import(\1, { with: { type: 'json' } })",
+        text,
+        flags=re.S,
+    )
+    if dyn_count:
+        notes.append(f"added dynamic json import attribute ×{dyn_count}")
+    return text, notes
+
+
+def _reexport_required(text: str, target: Path) -> tuple[str, list[str]]:
+    """把 skill 侧 `tools/*.js` 需要、而上游是模块私有的函数补上 `export`。
+
+    上游把 `normalizeBackendPan` 一类叠加函数留作私有（组件内部自用），但 skill 的 headless 工具层
+    正是靠它把 ken 响应叠到本地脚手架上。之前的 vendored 副本是人手加的 export，一次全文件重 vendor
+    就会把它抹掉，症状是 `SyntaxError: does not provide an export named …`（本轮踩到）。
+    按「谁在 import 它」反查，自动补 export——不写死函数名清单。
+    """
+    notes: list[str] = []
+    tools_dir = VENDOR_ROOT.parent / "tools"
+    needed: set[str] = set()
+    stem = target.stem
+    for tool in tools_dir.glob("*.js") if tools_dir.is_dir() else []:
+        for match in re.finditer(r"import\s+\{([^}]+)\}\s+from\s+['\"][^'\"]*" + re.escape(stem) + r"\.js['\"]", tool.read_text(encoding="utf-8")):
+            needed |= {s.strip().split(" as ")[0].strip() for s in match.group(1).split(",") if s.strip()}
+    # 上游也可能用**尾部导出清单** `export { a, b };` 而不是 `export function a`。只认前者会把
+    # 已导出的符号再加一次 `export`，产出 "Duplicate export of 'x'" —— 该模块整个加载不了。
+    # （上游 v3.7.x 给 baziLunarLocal 的 buildFlowDays/buildFlowHours 补了尾部清单，正好踩中。）
+    exported_by_list: set[str] = set()
+    for block in re.findall(r"^export\s*\{([^}]*)\}\s*;", text, re.M):
+        exported_by_list |= {s.strip().split(" as ")[0].strip() for s in block.split(",") if s.strip()}
+    for name in sorted(needed):
+        if name in exported_by_list:
+            continue
+        if re.search(rf"^export\s+(?:async\s+)?function\s+{re.escape(name)}\b", text, re.M):
+            continue
+        pattern = re.compile(rf"^(function\s+{re.escape(name)}\b)", re.M)
+        if pattern.search(text):
+            text = pattern.sub(r"export \1", text, count=1)
+            notes.append(f"re-exported {name} (skill tools import it; upstream keeps it module-private)")
+    return text, notes
+
+
+def _relocate_imports(text: str, target: Path) -> tuple[str, list[str]]:
+    """把上游 src 布局的相对 import 重指到 vendor 树里该文件的真实位置。
+
+    上游是 `astrostudyui/src/{components,utils,constants}/…`，vendor 树按技法分目录
+    （`vendor/bazi/baziLunarLocal.js` 等），所以 `../../utils/baziLunarLocal.js` 在这里解析不到。
+    按 basename 在 vendor 树里找唯一匹配后重写；找不到就**报出来**而不是留个坏 import 让模块加载失败
+    ——那正是「load 过≠真盘不崩」之前的一步，必须显式暴露给人决定是补 vendor 还是写 shim。
+    """
+    notes: list[str] = []
+    index: dict[str, list[Path]] = {}
+    for path in VENDOR_ROOT.rglob("*.js"):
+        index.setdefault(path.name, []).append(path)
+    # 少数上游模块在本仓不落 vendor 树，而是长在 core-js 自己的 `src/constants`、`src/shared` 下
+    # （如 AstroText.js / AstroConst.js —— 它们是 skill 自己也要用的共享常量）。搜索范围要含这两处，
+    # 否则 `../../constants/AstroText` 永远 UNRESOLVED，人只能一次次手工改路径。
+    for sibling in ("constants", "shared"):
+        sibling_dir = VENDOR_ROOT.parent / sibling
+        if sibling_dir.is_dir():
+            for path in sibling_dir.rglob("*.js"):
+                index.setdefault(path.name, []).append(path)
+
+    def fix(match: re.Match[str]) -> str:
+        rel = match.group(2)
+        resolved = (target.parent / rel).resolve()
+        if resolved.exists():
+            return match.group(0)
+        candidates = index.get(Path(rel).name, [])
+        if len(candidates) == 1:
+            new_rel = os.path.relpath(candidates[0], target.parent)
+            if not new_rel.startswith("."):
+                new_rel = f"./{new_rel}"
+            notes.append(f"relocated {rel} → {new_rel}")
+            return f"{match.group(1)}{new_rel}{match.group(3)}"
+        notes.append(f"⚠ UNRESOLVED import {rel} ({len(candidates)} candidates) — vendor it or add a shim")
+        return match.group(0)
+
+    return _BARE_RELATIVE_IMPORT.sub(fix, _RELATIVE_IMPORT.sub(fix, text)), notes
+
+
+# --------------------------------------------------------------------------------------------
+# Manifest mode
+#
+# The positional form below infers the vendor destination from the upstream parent directory name.
+# That inference is WRONG for most of this tree — `utils/balbillus.js` lands in `vendor/astroextra/`,
+# `components/gua/data/*.js` in `vendor/data/`, and so on — so driving it over the existing tree
+# forks duplicate parallel copies (`vendor/utils/balbillus.js` beside the real one), with relocate
+# then pointing imports at the stale copy. The manifest carries both sides explicitly, which is what
+# makes "which files still need re-vendoring?" a mechanical `--check` answer instead of archaeology.
+#
+# modes:
+#   verbatim  — pipeline output (+ declared deviations) must equal the vendored file
+#   curated   — never auto-vendored (deliberate subset/shim); every name in `extracts` must still be
+#               a top-level upstream export, which is what catches an upstream rename turning a
+#               hand-extracted constant into a silent `undefined`
+#   bespoke   — skill-authored, no upstream counterpart; asserts none appears, so a file that BECOMES
+#               vendorable upstream is loud instead of sitting in the "reported, not failed" bucket
+#
+# deviations (applied after the transform pipeline, in order):
+#   {"kind": "import_redirect", "specifier": "...", "to": "..."}  — pin a specifier relocate mis-picks
+#   {"kind": "stub_import", "specifier": "...", "stub": "..."}    — replace a draw-only/browser import
+# --------------------------------------------------------------------------------------------
+
+_IMPORT_FROM = r"(from\s+['\"]){spec}(['\"])"
+# 行尾注释（上游写 `import { sideSectionIcon } from '…'; // [观象P1]`）与 `import 'x';` 副作用形态
+# 都要吃得下：早先的 `\s*$` 收尾让带注释的那一行匹配不上，stub 报 "not found" 而 import 原样留下 ——
+# 于是模块引用了一个 vendor 树里不存在的路径，加载即炸，而 re-vendor 那一步看起来是成功的。
+_IMPORT_STMT = r"^import\s+(?:[^;\n]*?from\s+)?['\"]{spec}['\"]\s*;?[ \t]*(?://[^\n]*)?$"
+
+
+def load_manifest() -> dict:
+    if not MANIFEST.is_file():
+        raise SystemExit(f"vendor manifest not found: {MANIFEST} (run --bootstrap-manifest once)")
+    return json.loads(MANIFEST.read_text(encoding="utf-8"))["files"]
+
+
+_IMPORT_CLAUSE = re.compile(r"^import\s+(?P<clause>[^;\n]*?)\s+from\s+['\"]", re.M)
+
+
+def _imported_locals(statement: str) -> set[str]:
+    """Local binding names an `import … from '…'` statement introduces (default, named, namespace)."""
+    match = _IMPORT_CLAUSE.match(statement.strip())
+    if not match:
+        return set()  # side-effect import (`import 'x';`) binds nothing
+    clause = match.group("clause")
+    names: set[str] = set()
+    braces = re.search(r"\{([^}]*)\}", clause)
+    if braces:
+        for part in braces.group(1).split(","):
+            part = part.strip()
+            if part:
+                names.add(re.split(r"\s+as\s+", part)[-1].strip())
+        clause = clause[: braces.start()] + clause[braces.end():]
+    star = re.search(r"\*\s+as\s+([A-Za-z_$][\w$]*)", clause)
+    if star:
+        names.add(star.group(1))
+        clause = clause[: star.start()] + clause[star.end():]
+    default = re.match(r"\s*([A-Za-z_$][\w$]*)", clause)
+    if default:
+        names.add(default.group(1))
+    return {n for n in names if re.fullmatch(r"[A-Za-z_$][\w$]*", n)}
+
+
+def _code_only(text: str) -> str:
+    """Approximate JS text with comments and single-line string literals blanked (for reference scans)."""
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
+    text = re.sub(r"(?<![:\\])//[^\n]*", " ", text)
+    return re.sub(r"'(?:\\.|[^'\\\n])*'|\"(?:\\.|[^\"\\\n])*\"", "''", text)
+
+
+def _stubbed_names_still_used(text: str, stubbed: list[tuple[str, set[str], str]]) -> list[str]:
+    """⚠ notes for stubbed import bindings the kept code still references and the stub does not define.
+
+    v0.40.0: `liureng/LiuRengMain.js` stubbed `./ChuangChart.js` to '' because the React tail used it — but the
+    kept pure logic (`buildSanChuanData`) also does `new ChuangChart(...)`. The ReferenceError was swallowed by a
+    try/catch, so every 六壬择时 / 三式择时 六壬 condition scanned to zero hits with no error anywhere.
+    """
+    code = _code_only(text)
+    notes: list[str] = []
+    for spec, names, stub in stubbed:
+        stub_code = _code_only(stub)
+        live = sorted(
+            name for name in names
+            if not re.search(rf"\b(?:const|let|var|function|class)\s+[^;=]*?(?<![\w$]){re.escape(name)}(?![\w$])", stub_code)
+            and re.search(rf"(?<![\w$.]){re.escape(name)}(?![\w$])", code)
+        )
+        if live:
+            notes.append(
+                f"⚠ stub_import {spec}: stubbed binding(s) still used by the kept code and not defined by the stub: "
+                f"{', '.join(live)} (→ swallowed ReferenceError at run time; vendor the dependency instead)"
+            )
+    return notes
+
+
+def _tail_exports_defined_in_head(head: str, tail: str) -> list[str]:
+    """Names in the dropped tail's aggregate `export { … }` lists that the kept head declares.
+
+    Upstream often declares pure helpers above the React class and exports them *after* it — LiuRengMain.js ends
+    with `export { buildLiuRengReferenceBundle, buildReferenceDocumentText, … }`. Cutting the tail wholesale
+    silently narrows the module's export surface: the helpers are still defined but no longer exported, so a
+    vendored caller's named import fails to link (`does not provide an export named …`) — which is exactly how
+    SanShiUnitedMain.js (it imports four of them) first failed to load. Keep the entries whose local name is a
+    top-level declaration of the head; tail-only names would be a ReferenceError, so they stay dropped.
+
+    An **imported** binding of the head counts too (`export { X }` re-exports an imported binding): upstream v3.12.0
+    split LiuRengMain's helpers into `main/*.js`, so its tail list re-exports names the head only imports
+    (`QIZHENG_PLANET_COLOR` from `./main/ganzhiHelpers`) — SanShiUnitedMain still imports them from LiuRengMain.
+    """
+    imported: set[str] = set()
+    for statement in re.finditer(r"^import\s[^;]*?from\s+['\"][^'\"]+['\"]\s*;?", head, re.M | re.S):
+        imported |= _imported_locals(statement.group(0))
+    kept: list[str] = []
+    for block in re.findall(r"^export\s*\{([^}]*)\}\s*;?", tail, re.M):
+        for part in block.split(","):
+            entry = " ".join(part.split())
+            if not entry:
+                continue
+            local = re.split(r"\s+as\s+", entry)[0]
+            declared = re.search(
+                rf"^(?:export\s+)?(?:async\s+)?(?:function\s*\*?|const|let|var|class)\s+{re.escape(local)}(?![\w$])",
+                head,
+                re.M,
+            )
+            if (declared or local in imported) and entry not in kept:
+                kept.append(entry)
+    return kept
+
+
+def apply_deviations(text: str, deviations: list[dict]) -> tuple[str, list[str]]:
+    notes: list[str] = []
+    stubbed: list[tuple[str, set[str], str]] = []
+    for dev in deviations or []:
+        kind, spec = dev.get("kind"), dev.get("specifier", "")
+        if kind == "import_redirect":
+            pattern = re.compile(_IMPORT_FROM.format(spec=re.escape(spec)))
+            text, n = pattern.subn(lambda m: f"{m.group(1)}{dev['to']}{m.group(2)}", text)
+            if not n:
+                notes.append(f"⚠ import_redirect specifier not found: {spec}")
+            else:
+                notes.append(f"redirected {spec} → {dev['to']}")
+        elif kind == "stub_import":
+            pattern = re.compile(_IMPORT_STMT.format(spec=re.escape(spec)), re.M)
+            # lambda 而非字符串模板：stub 是 JS，里面出现 `\1` 会被当分组回填、`\c` 直接抛
+            # re.error 把整轮 re-vendor 打死。JS stub 里带正则字面量或转义引号是很正常的事。
+            stub = dev["stub"].rstrip("\n")
+            names: set[str] = set()
+            for statement in pattern.finditer(text):
+                names |= _imported_locals(statement.group(0))
+            text, n = pattern.subn(lambda _m: stub, text)
+            if not n:
+                notes.append(f"⚠ stub_import specifier not found: {spec}")
+            else:
+                notes.append(f"stubbed {spec}")
+                stubbed.append((spec, names, stub))
+        elif kind == "replace_text":
+            # 精确文本替换（可空 = 删除）。给的是「import 之外的残留」用的：例如 LiuRengMain 头部
+            # `const {Option} = Select;` 这类模块级 UI 解构——它们只服务被剥离的 React 尾部，
+            # 留着就是 ReferenceError。find 必须**唯一命中**，命中 0 次或多次都报错而不是猜。
+            find = dev["find"]
+            n = text.count(find)
+            if n != 1:
+                notes.append(f"⚠ replace_text 命中 {n} 次（需恰好 1 次）: {find[:60]!r}")
+            else:
+                text = text.replace(find, dev.get("to", ""))
+                notes.append(f"replaced {find[:40]!r}")
+        elif kind == "truncate_before":
+            # 上游把纯逻辑与 React 组件放在同一个文件里（LiuRengMain.js：1–4553 纯逻辑，
+            # 4554 起 `class … extends Component`）。手抄那 4553 行必然漂移 —— 上游的
+            # buildSanChuanData 早已多出第 4 个参数 castOverride，而仓里手抄的那份还是三参。
+            # 这条 deviation 把「剥掉 React 尾部」变成**可机械复现**的一步：锚点是一行正则，
+            # 不是行号（行号会随上游编辑漂移，锚点找不到就报错而不是悄悄少剪/多剪）。
+            pattern = re.compile(dev["anchor"], re.M)
+            m = pattern.search(text)
+            if not m:
+                notes.append(f"⚠ truncate_before anchor not found: {dev['anchor']}")
+            else:
+                dropped = text[m.start():].count("\n") + 1
+                tail = text[m.start():]
+                text = text[: m.start()].rstrip() + "\n"
+                notes.append(f"truncated at /{dev['anchor']}/ (dropped {dropped} trailing line(s))")
+                kept = _tail_exports_defined_in_head(text, tail)
+                if kept:
+                    text += "\nexport {\n" + "".join(f"\t{name},\n" for name in kept) + "};\n"
+                    notes.append(f"kept tail export list ×{len(kept)} (head-defined names)")
+        else:
+            notes.append(f"⚠ unknown deviation kind: {kind}")
+    notes.extend(_stubbed_names_still_used(text, stubbed))
+    return text, notes
+
+
+def _top_level_exports(text: str) -> set[str]:
+    names: set[str] = set()
+    for match in re.finditer(r"^export\s+(?:async\s+)?(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)", text, re.M):
+        names.add(match.group(1))
+    return names
+
+
+def _sha256_file(path: Path) -> str:
+    """sha256 of the file's *newline-normalized* text (raw bytes only if it is not UTF-8 text).
+
+    Stamps are written on the mac side over LF sources. On Windows the very same file arrives as CRLF
+    (git `core.autocrlf=true` checkouts, and `Path.write_text` in text mode), so a raw-bytes digest
+    can never equal the stamp there: every curated/bespoke entry reports "changed upstream" and the
+    hand-made-drift guard cries wolf on exactly the platform it is meant to protect (windows-smoke
+    red twice on v0.35.0). Hashing CRLF->LF text keeps LF digests byte-for-byte identical (no
+    restamp needed) and makes the stamp line-ending independent.
+    """
+    data = path.read_bytes()
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return hashlib.sha256(data).hexdigest()
+    return hashlib.sha256(text.replace("\r\n", "\n").encode("utf-8")).hexdigest()
+
+
+# 手工件（curated 子集 / 自上游文件抽出的 bespoke）不走流水线，`--from-manifest` 对它们只能断言
+# 「名字还在」——内容漂移零信号。v3.9.4 的两处真值修正就这么静默滞留了四轮同步：`liureng/LRConst.js`
+# （curated）的六亲表两格、`ziwei/zwLuckItems.js`（bespoke，抽自 ZWLuckPanel.js）的干支年基准。
+# 现在每个手工件都记「最近一次人工核对时上游源文件的 sha256」：源一动就红，复核后 `--restamp` 才灭。
+def watched_source(entry: dict) -> tuple[str, str] | None:
+    """(upstream_rel, stamp_field) for a hand-made entry; None when it declares no upstream source."""
+    mode = entry.get("mode")
+    if mode == "curated":
+        return entry["upstream"], "upstream_sha256"
+    if mode == "bespoke" and entry.get("derived_from"):
+        return entry["derived_from"], "derived_sha256"
+    return None
+
+
+def hand_made_drift(upstream_src: Path, vendor_rel: str, entry: dict) -> str | None:
+    """Problem text when a hand-made entry's upstream source moved since its stamp (or was never stamped).
+
+    主源（curated 的 upstream / bespoke 的 derived_from）之外，`also_derived_from: {上游路径: sha256}` 登记手工件
+    还逐字搬了哪些上游文件（v3.13.0：印占快照另搬 indiaMain/jyotishData.js + dasha.js，宿占另搬 AstroHelper.js）——
+    只看主源时，那些文件上游再修一处，这里零信号。每个源各自比戳，问题逐条列出。"""
+    watched = watched_source(entry)
+    if watched is None:
+        return None
+    rel, field = watched
+    label = str(entry.get("mode")).upper()
+    sources = [(rel, entry.get(field))] + sorted((entry.get("also_derived_from") or {}).items())
+    problems = []
+    for src_rel, recorded in sources:
+        source = upstream_src / src_rel
+        if not source.is_file():
+            problems.append(f"{vendor_rel}: {label} source {src_rel} is gone upstream — re-audit the hand-made copy, then reclassify")
+            continue
+        current = _sha256_file(source)
+        if not recorded:
+            problems.append(
+                f"{vendor_rel}: {label} entry is unstamped — audit the hand-made copy against {src_rel}, then `--restamp {vendor_rel}`"
+            )
+        elif recorded != current:
+            problems.append(
+                f"{vendor_rel}: {label} source {src_rel} changed upstream since the last audit "
+                f"(sha {recorded[:12]} → {current[:12]}) — re-audit the hand-made copy, then `--restamp {vendor_rel}`"
+            )
+    return "\n".join(problems) or None
+
+
+_MODES = {
+    "verbatim": "流水线输出（含 deviations）必须与 vendored 文件逐字相同",
+    "curated": (
+        "蓄意子集/shim，永不自动 vendor；断言 extracts 里每个名字仍是上游顶层 export，"
+        "且上游源 sha256 == upstream_sha256（最近一次人工核对的记录：源一动即红，复核后 --restamp）"
+    ),
+    "bespoke": (
+        "skill 自写、上游无同名文件；声明 derived_from（自上游某文件手工抽出）的，"
+        "另断言该源 sha256 == derived_sha256（与 curated 同一复核纪律）；also_derived_from {上游路径: sha256} "
+        "登记另外逐字搬过的上游文件，逐个同样比戳"
+    ),
+    "needs-review": "有真实漂移，待人工分类为上面三种之一（这就是 re-vendor 工单）",
+}
+
+
+def _write_manifest(files: dict[str, dict]) -> None:
+    MANIFEST.parent.mkdir(parents=True, exist_ok=True)
+    MANIFEST.write_text(
+        json.dumps(
+            {
+                "_comment": (
+                    "vendor 树的唯一驱动清单：显式 upstream↔vendor 路径对 + 声明式偏离。"
+                    "revendor_core_js.py 的路径推断对本树是错的（会分叉出重复树），故一律用 --from-manifest。"
+                ),
+                "_modes": _MODES,
+                "files": files,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8", newline="\n",
+    )
+
+
+def restamp(upstream_src: Path, targets: list[str] | None) -> int:
+    """Record the current upstream source sha of hand-made entries — only after a human re-audit."""
+    files = load_manifest()
+    chosen = targets or [k for k, e in files.items() if watched_source(e)]
+    for vendor_rel in chosen:
+        entry = files.get(vendor_rel)
+        if entry is None:
+            raise SystemExit(f"--restamp: {vendor_rel} is not in the manifest")
+        watched = watched_source(entry)
+        if watched is None:
+            raise SystemExit(f"--restamp: {vendor_rel} is {entry.get('mode')} without an upstream source — nothing to stamp")
+        rel, field = watched
+        source = upstream_src / rel
+        if not source.is_file():
+            raise SystemExit(f"--restamp: upstream source not found: {source}")
+        entry[field] = _sha256_file(source)
+        extra = entry.get("also_derived_from") or {}
+        for extra_rel in sorted(extra):
+            extra_source = upstream_src / extra_rel
+            if not extra_source.is_file():
+                raise SystemExit(f"--restamp: {vendor_rel} also_derived_from source not found: {extra_source}")
+            extra[extra_rel] = _sha256_file(extra_source)
+    _write_manifest(files)
+    print(f"restamped {len(chosen)} hand-made entr{'y' if len(chosen) == 1 else 'ies'} in {MANIFEST.relative_to(REPO_ROOT)}")
+    return 0
+
+
+def render_one(upstream_src: Path, rel_upstream: str, target: Path, deviations: list[dict]) -> tuple[str, list[str]]:
+    source = upstream_src / rel_upstream
+    if not source.is_file():
+        raise SystemExit(f"upstream file not found: {source}")
+    raw = source.read_text(encoding="utf-8")
+    # 🔴 truncate_before 必须跑在 transform **之前**：孤儿 import 的判据是「符号在正文里还用不用」，
+    # 而截断正是改变正文的那一步。放在后面的话，React 尾部专用的 16 个 import（LiuRengChart /
+    # DateTime / QuickDockBar / perfFlags …）在判定时还“在用”，于是全部留下 → 模块加载即炸。
+    # 其余 deviation（redirect/stub）仍在 transform 之后、relocate 之前，理由见下方注释。
+    pre = [d for d in (deviations or []) if d.get("kind") == "truncate_before"]
+    post = [d for d in (deviations or []) if d.get("kind") != "truncate_before"]
+    pre_notes: list[str] = []
+    if pre:
+        raw, pre_notes = apply_deviations(raw, pre)
+    text, notes = transform(raw)
+    notes = pre_notes + notes
+    text, more = _reexport_required(text, target)
+    notes.extend(more)
+    # Deviations run BEFORE relocate, not after: relocate rewrites specifiers by basename, so a
+    # post-relocate redirect would be looking for a specifier that no longer exists, and a stubbed
+    # import would already have been reported UNRESOLVED. Running first makes both authoritative —
+    # a redirected path is resolvable so relocate leaves it alone, and a stubbed import is gone.
+    text, more = apply_deviations(text, post)
+    notes.extend(more)
+    text, more = _relocate_imports(text, target)
+    notes.extend(more)
+    return text, notes
+
+
+def run_manifest(upstream_src: Path, only: str | None, check: bool) -> int:
+    files = load_manifest()
+    problems = 0
+    stats = {"unchanged": 0, "updated": 0, "curated": 0, "bespoke": 0}
+    upstream_names = {p.name for p in upstream_src.rglob("*.js")}
+
+    for vendor_rel in sorted(files):
+        if only and not vendor_rel.startswith(only):
+            continue
+        entry = files[vendor_rel]
+        mode = entry.get("mode")
+        target = VENDOR_ROOT / vendor_rel
+
+        if mode == "bespoke":
+            stats["bespoke"] += 1
+            if Path(vendor_rel).name in upstream_names:
+                problems += 1
+                print(f"{vendor_rel}: BESPOKE but upstream now ships a file of that name — reclassify")
+            problem = hand_made_drift(upstream_src, vendor_rel, entry)
+            if problem:
+                problems += 1
+                print(problem)
+            continue
+
+        if mode == "curated":
+            stats["curated"] += 1
+            source = upstream_src / entry["upstream"]
+            if not source.is_file():
+                problems += 1
+                print(f"{vendor_rel}: CURATED but upstream source is gone ({entry['upstream']})")
+                continue
+            upstream_exports = _top_level_exports(source.read_text(encoding="utf-8"))
+            lost = sorted(set(entry.get("extracts") or []) - upstream_exports)
+            if lost:
+                problems += 1
+                print(
+                    f"{vendor_rel}: CURATED — {len(lost)} extracted name(s) no longer exported upstream: "
+                    f"{', '.join(lost)} (a renamed constant becomes a silent `undefined` key)"
+                )
+            problem = hand_made_drift(upstream_src, vendor_rel, entry)
+            if problem:
+                problems += 1
+                print(problem)
+            continue
+
+        if mode != "verbatim":
+            problems += 1
+            print(f"{vendor_rel}: NEEDS-REVIEW (mode={mode!r}) — classify it before this batch can go green")
+            continue
+
+        new_text, notes = render_one(upstream_src, entry["upstream"], target, entry.get("deviations") or [])
+        old_text = target.read_text(encoding="utf-8") if target.is_file() else ""
+        unresolved = [n for n in notes if n.startswith("⚠")]
+        if unresolved:
+            problems += 1
+            print(f"{vendor_rel}: {'; '.join(unresolved)}")
+        if old_text == new_text:
+            stats["unchanged"] += 1
+            continue
+        stats["updated"] += 1
+        delta = len(new_text.splitlines()) - len(old_text.splitlines())
+        print(f"{vendor_rel}: {'would update' if check else 'updated'} ({delta:+d} lines) [{'; '.join(notes) or 'verbatim'}]")
+        if check:
+            problems += 1
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(new_text, encoding="utf-8", newline="\n")
+
+    summary = ", ".join(f"{k}={v}" for k, v in stats.items())
+    print(f"\nrevendor-manifest: {'FAIL' if problems else 'ok'} ({summary}; {problems} need attention)")
+    return 1 if problems else 0
+
+
+def manifest_drift(upstream_src: Path) -> list[str]:
+    """Files whose vendored copy no longer equals the manifest-declared render of upstream.
+
+    This is the precise oracle for "what still needs re-vendoring" — unlike a raw sha256 against
+    untransformed upstream, which flags every file that legitimately carries the headless transform.
+    """
+    out: list[str] = []
+    for vendor_rel, entry in sorted(load_manifest().items()):
+        if entry.get("mode") != "verbatim":
+            # 手工件不渲染，但它们的上游源一动就是「需人工复审」——以前这里直接 continue，
+            # 于是 curated/bespoke 在这把守卫眼里永远是绿的。
+            problem = hand_made_drift(upstream_src, vendor_rel, entry)
+            if problem:
+                out.append(problem)
+            continue
+        target = VENDOR_ROOT / vendor_rel
+        try:
+            new_text, notes = render_one(upstream_src, entry["upstream"], target, entry.get("deviations") or [])
+        except SystemExit as exc:
+            out.append(f"{vendor_rel}: {exc}")
+            continue
+        if any(n.startswith("⚠") for n in notes):
+            out.append(f"{vendor_rel}: {'; '.join(n for n in notes if n.startswith('⚠'))}")
+        elif not target.is_file() or target.read_text(encoding="utf-8") != new_text:
+            out.append(vendor_rel)
+    return out
+
+
+def bootstrap_manifest(upstream_src: Path) -> None:
+    """Generate the manifest from the current tree: clean files become `verbatim`, unmatched become
+    `bespoke`, and everything the pipeline would change becomes `needs-review` — i.e. the worklist."""
+    index: dict[str, list[Path]] = {}
+    for path in upstream_src.rglob("*.js"):
+        index.setdefault(path.name, []).append(path)
+
+    files: dict[str, dict] = {}
+    for target in sorted(VENDOR_ROOT.rglob("*.js")):
+        vendor_rel = target.relative_to(VENDOR_ROOT).as_posix()
+        candidates = index.get(target.name, [])
+        if not candidates:
+            files[vendor_rel] = {"mode": "bespoke", "why": "no upstream file of this name (skill-authored)"}
+            continue
+        if len(candidates) > 1:  # disambiguate by longest shared trailing path
+            def tail(path: Path) -> int:
+                a, b = vendor_rel.split("/"), path.relative_to(upstream_src).as_posix().split("/")
+                k = 0
+                while k < min(len(a), len(b)) and a[-1 - k] == b[-1 - k]:
+                    k += 1
+                return k
+
+            candidates = sorted(candidates, key=tail, reverse=True)
+        rel_upstream = candidates[0].relative_to(upstream_src).as_posix()
+        new_text, notes = render_one(upstream_src, rel_upstream, target, [])
+        if new_text == target.read_text(encoding="utf-8"):
+            files[vendor_rel] = {"upstream": rel_upstream, "mode": "verbatim", "deviations": []}
+        else:
+            files[vendor_rel] = {
+                "upstream": rel_upstream,
+                "mode": "needs-review",
+                "why": "; ".join(notes) or "body drift",
+            }
+    _write_manifest(files)
+    counts: dict[str, int] = {}
+    for entry in files.values():
+        counts[entry["mode"]] = counts.get(entry["mode"], 0) + 1
+    print(f"bootstrapped {MANIFEST.relative_to(REPO_ROOT)}: {counts}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("upstream_src", type=Path, help="upstream astrostudyui/src root")
+    parser.add_argument("files", nargs="*", help="paths relative to the upstream src root")
+    parser.add_argument("--vendor-subdir", default=None, help="override the vendor destination subdir")
+    parser.add_argument("--check", action="store_true")
+    parser.add_argument("--from-manifest", action="store_true", help="drive every file in contracts/vendor_manifest.json")
+    parser.add_argument("--only", default=None, help="with --from-manifest: restrict to vendor paths under this prefix")
+    parser.add_argument("--bootstrap-manifest", action="store_true", help="(re)generate the manifest from the current tree")
+    parser.add_argument(
+        "--restamp", nargs="+", metavar="VENDOR_PATH", default=None,
+        help="after re-auditing a curated / derived bespoke entry, record its current upstream source sha256",
+    )
+    parser.add_argument("--restamp-all", action="store_true", help="restamp every hand-made entry (initial bootstrap of the stamps)")
+    args = parser.parse_args()
+
+    if args.restamp or args.restamp_all:
+        raise SystemExit(restamp(args.upstream_src, args.restamp))
+    if args.bootstrap_manifest:
+        bootstrap_manifest(args.upstream_src)
+        return
+    if args.from_manifest:
+        raise SystemExit(run_manifest(args.upstream_src, args.only, args.check))
+    if not args.files:
+        parser.error("give files to vendor, or use --from-manifest / --bootstrap-manifest")
+
+    for rel in args.files:
+        source = args.upstream_src / rel
+        if not source.is_file():
+            raise SystemExit(f"upstream file not found: {source}")
+        # 落点默认取上游父目录的**末段**(vendor 树是扁平化的),但当完整相对父路径在 vendor 里已存在时
+        # 必须用它——否则 `divination/data/x.js` 会新建一棵 `vendor/data/`,与既有 `vendor/divination/data/`
+        # 形成同名重复树,后续 relocate 还会把 import 指回旧树,同一模块两份、改一份不生效。
+        nested = Path(rel).parent
+        if args.vendor_subdir:
+            subdir = Path(args.vendor_subdir)
+        elif (VENDOR_ROOT / nested).is_dir():
+            subdir = nested
+        else:
+            subdir = Path(nested.name)
+        target = VENDOR_ROOT / subdir / Path(rel).name
+        new_text, notes = transform(source.read_text(encoding="utf-8"))
+        new_text, export_notes = _reexport_required(new_text, target)
+        notes.extend(export_notes)
+        new_text, reloc_notes = _relocate_imports(new_text, target)
+        notes.extend(reloc_notes)
+        old_text = target.read_text(encoding="utf-8") if target.is_file() else ""
+        status = "unchanged" if old_text == new_text else ("new" if not old_text else "updated")
+        delta = len(new_text.splitlines()) - len(old_text.splitlines())
+        print(f"{rel} → {target.relative_to(REPO_ROOT)}: {status} ({delta:+d} lines) [{'; '.join(notes) or 'verbatim'}]")
+        if not args.check and status != "unchanged":
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(new_text, encoding="utf-8", newline="\n")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,26 @@
+# Reference only — each script declares its own dependencies via PEP 723
+# inline metadata, resolved automatically by `uv run`. No manual install needed.
+#
+# This file lists all Python packages used across the skills for visibility.
+
+# Document processing
+defusedxml
+markitdown[pptx]
+lxml
+
+# PDF processing
+pypdf
+pdfplumber
+reportlab
+pytesseract
+pdf2image
+pypdfium2
+Pillow
+
+# Excel/data analysis
+pandas
+openpyxl
+matplotlib
+
+# PowerPoint processing
+python-pptx
