@@ -12,9 +12,18 @@
 
 ### 调用记录
 
-**我**：为什么逆向要先装两个 MCP 还要一个 Skill？不能直接问吗？
+我们先让模型说说，为什么逆向要先装两个 MCP 还要一个 Skill？不能直接问吗：
 
-**Codex**：直接问也没用，因为模型自己不会反汇编。IDA MCP 管“这个函数长什么样”，x64dbg MCP 管“运行时它实际做了什么”。Skill 是第三层：它不执行工具，它决定顺序和验收标准。`rust-reverse-engineering-skill` 的 README 自己就是这么定位的：
+```
+我：为什么逆向要先装两个 MCP 还要一个 Skill？不能直接问吗？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：直接问也没用，因为模型自己不会反汇编；IDA MCP 管“这个函数长什么样”，x64dbg MCP 管“运行时它实际做了什么”；Skill 是第三层：它不执行工具，它决定顺序和验收标准；给出 rust-reverse-engineering-skill 的 README 定位片段（Fingerprinting Rust binaries and libraries、Recovering likely crate boundaries and entry points、Surfacing panic, unwind, async, and FFI edges、Producing reviewable artifacts: demangled symbols, disassembly, pseudocode bundles、Driving a repeatable static and dynamic analysis workflow）；它服务的是“你拥有的或明确授权评估的二进制”，不是随便一个样本。
+
+Codex：直接问也没用，因为模型自己不会反汇编。IDA MCP 管“这个函数长什么样”，x64dbg MCP 管“运行时它实际做了什么”。Skill 是第三层：它不执行工具，它决定顺序和验收标准。`rust-reverse-engineering-skill` 的 README 自己就是这么定位的：
 
 ```text
 - Fingerprinting Rust binaries and libraries
@@ -25,10 +34,20 @@
 ```
 
 它服务的是“你拥有的或明确授权评估的二进制”，不是随便一个样本。
+```
 
-**我**：它需要哪些本机工具？
+接着问它需要哪些本机工具：
 
-**Codex**：README 里的环境要求分两部分。必须有的：
+```
+我：它需要哪些本机工具？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：README 里的环境要求分两部分；必须有的：file、strings、nm 或 llvm-nm、objdump 或 llvm-objdump、readelf 或 llvm-readelf；推荐的：rustfilt（还原 Rust 符号）、gdb 或 lldb（动态调试）、Ghidra / IDA Pro / Binary Ninja（反编译器）。
+
+Codex：README 里的环境要求分两部分。必须有的：
 
 ```text
 file、strings、nm 或 llvm-nm
@@ -36,10 +55,20 @@ objdump 或 llvm-objdump、readelf 或 llvm-readelf
 ```
 
 推荐的：`rustfilt`（还原 Rust 符号）、`gdb` 或 `lldb`（动态调试）、Ghidra / IDA Pro / Binary Ninja（反编译器）。
+```
 
-**我**：Codex 怎么装这个编排 Skill？
+我们再问 Codex 怎么装这个编排 Skill：
 
-**Codex**：官方 Codex 插件目录还没开放发布，仓库 `.codex/INSTALL.md` 给的本地安装流程是克隆到 `~/.codex/plugins/rust-reverse-engineering`，再在 `~/.agents/plugins/marketplace.json` 里登记一个指向本地的 marketplace：
+```
+我：Codex 怎么装这个编排 Skill？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：官方 Codex 插件目录还没开放发布；仓库 .codex/INSTALL.md 给的本地安装流程是克隆到 ~/.codex/plugins/rust-reverse-engineering，再在 ~/.agents/plugins/marketplace.json 里登记一个指向本地的 marketplace；给出 JSON 配置片段；重启 Codex 后在 /plugins 里安装。
+
+Codex：官方 Codex 插件目录还没开放发布，仓库 `.codex/INSTALL.md` 给的本地安装流程是克隆到 `~/.codex/plugins/rust-reverse-engineering`，再在 `~/.agents/plugins/marketplace.json` 里登记一个指向本地的 marketplace：
 
 ```json
 {
@@ -55,16 +84,37 @@ objdump 或 llvm-objdump、readelf 或 llvm-readelf
 ```
 
 重启 Codex 后在 `/plugins` 里安装。
+```
 
-**我**：那怎么验证它的“计划”合格？
+接着问怎么验证它的“计划”合格：
 
-**Codex**：最简单的方法是让它对样例二进制生成一份分析计划，然后检查计划是否满足三条硬要求：每一步写了要调用哪个 MCP 工具、每一步明确了要拿到什么产物、每一步写明了什么条件下进入下一步。这三项缺一就不是编排，只是罗列工具。后面的 5.2、5.3 会把两条执行层 MCP 分别跑通，作为这份计划的“手”。
+```
+我：那怎么验证它的“计划”合格？
+```
 
-**我**：这一步有没有什么容易被忽略的细节？
+模型给出如下回复：
 
-**Codex**：最常见的是在调试器状态不明时直接读内存或反汇编：先确认 PAUSED 再做下一步，能省掉一半的怪错误。先别怀疑工具本身，多数情况是环境、路径或前置条件没对上。
+```
+> 思考过程：最简单的方法是让它对样例二进制生成一份分析计划，然后检查计划是否满足三条硬要求：每一步写了要调用哪个 MCP 工具、每一步明确了要拿到什么产物、每一步写明了什么条件下进入下一步；这三项缺一就不是编排，只是罗列工具；后面的 5.2、5.3 会把两条执行层 MCP 分别跑通，作为这份计划的“手”。
+
+Codex：最简单的方法是让它对样例二进制生成一份分析计划，然后检查计划是否满足三条硬要求：每一步写了要调用哪个 MCP 工具、每一步明确了要拿到什么产物、每一步写明了什么条件下进入下一步。这三项缺一就不是编排，只是罗列工具。后面的 5.2、5.3 会把两条执行层 MCP 分别跑通，作为这份计划的“手”。
+```
+
+最后问这一步有没有什么容易被忽略的细节：
+
+```
+我：这一步有没有什么容易被忽略的细节？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：点出最常见的误区，即在调试器状态不明时直接读内存或反汇编；先确认 PAUSED 再做下一步，能省掉一半的怪错误；先别怀疑工具本身，多数情况是环境、路径或前置条件没对上；把这一节放回整条链路里看，它只是其中一段；真正动手时不必追求一次全对，先把命令跑通、把输出对上，遇到报错再回来查对应位置，往往比从头读一遍更快。
+
+Codex：最常见的是在调试器状态不明时直接读内存或反汇编：先确认 PAUSED 再做下一步，能省掉一半的怪错误。先别怀疑工具本身，多数情况是环境、路径或前置条件没对上。
 
 把这一节放回整条链路里看，它只是其中一段；真正动手时不必追求一次全对，先把命令跑通、把输出对上，遇到报错再回来查对应位置，往往比从头读一遍更快。
+```
 
 ### 总结
 
@@ -86,9 +136,18 @@ objdump 或 llvm-objdump、readelf 或 llvm-readelf
 
 ### 调用记录
 
-**我**：Codex 这边怎么装？
+我们先让模型说说，Codex 这边怎么装：
 
-**Codex**：走 Codex 插件市场，真实执行：
+```
+我：Codex 这边怎么装？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：走 Codex 插件市场，给出真实执行：codex plugin marketplace add mrexodia/codex-marketplace，输出 Added marketplace `mrexodia` ... Installed marketplace root: C:\Users\Administrator\.codex\.tmp\marketplaces\mrexodia；codex plugin add ida-pro-mcp@mrexodia，输出 Added plugin `ida-pro-mcp` from marketplace `mrexodia`。 Installed plugin root: ...\.codex\plugins\cache\mrexodia\ida-pro-mcp\0.1.0；再确认状态，给出 PLUGIN STATUS VERSION SOURCE 表格：ida-pro-mcp@mrexodia installed, enabled 0.1.0 https://github.com/mrexodia/ida-pro-mcp.git。
+
+Codex：走 Codex 插件市场，真实执行：
 
 ```powershell
 codex plugin marketplace add mrexodia/codex-marketplace
@@ -106,18 +165,38 @@ codex plugin add ida-pro-mcp@mrexodia
 PLUGIN                STATUS              VERSION  SOURCE
 ida-pro-mcp@mrexodia  installed, enabled  0.1.0    https://github.com/mrexodia/ida-pro-mcp.git
 ```
+```
 
-**我**：装好插件就能用了吗？
+接着问装好插件就能用了吗：
 
-**Codex**：还差本机 IDA。README 的前置条件是：Python 3.11 以上、安装 `uv`、IDA Pro 8.3 以上（推荐 9），并且 **IDA Free 不支持**。还要把 `idalib` 激活到全局，Windows 上的命令是：
+```
+我：装好插件就能用了吗？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：还差本机 IDA；README 的前置条件是：Python 3.11 以上、安装 uv、IDA Pro 8.3 以上（推荐 9），并且 IDA Free 不支持；还要把 idalib 激活到全局，Windows 上的命令是 uv run "C:\Program Files\IDA Professional 9.3\idalib\python\py-activate-idalib.py"。
+
+Codex：还差本机 IDA。README 的前置条件是：Python 3.11 以上、安装 `uv`、IDA Pro 8.3 以上（推荐 9），并且 **IDA Free 不支持**。还要把 `idalib` 激活到全局，Windows 上的命令是：
 
 ```powershell
 uv run "C:\Program Files\IDA Professional 9.3\idalib\python\py-activate-idalib.py"
 ```
+```
 
-**我**：那我现在的环境能用吗？试一个查询看看。
+我们再问那我现在的环境能用吗？试一个查询看看：
 
-**Codex**：我调了两个最基本的工具，真实结果是：
+```
+我：那我现在的环境能用吗？试一个查询看看。
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：调了两个最基本的工具，给出真实结果：check_connection → MCP server "ida-pro-mcp" tool "check_connection" timed out after 1s；get_metadata → MCP server "ida-pro-mcp" tool "get_metadata" timed out after 1s；这不是工具写错了，而是 MCP 服务器已经注册、但背后没有连上正在运行的 IDA 实例/插件；需要先启动 IDA、完成插件安装（ida-pro-mcp --install），再重开 MCP 客户端；这个超时就是“配置成功 ≠ 执行层可用”的最好例子。
+
+Codex：我调了两个最基本的工具，真实结果是：
 
 ```text
 check_connection  → MCP server "ida-pro-mcp" tool "check_connection" timed out after 1s
@@ -125,10 +204,20 @@ get_metadata      → MCP server "ida-pro-mcp" tool "get_metadata" timed out aft
 ```
 
 这不是工具写错了，而是 MCP 服务器已经注册、但背后没有连上正在运行的 IDA 实例/插件。需要先启动 IDA、完成插件安装（`ida-pro-mcp --install`），再重开 MCP 客户端。这个超时就是“配置成功 ≠ 执行层可用”的最好例子。
+```
 
-**我**：它一共提供哪些工具？
+接着问它一共提供哪些工具：
 
-**Codex**：本会话已注册的工具包括：
+```
+我：它一共提供哪些工具？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：本会话已注册的工具包括：check_connection / get_metadata、list_functions / list_globals / list_strings / list_imports、get_function_by_name / get_function_by_address、decompile_function / disassemble_function、get_xrefs_to / get_callers / get_callees / get_entry_points、get_defined_structures / analyze_struct_detailed / search_structures、set_comment / rename_function / rename_local_variable；这些名字本身就说明了分工：decompile_function 给你伪代码，get_xrefs_to 给你谁调用了它，list_functions 给你函数清单；编排 Skill 就是把这些原子调用串成“指纹 → 边界 → 伪代码 → 报告”。
+
+Codex：本会话已注册的工具包括：
 
 ```text
 check_connection / get_metadata
@@ -141,10 +230,20 @@ set_comment / rename_function / rename_local_variable
 ```
 
 这些名字本身就说明了分工：`decompile_function` 给你伪代码，`get_xrefs_to` 给你谁调用了它，`list_functions` 给你函数清单。编排 Skill 就是把这些原子调用串成“指纹 → 边界 → 伪代码 → 报告”。
+```
 
-**我**：搜索 MCP 查到的公开配置长什么样？
+我们再问搜索 MCP 查到的公开配置长什么样：
 
-**Codex**：检索到的一个公开 GitHub fork 给出的 MCP 客户端配置片段是：
+```
+我：搜索 MCP 查到的公开配置长什么样？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：检索到的一个公开 GitHub fork 给出的 MCP 客户端配置片段；给出 JSON 配置：mcpServers "github.com/mrexodia/ida-pro-mcp" command uv args ["--directory", "c:\\MCP\\ida-pro-mcp", "run", "ida-pro-mcp"]；也就是用 uv --directory <仓库目录> run ida-pro-mcp 拉起 stdio 服务；它和 codex plugin add 是两条路：插件市场替你写好配置，手写配置适合其他 MCP 客户端；两条路都绕不开同一个前提——IDA 实例/idalib 必须已经可用，否则连接仍会像本次一样超时。
+
+Codex：检索到的一个公开 GitHub fork 给出的 MCP 客户端配置片段是：
 
 ```json
 {
@@ -158,12 +257,23 @@ set_comment / rename_function / rename_local_variable
 ```
 
 也就是用 `uv --directory <仓库目录> run ida-pro-mcp` 拉起 stdio 服务。它和 `codex plugin add` 是两条路：插件市场替你写好配置，手写配置适合其他 MCP 客户端。两条路都绕不开同一个前提——IDA 实例/idalib 必须已经可用，否则连接仍会像本次一样超时。
+```
 
-**我**：如果第一次没跑通，通常先查哪里？
+最后问如果第一次没跑通，通常先查哪里：
 
-**Codex**：最常见的是在调试器状态不明时直接读内存或反汇编：先确认 PAUSED 再做下一步，能省掉一半的怪错误。把这一步记下来，下次再遇到同类问题时能少走不少弯路。
+```
+我：如果第一次没跑通，通常先查哪里？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：点出最常见的误区，即在调试器状态不明时直接读内存或反汇编；先确认 PAUSED 再做下一步，能省掉一半的怪错误；把这一步记下来，下次再遇到同类问题时能少走不少弯路；这些步骤看起来零散，其实前后是有因果的：前一步的产物就是后一步的输入，中间哪一环没对上，后面就会以各种奇怪的方式报错。
+
+Codex：最常见的是在调试器状态不明时直接读内存或反汇编：先确认 PAUSED 再做下一步，能省掉一半的怪错误。把这一步记下来，下次再遇到同类问题时能少走不少弯路。
 
 这些步骤看起来零散，其实前后是有因果的：前一步的产物就是后一步的输入，中间哪一环没对上，后面就会以各种奇怪的方式报错。
+```
 
 ### 总结
 
@@ -185,9 +295,18 @@ set_comment / rename_function / rename_local_variable
 
 ### 调用记录
 
-**我**：本机装了 x64dbg，也有这个 MCP 插件吗？
+我们先让模型说说，本机装了 x64dbg，也有这个 MCP 插件吗：
 
-**Codex**：有。`D:\Program Files\x64dbg\release\x64\x64dbg.exe` 存在，`plugins` 目录里已经有：
+```
+我：本机装了 x64dbg，也有这个 MCP 插件吗？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：有；D:\Program Files\x64dbg\release\x64\x64dbg.exe 存在，plugins 目录里已经有：x64dbg-MCP-Server.dp64；同目录的 mcp_config.json 记录监听地址、端口和 AuthToken（下面是脱敏后的字段名，不展示真实 token）：{ "IpAddress": "127.0.0.1", "Port": 9094, "AutoStart": true, "AuthToken": "<已脱敏>" }。
+
+Codex：有。`D:\Program Files\x64dbg\release\x64\x64dbg.exe` 存在，`plugins` 目录里已经有：
 
 ```text
 x64dbg-MCP-Server.dp64
@@ -198,10 +317,20 @@ x64dbg-MCP-Server.dp64
 ```json
 { "IpAddress": "127.0.0.1", "Port": 9094, "AutoStart": true, "AuthToken": "<已脱敏>" }
 ```
+```
 
-**我**：怎么确认服务真的起来了？
+接着问怎么确认服务真的起来了：
 
-**Codex**：先裸访问端口，得到 `401`，说明服务在监听、只是缺认证：
+```
+我：怎么确认服务真的起来了？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：先裸访问端口，得到 401，说明服务在监听、只是缺认证；给出 curl http://127.0.0.1:9094/ → HTTP 401；带上 Authorization: Bearer <token> 后用 MCP 客户端连接，tools/list 返回了 80 个工具（README 写的是 84，版本之间有差异，以实际返回为准）；节选：GetDebugState、LoadBinary、AttachProcess、WaitForPause、GetAllRegisters、Disassemble、SetBreakpoint、run、StepInto / StepOver、ReadMemory、GetCallStack、ListModules、FindPattern、GetReferences、DumpModule。
+
+Codex：先裸访问端口，得到 `401`，说明服务在监听、只是缺认证：
 
 ```text
 curl http://127.0.0.1:9094/  →  HTTP 401
@@ -216,10 +345,20 @@ SetBreakpoint        run                 StepInto / StepOver
 ReadMemory           GetCallStack        ListModules
 FindPattern          GetReferences       DumpModule
 ```
+```
 
-**我**：那我先查一下现在调试器在什么状态。
+我们再问那我先查一下现在调试器在什么状态：
 
-**Codex**：按技能的第一条规则，任何动作之前先 `GetDebugState`。真实返回：
+```
+我：那我先查一下现在调试器在什么状态。
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：按技能的第一条规则，任何动作之前先 GetDebugState；真实返回：isDebugging: false、status: NO_TARGET、hint: Use LoadBinary to open an executable first.；这时如果直接调别的工具，会被明确拒绝：GetCurrentAddress → ERROR: Tool requires an active debug session.、Disassemble → ERROR: Tool requires an active debug session.；这就是 x64dbg MCP 的 SKILL.md 反复强调的“先知道状态”：NO_TARGET 下不能读内存、不能反汇编，必须先 LoadBinary 或 AttachProcess。
+
+Codex：按技能的第一条规则，任何动作之前先 `GetDebugState`。真实返回：
 
 ```text
 isDebugging: false
@@ -234,11 +373,21 @@ GetCurrentAddress → ERROR: Tool requires an active debug session.
 Disassemble       → ERROR: Tool requires an active debug session.
 ```
 
-这就是 x64dbg MCP 的 SKILL.md 反复强调的“先知道状态”：`NO_TARGET` 下不能读内存、不能反汇编，必须先 `LoadBinary` 或 `AttachProcess`。
+这就是 x64dbg MCP 的 SKILL.md 反复强调的“先知道状态”：`NO_TARGET` 时其它工具会报“需要活动调试会话”。
+```
 
-**我**：加载之后标准动作是什么？
+接着问加载之后标准动作是什么：
 
-**Codex**：技能给出的标准链是：
+```
+我：加载之后标准动作是什么？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：技能给出的标准链：GetDebugState → LoadBinary (path) → WaitForPause → GetDebugState（确认 PAUSED）→ GetAllRegisters → ListModules → Disassemble；下断点则是：GetDebugState → SetBreakpoint (target) → run → WaitForPause / WaitForEvent → GetDebugState → Disassemble → GetAllRegisters；技能里还有一条“绝不假设两次调用之间状态没变”的规则：MCP 是请求/响应模型，两次调用之间可能命中断点、抛异常或用户手动操作，所以每次动手前都要重新 GetDebugState，并读每个响应末尾的 [state] 行。
+
+Codex：技能给出的标准链是：
 
 ```text
 GetDebugState → LoadBinary (path) → WaitForPause
@@ -253,16 +402,37 @@ GetDebugState → SetBreakpoint (target) → run
 ```
 
 技能里还有一条“绝不假设两次调用之间状态没变”的规则：MCP 是请求/响应模型，两次调用之间可能命中断点、抛异常或用户手动操作，所以每次动手前都要重新 `GetDebugState`，并读每个响应末尾的 `[state]` 行。
+```
 
-**我**：搜索 MCP 还能找到别的 x64dbg 自动化方案吗？
+我们再问搜索 MCP 还能找到别的 x64dbg 自动化方案吗：
 
-**Codex**：检索到一条公开教程介绍 x64dbg 的 LyScript2.0 / 自动化插件，它同样支持通过 HTTP / MCP 协议调用，把断点、寄存器、内存操作暴露给大模型。它和 duty1g 的 x64dbg-mcp-server 是不同实现：前者是脚本化 SDK 路线，后者是原生 MCP 插件 + 内置工具集。两者共同点是“调试器状态必须由工具返回，模型不猜”：无论用哪个，第一步都是 `GetDebugState`，确认当前是 `NO_TARGET`、`PAUSED` 还是 `RUNNING`。
+```
+我：搜索 MCP 还能找到别的 x64dbg 自动化方案吗？
+```
 
-**我**：按这个流程做，最容易卡在哪一步？
+模型给出如下回复：
 
-**Codex**：最常见的是在调试器状态不明时直接读内存或反汇编：先确认 PAUSED 再做下一步，能省掉一半的怪错误。遇到时先按本节记录的顺序排查，通常都能定位到具体原因。
+```
+> 思考过程：检索到一条公开教程介绍 x64dbg 的 LyScript2.0 / 自动化插件，它同样支持通过 HTTP / MCP 协议调用，把断点、寄存器、内存操作暴露给大模型；它和 duty1g 的 x64dbg-mcp-server 是不同实现：前者是脚本化 SDK 路线，后者是原生 MCP 插件 + 内置工具集；两者共同点是“调试器状态必须由工具返回，模型不猜”：无论用哪个，第一步都是 GetDebugState，确认当前是 NO_TARGET、PAUSED 还是 RUNNING。
+
+Codex：检索到一条公开教程介绍 x64dbg 的 LyScript2.0 / 自动化插件，它同样支持通过 HTTP / MCP 协议调用，把断点、寄存器、内存操作暴露给大模型。它和 duty1g 的 x64dbg-mcp-server 是不同实现：前者是脚本化 SDK 路线，后者是原生 MCP 插件 + 内置工具集。两者共同点是“调试器状态必须由工具返回，模型不猜”：无论用哪个，第一步都是 `GetDebugState`，确认当前是 `NO_TARGET`、`PAUSED` 还是 `RUNNING`。
+```
+
+最后问按这个流程做，最容易卡在哪一步：
+
+```
+我：按这个流程做，最容易卡在哪一步？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：点出最常见的误区，即在调试器状态不明时直接读内存或反汇编；先确认 PAUSED 再做下一步，能省掉一半的怪错误；遇到时先按本节记录的顺序排查，通常都能定位到具体原因；如果只记住一句，那就是：先让最小链路真实跑通，再谈优化和自动化；跳过验证直接堆功能，最后往往要花更多时间回头补。
+
+Codex：最常见的是在调试器状态不明时直接读内存或反汇编：先确认 PAUSED 再做下一步，能省掉一半的怪错误。遇到时先按本节记录的顺序排查，通常都能定位到具体原因。
 
 如果只记住一句，那就是：先让最小链路真实跑通，再谈优化和自动化；跳过验证直接堆功能，最后往往要花更多时间回头补。
+```
 
 ### 总结
 
