@@ -8,14 +8,11 @@
 
 我们首先让模型运行 fast-pdf-to-markdown：
 
-```
-请使用 fast-pdf-to-markdown 对一份带表格的 PDF 进行转换。检查它是否生成了 review_required 或 ocr_required 的页面标记。
-```
+> **提示词**：请使用 fast-pdf-to-markdown 对一份带表格的 PDF 进行转换。检查它是否生成了 review_required 或 ocr_required 的页面标记。
 
-模型输出：
-
-```
-> fast-pdf-to-markdown 做页锚定的 Markdown 转换，输出时附带 JSON 报告，区分 clean、review_required、ocr_required。它不假装每一页都完美识别，而是告诉你哪些页需要人工看一眼。
+> **Codex 输出**
+>
+> > 思考过程：fast-pdf-to-markdown 做页锚定的 Markdown 转换，输出时附带 JSON 报告，区分 clean、review_required、ocr_required。它不假装每一页都完美识别，而是告诉你哪些页需要人工看一眼。
 
 # PDF 转换结果
 
@@ -56,13 +53,12 @@
 
 接着测试 pdf-visual-translate-zh 翻译：
 
-```
-请使用 pdf-visual-translate-zh 对英文合同 PDF 进行中文翻译。要求先输出术语表（比如“甲方/乙方”的译法），再开始正文。
-```
+> **提示词**：请使用 pdf-visual-translate-zh 对英文合同 PDF 进行中文翻译。要求先输出术语表（比如“甲方/乙方”的译法），再开始正文。
 
-模型输出：
+> **Codex 输出**
+>
+> > 思考过程：pdf-visual-translate-zh 是英文 PDF 版式保真中文翻译 Skill，为可提取文本的英文 PDF 创建中文交付件，尽量保留页数、页面尺寸、表格、图表、颜色、页眉页脂和整体布局。
 
-```
 # 英文 PDF 版式保真中文翻译
 
 源文件：contract.pdf（英文合同）

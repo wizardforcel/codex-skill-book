@@ -8,16 +8,13 @@
 
 我们首先让模型运行 rust-reverse-engineering-skill：
 
-```
-请使用 rust-reverse-engineering-skill 对样例二进制生成一份分析计划。计划中必须明确列出每一步要调用哪个 MCP 工具、拿到什么产物、什么条件下进入下一步。
-```
+> **提示词**：请使用 rust-reverse-engineering-skill 对样例二进制生成一份分析计划。计划中必须明确列出每一步要调用哪个 MCP 工具、拿到什么产物、什么条件下进入下一步。
 
-模型输出：
-
-```
-> rust-reverse-engineering-skill 作为逆向软件的编排示例，把 IDA 和 x64dbg 的 MCP 把反汇编、内存、断点、交叉引用暴露给 Codex。Skill 决定“先看什么、怎么交叉验证、什么条件下判定完成”。
-
-> 技能编排把底层能力串成“指纹 → crate 边界 → 伪代码 → 报告”的流程。每一步都明确对应 MCP 工具调用、预期产物和进入下一步的条件。
+> **Codex 输出**
+>
+> > 思考过程：rust-reverse-engineering-skill 作为逆向软件的编排示例，把 IDA 和 x64dbg 的 MCP 把反汇编、内存、断点、交叉引用暴露给 Codex。Skill 决定“先看什么、怎么交叉验证、什么条件下判定完成”。
+>
+> > 技能编排把底层能力串成“指纹 → crate 边界 → 伪代码 → 报告”的流程。每一步都明确对应 MCP 工具调用、预期产物和进入下一步的条件。
 
 # 二进制逆向分析计划
 

@@ -17,27 +17,27 @@
 > > 初始化时，Skill 会创建项目目录结构，包括小说设定文件、章节大纲、状态文件（如 progress.yaml）和已写章节目录。状态文件记录当前写到第几章、最后修改时间、待办事项等关键信息。
 >
 > > 写作 500 字后，Skill 会生成第 1 章文件并更新状态文件。如果手动删除第 1 章文件，再执行“从中断处继续”，Skill 会读取状态文件，发现第 1 章已标记为“进行中”但文件缺失，从而重新生成或提示用户恢复，而不是从头开始重写整本小说。
->
-> # 项目初始化输出
->
-> 项目结构：
-> ```
-> 我的长篇小说/
-> ├── setting.yaml        # 小说设定（世界观、人物、剧情线）
-> ├── outline.yaml        # 章节大纲
-> ├── progress.yaml       # 写作进度状态文件
-> └── chapters/           # 已写章节目录
->     └── chapter_01.md
-> ```
->
-> progress.yaml 内容示例：
-> ```yaml
-> current_chapter: 1
-> status: writing
-> last_updated: "2026-11-23T12:59:00"
-> word_count: 500
-> pending_todos: []
-> ```
+
+# 项目初始化输出
+
+项目结构：
+```
+我的长篇小说/
+├── setting.yaml        # 小说设定（世界观、人物、剧情线）
+├── outline.yaml        # 章节大纲
+├── progress.yaml       # 写作进度状态文件
+└── chapters/           # 已写章节目录
+    └── chapter_01.md
+```
+
+progress.yaml 内容示例：
+```yaml
+current_chapter: 1
+status: writing
+last_updated: "2026-11-23T12:59:00"
+word_count: 500
+pending_todos: []
+```
 
 接着我们测试中断恢复：
 
