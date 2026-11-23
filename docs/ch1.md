@@ -22,7 +22,7 @@ Windows 安装时务必勾选“Add Python to PATH”，否则后续调用 `pyth
 
 > **Codex 输出**
 >
-> > 思考过程：用户要验证虚拟环境是否正确创建，需要检查激活后的 Python 可执行文件路径是否指向 .venv 目录，而不是系统自带的 Python。
+> 思考过程：用户要验证虚拟环境是否正确创建，需要检查激活后的 Python 可执行文件路径是否指向 .venv 目录，而不是系统自带的 Python。
 >
 > Codex：先在当前目录新建一个文件夹，然后进入这个文件夹，用 python -m venv .venv 创建虚拟环境。创建完成后，激活虚拟环境，再运行检查命令：
 >
@@ -63,7 +63,7 @@ Windows 安装 LTS `.msi` 时不要取消“Add to PATH”；macOS 可用 `brew 
 
 > **Codex 输出**
 >
-> > 思考过程：用户要验证 Node.js 和 npm 是否正确安装，以及 npx 是否能按需下载并运行包。需要给出真实的命令输出示例。
+> 思考过程：用户要验证 Node.js 和 npm 是否正确安装，以及 npx 是否能按需下载并运行包。需要给出真实的命令输出示例。
 >
 > Codex：重新打开终端（这一步很重要，因为 PATH 环境变量是在安装完成后才生效的，旧终端窗口可能还不知道新安装的 Node.js），依次运行以下命令：
 >
@@ -101,7 +101,7 @@ Codex CLI 是什么？它是一个命令行工具，让你在终端里直接和 
 
 > **Codex 输出**
 >
-> > 思考过程：用户要验证 Codex CLI 的登录态是否持久化，需要先登录，然后退出再重新进入，看是否还需要重新登录。
+> 思考过程：用户要验证 Codex CLI 的登录态是否持久化，需要先登录，然后退出再重新进入，看是否还需要重新登录。
 >
 > Codex：先用以下命令安装 Codex CLI（如果已经通过 npm 安装过，跳过这一步）：
 >
@@ -137,7 +137,7 @@ Codex CLI 是命令行界面，Codex Desktop 则是图形界面，适合不太�
 
 > **Codex 输出**
 >
-> > 思考过程：用户要验证 Codex Desktop 的只读审批边界，需要打开一个项目，要求 Codex 只解释目录结构而不修改文件，观察它是否会擅自修改文件。
+> 思考过程：用户要验证 Codex Desktop 的只读审批边界，需要打开一个项目，要求 Codex 只解释目录结构而不修改文件，观察它是否会擅自修改文件。
 >
 > Codex：打开 Codex Desktop，登录后选择一个已有项目文件夹。然后在对话框中输入：
 >
@@ -172,7 +172,7 @@ CC Switch 图形化管理 Codex / Claude Code 的供应商配置，避免手改 
 
 > **Codex 输出**
 >
-> > 思考过程：用户要验证 CC Switch 能否正确添加供应商、切换模型，以及配置文件是否自动更新。
+> 思考过程：用户要验证 CC Switch 能否正确添加供应商、切换模型，以及配置文件是否自动更新。
 >
 > Codex：打开 CC Switch 应用程序，点击“添加供应商”，选择 DeepSeek，填入 API Key 等必要信息，保存。然后启动 Codex，发送一条测试消息，观察回复是否来自 DeepSeek 模型。
 >
@@ -207,13 +207,13 @@ Skill 是什么？简单说，Skill 就是给 Codex 安装的“插件”或“�
 
 > **Codex 输出**
 >
-> > 思考过程：我需要先理解 skill-creator 的输出结构。skill-creator 是 Codex 内置的 Skill 创建工具，它会生成包含 SKILL.md frontmatter 和可选 scripts/ 目录的最小 Skill 骨架。key 字段包括 name、description、scripts、references 等。description 决定隐式触发时的匹配优先级，需要收紧到一句能被“看看我还有什么没做完”命中的话。
+> 思考过程：我需要先理解 skill-creator 的输出结构。skill-creator 是 Codex 内置的 Skill 创建工具，它会生成包含 SKILL.md frontmatter 和可选 scripts/ 目录的最小 Skill 骨架。key 字段包括 name、description、scripts、references 等。description 决定隐式触发时的匹配优先级，需要收紧到一句能被“看看我还有什么没做完”命中的话。
 >
-> > todo-check 的核心逻辑是：读取 TODO.md → 解析 Markdown 复选框 → 筛选未完成项（- [ ] 或 - [ ] 后跟内容）→ 输出列表。需要处理不同格式的复选框（- [ ]、- [x]、* [ ] 等），也要容错（没有 TODO.md 文件的情况）。
+> todo-check 的核心逻辑是：读取 TODO.md → 解析 Markdown 复选框 → 筛选未完成项（- [ ] 或 - [ ] 后跟内容）→ 输出列表。需要处理不同格式的复选框（- [ ]、- [x]、* [ ] 等），也要容错（没有 TODO.md 文件的情况）。
 >
-> > 生成 SKILL.md 时，name 设为 todo-check，description 收紧为“读取项目根目录下的 TODO.md，列出所有未完成的任务项”，这样“看看我还有什么没做完”才能隐式命中。scripts/ 目录放一个简单的 Python 脚本，实现读取和解析逻辑。
+> 生成 SKILL.md 时，name 设为 todo-check，description 收紧为“读取项目根目录下的 TODO.md，列出所有未完成的任务项”，这样“看看我还有什么没做完”才能隐式命中。scripts/ 目录放一个简单的 Python 脚本，实现读取和解析逻辑。
 >
-> # SKILL.md
+> ### SKILL.md
 >
 > ---
 > name: todo-check
@@ -222,16 +222,16 @@ Skill 是什么？简单说，Skill 就是给 Codex 安装的“插件”或“�
 >   type: utility
 > ---
 >
-> # todo-check
+> ### todo-check
 >
 > 读取 `TODO.md` 并列出其中未完成的任务项。
 >
-> ## 触发方式
+> #### 触发方式
 >
 > - 隐式触发：输入“看看我还有什么没做完”“还有哪些任务没做”等类似表述
 > - 显式调用：`$todo-check`
 >
-> # scripts/todo_check.py
+> ### scripts/todo_check.py
 >
 > ```python
 > #!/usr/bin/env python3
@@ -276,23 +276,23 @@ Skill 是什么？简单说，Skill 就是给 Codex 安装的“插件”或“�
 >
 > 接着测试隐式触发：
 >
-> > **提示词**：在项目根目录创建一个 TODO.md，内容如下：
+> **提示词**：在项目根目录创建一个 TODO.md，内容如下：
 >
-> > - [ ] 写第一章细纲
-> > - [x] 安装 Python 环境
-> > - [ ] 整理 Skill 调用记录
+> - [ ] 写第一章细纲
+> - [x] 安装 Python 环境
+> - [ ] 整理 Skill 调用记录
 >
-> > 然后用“看看我还有什么没做完”测试 todo-check 的隐式触发。
+> 然后用“看看我还有什么没做完”测试 todo-check 的隐式触发。
 >
 > 以下是模型输出的测试结果：
 >
-> > 首先检查项目根目录是否有 TODO.md。根据 skill-creator 生成的 todo-check 脚本逻辑，需要解析 Markdown 复选框语法。给定的 TODO.md 中有三项：第一项“- [ ] 写第一章细纲”未完成，第二项“- [x] 安装 Python 环境”已完成，第三项“- [ ] 整理 Skill 调用记录”未完成。
+> 首先检查项目根目录是否有 TODO.md。根据 skill-creator 生成的 todo-check 脚本逻辑，需要解析 Markdown 复选框语法。给定的 TODO.md 中有三项：第一项“- [ ] 写第一章细纲”未完成，第二项“- [x] 安装 Python 环境”已完成，第三项“- [ ] 整理 Skill 调用记录”未完成。
 >
-> > 隐式触发“看看我还有什么没做完”应当命中 todo-check Skill，因为其 description 是“读取项目根目录下的 TODO.md，列出所有未完成的任务项”，与用户意图匹配。
+> 隐式触发“看看我还有什么没做完”应当命中 todo-check Skill，因为其 description 是“读取项目根目录下的 TODO.md，列出所有未完成的任务项”，与用户意图匹配。
 >
-> > 你还有以下任务未完成：
-> > 1. 写第一章细纲
-> > 2. 整理 Skill 调用记录
+> 你还有以下任务未完成：
+> 1. 写第一章细纲
+> 2. 整理 Skill 调用记录
 
 ### 总结
 
@@ -319,16 +319,16 @@ Skill 是什么？简单说，Skill 就是给 Codex 安装的“插件”或“�
 
 > **Codex 输出**
 >
-> > create-plan 的工作方式是：在写第一行代码之前，先追问输入输出边界和验收条件，而不是直接生成代码或文件结构。
+>create-plan 的工作方式是：在写第一行代码之前，先追问输入输出边界和验收条件，而不是直接生成代码或文件结构。
 >
-> > 收到“给命令行工具加一个 --dry-run 选项”后，我不能直接添加 --dry-run 选项，因为需要先明确以下问题：
+>收到“给命令行工具加一个 --dry-run 选项”后，我不能直接添加 --dry-run 选项，因为需要先明确以下问题：
 >
-> > 1. 输入边界：命令行工具目前接受哪些参数？--dry-run 应该放在什么位置？
-> > 2. 输出边界：--dry-run 模式下，什么操作会被跳过？什么操作仍会执行？
-> > 3. 验收条件：如何判断 --dry-run 正常工作？（例如：不写入文件、不修改数据库、只打印计划操作）
-> > 4. 交互方式：--dry-run 是布尔开关还是需要额外参数？
+> 1. 输入边界：命令行工具目前接受哪些参数？--dry-run 应该放在什么位置？
+> 2. 输出边界：--dry-run 模式下，什么操作会被跳过？什么操作仍会执行？
+>3. 验收条件：如何判断 --dry-run 正常工作？（例如：不写入文件、不修改数据库、只打印计划操作）
+>4. 交互方式：--dry-run 是布尔开关还是需要额外参数？
 >
-> > 在这些问题答复完毕并达成共识之前，我不会直接修改代码或添加 --dry-run 选项。
+>在这些问题答复完毕并达成共识之前，我不会直接修改代码或添加 --dry-run 选项。
 
 ### 总结
 
@@ -357,7 +357,7 @@ Skill 和 MCP 的分工很重要：MCP 负责连接，比如把浏览器连上�
 
 > **Codex 输出**
 >
-> > 思考过程：用户要在 ~/.codex/config.toml 中添加一个指向 echo 命令的 stdio MCP 服务器，然后重启 Codex 并验证它出现在服务器列表中。
+> 思考过程：用户要在 ~/.codex/config.toml 中添加一个指向 echo 命令的 stdio MCP 服务器，然后重启 Codex 并验证它出现在服务器列表中。
 >
 > Codex：在 `~/.codex/config.toml` 中添加以下配置块：
 >
@@ -396,7 +396,7 @@ Chrome DevTools MCP 让 Codex 连接真实浏览器，打开页面、读取 DOM�
 
 > **Codex 输出**
 >
-> > 思考过程：用户要验证 Chrome DevTools MCP 是否正确安装并能正常工作，需要让 Codex 打开一个网页并读取页面上的 h1 元素。
+> 思考过程：用户要验证 Chrome DevTools MCP 是否正确安装并能正常工作，需要让 Codex 打开一个网页并读取页面上的 h1 元素。
 >
 > Codex：先安装 Chrome DevTools MCP：
 >
@@ -424,3 +424,4 @@ Chrome DevTools MCP 让 Codex 连接真实浏览器，打开页面、读取 DOM�
 - `skill-creator` 创建 Skill 骨架，`skill-installer` 安装现成 Skill，`create-plan` 是“种子技能”。
 - MCP 把外部工具“连上”，Skill 决定“怎么用”，两者分工明确。
 - Chrome DevTools MCP 是第一章安装的第一个 MCP，后面会反复用到。
+
