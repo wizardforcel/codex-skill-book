@@ -1,81 +1,156 @@
-# 第1章 安装与简介
+# 第2章 编写小说
 
-这一章的目标很简单：把第一章后面所有章节都要用到的基本环境装好，理解 Codex 里两个最常见的概念——Skill 和 MCP。你不必理解很深，只需要按顺序完成每一步，并且知道每个命令是干什么的。学完这一章，你会拥有一个可以运行 Codex、可以安装技能、可以连接浏览器工具的电脑环境。先别急着一次装完全部，把每一项的命令和输出对上号，后面每一章都会用到这份基础；装错了也只是重来一遍，不丢面子。
+写小说和写短回复完全不同：一本几十万字的书，写到后面要记得前面的角色、时间线、伏笔和设定，纯靠对话慢慢来，上下文很快就会被冲掉。这一章介绍三套专门面向长篇中文小说的 Skill，它们的共同思路是在正文之外维护一套“可恢复的项目状态”：一本书不是一个对话，而是一个有目录、有状态文件、有检查工具的工程。
 
-## 1.1 安装 Python
+读完这一章，你会理解长篇写作为什么需要 Skill，并学会选一套适合自己工作方式的流程。写小说这件事，技巧之外的功夫几乎都花在“一致性”和“恢复”上；这一章的三套技能正好代表三种不同的取舍，读者反而能从对比里找到自己的路子。
+
+## 2.1 长篇写作的分层上下文与事实锁
 
 ### 简介
 
-Python 是一种编程语言，也是大量 MCP 和 Skill 脚本层的运行前提。很多技能并不是“用魔法在工作”，而是先调用一个 Python 脚本做确定性的计算，再把结果交给模型去判断。因此，电脑上有一个能用的 Python 非常重要。装好 Python 只是第一步，后面大部分社区脚本和 Skill 都要靠它才能跑；安装时就把版本和 PATH 确认清楚，后面会少踩很多坑。
+`chinese-longnovel-skill` 面向中文长篇网文，特点是“分层上下文 + 事实锁”。它把全书拆成宏观阶段、50 章规划窗口、分章细纲三层；写作前先组装一个小而关键的“上下文包”，再把里面绝对不能改错的数值和事实固化成“事实锁”。
 
-官方建议安装 Python 3.12 或更高版本。Windows 安装时务必勾选“Add Python to PATH”，否则后面你在终端里输入 `python`，电脑会告诉你找不到命令。如果你希望每个项目都有独立环境，可以再安装 `uv`，用 `uv venv` 建隔离环境，用 `uv pip install` 安装包，不与系统 Python 互相干扰。
+它最强调的不是“生成下一章”，而是写到几百章之后仍然一致：每个事实锁都记录来源文件、原文锚点、哈希值和期望值，正文或审查时发现候选改了锁，就立刻拦截。长篇小说和普通对话的差别在于规模：写到几百章之后，一致性不再靠记忆，而要靠结构和证据；这套技能就是把这两件事制度化。
+
+安装方式：
+
+```powershell
+npx skills add xiaofeng-928/chinese-longnovel-skill -a codex -g -y
+```
+
+装好后它在 `~/.codex/skills` 或 `~/.agents/skills` 下出现一个名字叫 `my-novel` 的技能（`SKILL.md` 的 `name` 是 `my-novel`）。
 
 ### 调用记录
 
-**我**：我不知道电脑里有没有 Python，怎么检查？
+我们先让模型说说，想写一本经营流长篇、只出前 10 章细纲不写正文，技能会怎么处理这个请求：
 
-**Codex**：先直接问版本，电脑会自己回答：
-
-```powershell
-python --version
-# Python 3.10.11
-
-py --version
-# Python 3.14.6
+```
+我：我想写一本经营流长篇，先出前 10 章细纲，不要正文。
 ```
 
-本机默认的 `python` 是 3.10.11，Windows 自带启动器 `py` 默认指向 3.14.6。如果你安装的是 3.12 以上，这里会直接看到对应版本号。出现版本号，就说明 Python 已经能用了。
+模型给出如下回复：
 
-**我**：`python` 和 `py` 为什么不一样？我该信谁？
+```
+> 思考过程：用户的请求属于“开书 → 总大纲 → 分阶段大纲细化”这条链路。技能不能跳过前置步骤直接编细纲，所以要先说明路由决定，再依次展开。
 
-**Codex**：这两个不是同一个程序。`python` 是你安装的那个 Python，`py` 是 Windows 的 Python 启动器，它可能管理着好几个 Python 版本。让电脑自己报出真实位置，就能看清：
-
-```powershell
-python -c "import sys; print(sys.executable)"
-# D:\Python310\python.exe
-
-py -0p
-#  -V:3.14t *       D:\Python314\python3.14t.exe
-#  -V:3.14          D:\Python314\python.exe
-#  -V:3.10          D:\Python310\python.exe
+Codex：技能先看自己的路由表。你这条请求对应“开书”“总大纲”“分阶段大纲细化”三个环节，它不会跳过前置直接编细纲。
 ```
 
-`sys.executable` 的意思是“当前正在运行的这个 Python 文件在哪里”。这台机器上，`python` 指向 `D:\Python310\python.exe`，而 `py` 会优先选 3.14。初学者最容易踩的坑，就是以为 `python` 和 `py` 是完全一样的东西。
+接着我们问第一步到底做什么：
 
-**我**：平常我也装了很多软件，怎么才能不让 Python 弄乱系统？
-
-**Codex**：给每个项目单独建一个“小 Python”环境，也就是 `venv`。它会把 Python 和后来安装的包放进项目自己的文件夹里，不会碰系统 Python。建好后，直接用这个环境里的 `python.exe` 运行，不需要先激活：
-
-```powershell
-python -m venv D:\codex-python-verify
-
-D:\codex-python-verify\Scripts\python.exe --version
-# Python 3.10.11
-
-D:\codex-python-verify\Scripts\python.exe -c "import sys; print(sys.executable)"
-# D:\codex-python-verify\Scripts\python.exe
+```
+我：它第一步做什么？
 ```
 
-看到最后一行指向 `D:\codex-python-verify\Scripts\python.exe`，就说明这个项目已经开始使用自己的 Python，而不是系统里的 `D:\Python310\python.exe` 了。
+模型给出如下回复：
 
-**我**：如果检查 `uv` 呢？
+```
+> 思考过程：第一步是“开书”里的市场证据检查。本机没有真实的扫榜归档，所以按低可信度探索继续，并且要记录覆盖原因；同时要给出生成的开书方案文件样例。
 
-**Codex**：
+Codex：先检查有没有 30 天内的扫榜归档（市场证据）。真实执行中，本机没有任何扫榜归档，技能按“人工补充数据 / 低可信度探索”规则继续，但要求一律记录覆盖原因。现场生成的 `创作依据/开书方案.md` 开头是这样：
 
-```powershell
-uv --version
-# uv 0.13.6 (329bf9448 2026-10-26 x86_64-pc-windows-msvc)
+```markdown
+# 开书方案
+
+## 一、扫榜元数据与证据等级
+- 来源平台：无（本演示项目未进行真实榜单抓取）
+- 市场验证状态：unvalidated（未完成市场验证）
+- 证据等级：低可信度探索（low-confidence exploration）
+
+### 覆盖原因
+本项目的开书目标不是真实市场推书，而是演示技能路由的完整执行。
+当前不存在 30 天内且题材匹配、至少 5 本含
+management_loop/system_loop 证据的扫榜归档。
+因此按技能允许的路径：“缺少新鲜扫榜归档，按低可信度探索继续”。
+不得据此声称已完成当前市场验证。
 ```
 
-有版本号就说明 `uv` 能用。后面章节如果需要临时运行某个 Python 工具，又不希望永久安装，`uvx` 就是很顺手的选择。
+它不允许用模型记忆凭空填充“当前热度”。这是它和普通聊天最大的差别：开书判定要落到文件里，而不是对话里。
+```
 
-**我**：创建 `venv` 时出现“Actual environment location may have moved due to redirects, links or junctions”是什么意思？
+我们再让模型展示总纲的开头长什么样：
 
-**Codex**：这是 Windows 临时目录用了 `ADMINI~1` 这种短路径名造成的。解决办法很简单：不要选在 `%TEMP%` 里建项目环境，换成 `D:\codex-python-verify` 这样的普通长路径。把路径写正常，提示就消失了。
+```
+我：然后呢？给我看总纲领头长什么样。
+```
 
-**我**：这一步有没有什么容易被忽略的细节？
+模型给出如下回复：
 
-**Codex**：最常见的是环境问题：命令找不到、版本不对、PATH 没生效，先重开终端再看版本，比反复重装有效。先别怀疑工具本身，多数情况是环境、路径或前置条件没对上。
+```
+> 思考过程：接下来是建最小项目壳，然后生成总大纲，要给出小说名、类型标签、系统设计档案等片段，并说明 6 个宏观阶段块和 exit_condition。
+
+Codex：先建最小项目壳（`novel-config.md`、`创作依据/开书方案.md`、`设定/`、`plan/`），再走“总大纲 → 分阶段大纲细化”。现场生成的这部书叫《老街食光记》（经营+美食+系统），`novel-config.md` 里已经写死目标 1000 章、当前规划窗口第 1-50 章、窗口合同与剧情预算锁都是 `locked`。
+
+总大纲头部是技能规定的格式：
+
+```markdown
+## 类型标签
+- 主类型：经营流（美食小馆）+ 系统爽文，辅以老街人情悬疑线。
+- 爽点模式：打脸（质疑→真实出品→口碑反杀）+ 经营成长盘账爽点 + 伏笔回收。
+- 类型承诺检查重点：每次涨价/促销后要展示顾客支付能力变化；每次开发新菜要完成一次可围观的真做真吃。
+
+## 系统设计档案（摘要）
+- 系统名称/核心循环：灶神簿——试菜/口碑账页→获灶神点→兑换菜谱残页与食材票→再投入经营。
+- 永久限制：系统商店与面馆经营账严格分账；食材票货物只能自用；灶神点不得兑换现金。
+```
+
+`plan/总大纲.md` 里还生成了 6 个 `MYNOVEL:STAGE` 宏观阶段块（初立门户 / 站稳脚跟 / 连锁扩张 / 城市争锋 / 区域称雄 / 祖业传承），每个块都有非空的 `exit_condition`。技能明确要求：大纲只维护“计划状态”，正文后才能回写“当前状态”，两件事在文件上分开。
+```
+
+再问最后出前 10 章细纲时长什么样：
+
+```
+我：到最后出前 10 章细纲时长什么样？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：细化前要过三道闸门，然后每章细纲带 PLAN-NODE 规划块和事实锁；要给出事实锁的简化示例并解释字段含义。
+
+Codex：细化前先过三道闸门：同范围系统发展计划存在、窗口合同章号与宏观阶段匹配、剧情预算锁为 `locked`；第 1-50 章还要先有黄金三章微操细纲，缺了就停在上游。细纲每一章都带 `MYNOVEL:PLAN-NODE` 规划块，并且每章附“事实锁”清单。事实锁的结构由技能规定（以下为按提示词生成的简化示例）：
+
+```markdown
+## 第3章 事实锁
+- 硬事实：主线锚点 = 第2章末 "福记面馆招牌挂上"；expected_value = "福记面馆"
+- 时间锚：当前年份 = 同第1章；expected_value = "开业第3天"
+- 角色认知：赵全不知道旧账本在库房里；expected_value = "不知情"
+- 能力与资源：账面现金 = 3940 元；expected_value = "3940"
+- 关系承诺：欠供货商一笔旧账；expected_value = "第5章结清"
+- 因果债：第3章埋下旧钥匙；expected_value = "第8章回收"
+- 伏笔：禁止在回收前被使用或改义
+```
+
+字段含义是：`来源相对路径` 说明这条锁来自哪个文件，`选点文本/锚点` 指出它在原文的哪个位置，`expected_value` 是正文候选必须原样保留的稳定事实。写作时这些锁负责“防跑偏”，审查时负责“防改义”。
+```
+
+我们追问，这不就是写个清单吗，跟在对话里注意一下有什么区别：
+
+```
+我：这不就是写个清单吗，跟直接在对话里注意一下有什么区别？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：要解释“清单”和“事实锁”的区别，核心在于绑定到文件锚点和哈希，以及跨会话可复核，不能靠模型记忆。
+
+Codex：清单人人会列，区别在“绑定”和“验证”。技能把每一条锁都绑定到具体文件的锚点和哈希；正文生成只允许同义改写，不能动 `expected_value`。你跨会话继续写、或者让另一个模型来续写，它读的不是你的记忆，而是这串可复核的事实锁。写几百章后的一致性，靠的就是这些稳定的 token 对照，而不是“我记得”。
+```
+
+最后问按这个流程做，最容易卡在哪一步：
+
+```
+我：按这个流程做，最容易卡在哪一步？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：总结最常见的卡点，即把“生成过”当成“记下来了”，并给出排查建议。
+
+Codex：最常见的是把“生成过”当成“记下来了”：设定、伏笔和时间线没有落到文件里，写到后面就会互相打架。遇到时先按本节记录的顺序排查，通常都能定位到具体原因。
+```
 
 把这一节放回整条链路里看，它只是其中一段；真正动手时不必追求一次全对，先把命令跑通、把输出对上，遇到报错再回来查对应位置，往往比从头读一遍更快。
 
@@ -83,703 +158,509 @@ uv --version
 
 这一节的内容说起来不少，真正值得带走的是下面几条；把它们串起来看一遍，比单独记某一条更有用。
 
-- `python --version` 能返回版本号，说明 Python 装好了。
-- `python` 和 `py` 不是同一个东西，以 `sys.executable` 输出的真实路径为准。
-- `venv` 能给项目一个独立环境；直接调用 `Scripts\python.exe` 比先激活脚本更不容易出错。
-- `uv` 是可选工具，用来管理环境、安装包和临时运行工具，装好会节省很多折腾。
+- 长篇小说 Skill 的核心不是“写得多”，而是“写得一致、能找回”。
+- 开书必须先有市场证据；没有证据就用低可信度探索并写清覆盖原因，不能拿模型记忆冒充热度。
+- 结构分三层：宏观阶段 → 50 章窗口 → 分章细纲，细纲要先过闸门（系统计划、预算锁、黄金三章）。
+- 事实锁记录来源、锚点、哈希和 `expected_value`，是跨会话保证一致性的关键机制。
 
-## 1.2 安装 Node.js
+## 2.2 轻量替代：可恢复的 Markdown 工作流
 
 ### 简介
 
-Node.js 是一个让 JavaScript 在电脑本地运行的环境。你后面会遇到两件事依赖它：`npm install -g @openai/codex` 这条命令需要 Node.js 22 以上；`chrome-devtools-mcp` 等 MCP 服务器通过 `npx` 启动，也依赖 Node.js。如果只装 Python 不装 Node.js，很多工具还是跑不起来。Node.js 装好后你平时看不见它工作，但几乎所有按需启动的工具都靠它；这一节的重点是确认三个命令都能用，并弄清楚 npx 什么时候会帮你自动下载。
+`ani-book-skill` 是另一套面向 Codex 的长篇中文小说生产 Skill（Codex 原生适配后的技能名为 `produce-long-form-novel`）。它同样强调“可恢复”，但落地方式更直白：所有产物都是你能直接阅读和编辑的本地 Markdown / YAML 文件，外加一个叫 `novel-state.yaml` 的状态索引和一个控制器脚本 `novelctl.py`。中断后重新打开项目，技能先读状态文件判断你做到哪一步，再决定唯一的下一个动作，而不是从头重写。
 
-Windows 安装 LTS 版 `.msi` 时，安装向导里有个“Add to PATH”，不要取消。macOS 可以用 `brew install node@24`。需要维护多个 Node 版本时，可以用 `nvm` 管理。
+同样是长篇写作，这家的解法跟上一家不同：它把“可恢复”放在第一位，让你中断后能从状态文件里找回位置，而不是每次从头再来。
+
+安装方式：
+
+```powershell
+npx skills add https://github.com/ExplosiveCoderflome/ani-book-skill -a codex -g -y
+```
 
 ### 调用记录
 
-**我**：怎么知道 Node.js 装好了？
+我们先让模型初始化一个最简小说项目：
 
-**Codex**：打开新终端，运行三个版本命令：
-
-```powershell
-node --version
-# v22.19.0
-
-npm --version
-# 10.9.3
-
-npx --version
-# 10.9.3
+```
+我：初始化一个最简小说项目。
 ```
 
-`node` 是运行 JavaScript 的程序，`npm` 是随 Node.js 一起安装的包管理器，用来下载和管理工具包，`npx` 是 npm 附带的临时运行器。三个都有版本号，说明安装完整。
+模型给出如下回复：
 
-**我**：npx 到底有什么用？为什么要单独试一下？
+```
+> 思考过程：要用技能自带的控制器初始化，本机 python 缺 pyyaml，所以用 uvx --with pyyaml 临时补依赖，并给出真实的 JSON 输出和生成的工作区骨架。
 
-**Codex**：很多工具不用先手动安装，npx 会自动从 npm 仓库下载一次再运行。比如运行 `cowsay`：
+Codex：用技能自带的控制器初始化（本机 `python` 缺 `yaml`，这里用 `uvx --with pyyaml` 临时补依赖）：
 
 ```powershell
-npx --yes cowsay "Codex ready"
-#  _____________
-# < Codex ready >
-#  -------------
-#         \   ^__^
-#          \  (oo)\_______
-#             (__)\       )\/\
-#                 ||----w |
-#                 ||     ||
+uvx --with pyyaml python -X utf8 C:\Users\Administrator\.agents\skills\produce-long-form-novel\scripts\novelctl.py init --title "雾城回声" D:\novel-test
 ```
 
-`--yes` 表示“遇到下载确认提示时自动选择同意”，这样初学者不会卡在交互提示上。能看到那头牛，就说明 npx 能连接 npm 官方仓库，并且能下载、运行工具包。
+真实输出：
 
-**我**：为什么第二次运行明显更快？
-
-**Codex**：因为第一次已经把 `cowsay` 下载缓存到本机了。这次只花了几秒，走的是本地缓存，不是重新下载。以后用其他 npx 工具也是这个逻辑。
-
-**我**：怎么确认 npm 使用的是官方仓库？
-
-**Codex**：
-
-```powershell
-npm config get registry
-# https://registry.npmjs.org/
+```json
+{ "created": "D:\\novel-test",
+  "schema_version": 3,
+  "mode": "milestone_approval" }
 ```
 
-如果公司或学校把 npm 换成内部镜像，这里会显示其他地址。只要命令能正常下载工具，通常不用管它。
+工作区里立刻生成状态索引和骨架：
 
-**我**：如果第一次没跑通，通常先查哪里？
+```text
+novel-state.yaml           # 唯一状态源
+production/recovery.md     # 恢复提示，由状态文件生成
+production/token-usage.jsonl
+chapters/  volumes/  characters/  context-packages/  continuity/  exports/
+```
+```
 
-**Codex**：最常见的是环境问题：命令找不到、版本不对、PATH 没生效，先重开终端再看版本，比反复重装有效。把这一步记下来，下次再遇到同类问题时能少走不少弯路。
+接着问怎么知道现在该做什么：
+
+```
+我：怎么知道现在该做什么？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：初始化后运行 status，展示缺失的 7 个必需文件和 next_action，再展示全部就绪后的状态样例。
+
+Codex：刚初始化时运行 `status`，它老实告诉你 7 个必需文件还缺着：
+
+```json
+{
+  "title": "雾城回声",
+  "artifact_counts": { "missing": 7, "ready": 0, "in_progress": 0 },
+  "next_action": {
+    "type": "collect_opening_choices",
+    "target": "opening_choices",
+    "reason": "开书前需确认频道、发布形态和主要阅读回报",
+    "requires_approval": true
+  }
+}
+```
+
+每完成一步，它就推进一格。等书级简报、故事圣经、世界设定、角色索引、卷战略、卷骨架、节奏板、章节计划、上下文包和第一章正文都生成后，真实状态变成：
+
+```json
+{
+  "artifact_counts": { "missing": 0, "ready": 10, "in_progress": 0 },
+  "next_action": {
+    "type": "produce_artifact",
+    "target": "chapter_001_humanized",
+    "reason": "第 1 章下一生产步骤：humanization_revision"
+  }
+}
+```
+
+`production/recovery.md` 每次都按 `novel-state.yaml` 重新生成，所以它永远和最新状态一致。
+```
+
+再问第一章的计划和上下文长什么样：
+
+```
+我：那第一章的计划和上下文长什么样？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：展示 chapters/chapter-001/plan.md 的节选和 context-package.md 的已选/已裁文件列表，说明什么是“分层上下文”的实际样子。
+
+Codex：`chapters/chapter-001/plan.md` 是本章合同，节选：
+
+```markdown
+## 基本任务
+- 本章即时目标：陈默修好一只停摆的旧怀表，并在表盖内侧发现与妹妹有关的编号。
+- 主要阻力：怀表来源不明；回声带来剧烈头痛；开发公司的人当天下午就来取表。
+- 必须推进的剧情和信息：
+  1. 展示回声能力及其代价（W-001）。
+  2. 确认怀表与妹妹陈雾有关，但不解释她是否还活着。
+  3. 让陈默从“不想再碰旧事”转为“决定去旧港查证”。
+- 禁止越过的边界：不得让回声直接说出完整真相；不得让陈默凭空知道旧港路线。
+```
+
+`context-package.md` 则只挑本章真正需要的权威文件，并明确写“裁掉了什么”：
+
+```markdown
+## 已选权威文件
+| 文件 | 用途 |
+| novel-brief.md | 频道、阅读承诺、叙事偏好、字数例外 |
+| story-bible.md | 长期对立、主角成长路径、揭示梯度 |
+| characters/character-roster.md | 陈默、林小雨、老周的当下呈现 |
+
+## 因无关或超窗而裁掉
+- 第二卷的证人线、第三卷的妹妹现身。
+- 旧港内部结构、闸门记录细节。
+```
+
+这就是“分层上下文”的实际样子：不是把整本书塞给模型，而是按本章需要选文件、写清约束、裁掉无关内容。
+```
+
+我们再让模型写 500 字的一章试试：
+
+```
+我：那写 500 字的一章试试。
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：按章节计划写出 draft.md，给出字数统计和正文开头，并说明写完后 next 自动指向人类化润色。
+
+Codex：按章节计划实际写出了 `chapters/chapter-001/draft.md`。字数统计：不含空白 529 字符，其中汉字 446 字，落在计划的 450–650 字可接受区间附近。开头是：
+
+> 表盖合上的时候，指针停在两点十七分。
+>
+> 陈默把放大镜卡回眼眶，拿镊子挑开第一颗螺丝。这表不旧，壳子擦得发亮，可机芯里全是干掉的盐霜。有人带着它下过水，又把它泡在盐里十年。
+>
+> “从旧港出来的。”老周在电话里只说了这一句，就挂了。
+
+写完后 `next` 自动指向下一步——给正文做人类化润色，而不是回头重做大纲。
+```
+
+接着问写完一章怎么登记：
+
+```
+我：写完一章怎么登记？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：说明 start-step / finish-step 的流程，并给出真实的报错文本和 token 用量登记要求。
+
+Codex：先 `start-step`，返回唯一 `run_id` 并把该工件标成 `in_progress`；写完正文后 `finish-step`。这里有一个真实护栏：
+
+```text
+novelctl failed: measured records require input_tokens, output_tokens, or total_tokens
+```
+
+技能不接受“生成了但不知道花了多少”的记录。要么补上 token 数写入用量账本，要么像这次一样如实登记 `unavailable`（宿主没有暴露模型用量），绝不编一个数字。
+```
+
+再问如果手滑删了章节文件，再从“继续”叫它，会不会从头重写：
+
+```
+我：如果我手滑把刚才的章节文件删了，再从“继续”叫它，它会从头重写吗？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：分三步演示恢复逻辑：删除文件后 status/next 没变；validate 发现文件缺失；reconcile 把缺失当成受保护变更并重算下一步，还要 approve --overwrite 授权才能重写。
+
+Codex：不会。真实执行分三步暴露了它的恢复逻辑：
+
+```text
+rm chapters/chapter-001/draft.md
+```
+
+第一步，删完后看 `status` 和 `next`——它们居然没变，仍然是 `ready: 10`、下一步是润色。原因是 `status` / `next` 只读 `novel-state.yaml` 的状态投影，本身不扫描文件。
+
+第二步，跑 `validate`，它立刻发现文件真的没了：
+
+```json
+{
+  "valid": false,
+  "errors": [
+    "ready artifact is missing: chapter_001_draft -> ...\\chapters\\chapter-001\\draft.md"
+  ]
+}
+```
+
+第三步，跑 `reconcile`，它把缺失当成一次“受保护变更”，写回状态并重算唯一动作：
+
+```json
+{
+  "changed": ["chapter_001_draft"],
+  "stale": [],
+  "next_action": {
+    "type": "produce_artifact",
+    "target": "chapter_001_draft",
+    "reason": "首个 missing 产物：chapter_001_draft"
+  }
+}
+```
+
+恢复点被精确定位到“重写第 1 章正文”，计划和上下文包仍然 `ready`，整本书不用重做。之后直接 `start-step` 还会被拒绝——`artifact is protected; approve overwrite first`，必须先 `approve --overwrite` 授权，再只重写这一章；重写完成 `validate` 回到 `"valid": true`。
+```
+
+我们再问“可恢复”到底在保证什么：
+
+```
+我：所以“可恢复”到底是什么在保证？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：总结三样东西的分工：novel-state.yaml 记录进度，status/next 给下一步，validate/reconcile 发现偏差并修正；强调不靠模型记忆也不靠数文件。
+
+Codex：三样东西分工：`novel-state.yaml` 记录项目做到哪，`status` / `next` 给出当前唯一的下一步，`validate` / `reconcile` 负责发现“状态说好了、文件却不在”的偏差并把它修正成一个可执行的恢复动作。它不是靠模型记忆，也不是靠目录里数文件。
+```
+
+最后问这一步有没有容易被忽略的细节：
+
+```
+我：这一步有没有什么容易被忽略的细节？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：再次点出最常见的误区，并把零散步骤的因果关系串起来。
+
+Codex：最常见的是把“生成过”当成“记下来了”：设定、伏笔和时间线没有落到文件里，写到后面就会互相打架。先别怀疑工具本身，多数情况是环境、路径或前置条件没对上。
 
 这些步骤看起来零散，其实前后是有因果的：前一步的产物就是后一步的输入，中间哪一环没对上，后面就会以各种奇怪的方式报错。
+```
 
 ### 总结
 
 这一节的内容说起来不少，真正值得带走的是下面几条；把它们串起来看一遍，比单独记某一条更有用。
 
-- `node`、`npm`、`npx` 三个版本命令都要有输出，安装才算完整。
-- npx 负责“临时下载并运行工具”，适合 `chrome-devtools-mcp` 这类按需启动的服务器。
-- 第一次运行下载慢是正常的，之后会命中本地缓存。
-- Windows 安装时不要取消“Add to PATH”，否则新终端找不到 `node`。
+- `ani-book-skill` 的产物是纯 Markdown / YAML，能直接读、能编辑、能备份。
+- `novelctl.py` 提供 `init / status / next / start-step / finish-step / validate / reconcile / export` 等确定性命令。
+- 状态索引（`novel-state.yaml`）记录项目做到哪，`recovery.md` 由它自动生成。
+- `status` / `next` 只读状态投影，不检查文件是否真的在；文件丢失由 `validate` 发现，再由 `reconcile` 重算恢复点。
+- `finish-step` 强制登记 token 用量，是防止“生成了什么都不知道”的护栏。
+- 中断后续写，先 `status` / `next` 看下一步，再 `validate` 核对文件，缺失时用 `reconcile` 恢复，而不是从头重建。
 
-## 1.3 安装 Codex CLI
+## 2.3 替代方案对照：vibe-noveling
 
 ### 简介
 
-Codex CLI 是全书终端操作的基础。它是 OpenAI 官方命令行工具，安装方式有两种：macOS/Linux 用安装脚本，Windows 用 PowerShell 安装脚本；如果已经在 1.2 节装好 Node.js 22 以上，也可以直接执行 `npm install -g @openai/codex`。装好之后要用 ChatGPT 账号或 API Key 登录，登录状态会保存下来，下次不用重新认证。Codex CLI 是后面所有 Skill 和 MCP 的主入口，值得多花几分钟把安装、登录、自检这三件事一次理顺，后面就不会在工具层面反复卡壳。
+`vibe-noveling` 是一套更完整的网文创作工作流，仓库同时提供 Claude 插件版和 Codex 适配版。Claude 插件层包含 13 个技能目录和 4 个子 Agent；Codex 适配层则收敛成一个伞形技能，用路由决定当前该做讨论、规划还是写作。它用“先初始化项目、再逐步讨论 → 规划 → 写作”的节奏，避免一上来就憋正文。
+
+对比前两节：`chinese-longnovel-skill` 重结构、`ani-book-skill` 重可恢复文件，`vibe-noveling` 重创作者对话节奏与“世界记忆”。第三家方案更看重与创作者的对话节奏，适合喜欢先聊清楚再动笔的人；三套方案放在一起对比，你才能判断自己更适合哪一种。
+
+安装要注意一个差异点：`npx skills add` 只会把 Claude 插件层的 11 个工作流子技能装进 `~/.agents/skills`，`$vibe-noveling` 伞形技能要按仓库 `codex/README.md` 手动复制适配层到 `~/.codex/skills/vibe-noveling`，并用技能自带的 `quick_validate.py` 校验。
 
 ### 调用记录
 
-**我**：怎么确认 Codex 已经装好？
+我们先问装好后能不能直接说 `$vibe-noveling` 就能用：
 
-**Codex**：
-
-```powershell
-codex --version
-# codex-cli 0.155.1
+```
+我：装好后直接说 `$vibe-noveling` 就能用吗？
 ```
 
-**我**：怎么确认登录了？
+模型给出如下回复：
 
-**Codex**：
-
-```powershell
-codex login status
-# Logged in using an API key - sk-mMY9A***9cPDN
 ```
+> 思考过程：解释 npx skills add 只装了 11 个子技能，没有伞形技能，需要手动复制适配层并用 quick_validate.py 校验，给出校验输出。
 
-这里只显示前几位和后四位，完整的密钥被隐藏了。如果你看到类似“Logged in”的句子，说明身份信息已经保存。
-
-**我**：重启电脑或新开一个终端，登录状态还在吗？
-
-**Codex**：在。Codex 会把登录信息保存到 `C:\Users\Administrator\.codex\auth.json`。用 `codex doctor` 可以做一个全面体检：
-
-```powershell
-codex doctor
-# Codex Doctor v0.155.1 · windows-x86_64
-# ✓ install      consistent
-# ✓ auth         auth is configured
-#    auth storage mode        File
-#    stored API key           true
-# ✓ config       config.toml  parse ok
-```
-
-看到 `stored API key true`，就说明下次打开终端直接输入 `codex` 就能用，不需要重新输账号密码。
-
-**我**：登录成功就一定能正常对话吗？
-
-**Codex**：不一定。有一次真正提问时，Codex 返回了：
+Codex：不能直接用。实测 `npx skills add wwt87/vibe-noveling -a codex -g -y` 只安装了 11 个子技能（`novel-init`、`novel-discuss`、`novel-bookplan`、`novel-plan`、`novel-write`、`novel-revise`、`novel-sync`、`novel-progress`、`novel-snapshot`，以及 `booming`、`fuck-it`），并没有 `$vibe-noveling` 伞形技能。按仓库 `codex/README.md` 把 `codex/skills/vibe-noveling` 复制到 `~/.codex/skills/vibe-noveling` 后，用校验脚本确认：
 
 ```text
-ERROR: unexpected status 503 Service Unavailable
+Skill is valid!
+```
 ```
 
-原因是当前供应商的模型通道不可用，而不是 Codex 没装好或没登录。遇到这种情况，用 `codex doctor` 确认安装、配置、auth 三项正常，再去管模型供应商。这正是下一节 `CC Switch` 要解决的问题。
+再问怎么初始化一本书：
 
-**我**：按这个流程做，最容易卡在哪一步？
+```
+我：那怎么初始化一本书？
+```
 
-**Codex**：最常见的是环境问题：命令找不到、版本不对、PATH 没生效，先重开终端再看版本，比反复重装有效。遇到时先按本节记录的顺序排查，通常都能定位到具体原因。
+模型给出如下回复：
+
+```
+> 思考过程：技能路由到 novel-init，执行初始化脚本，给出真实的创建文件列表。
+
+Codex：技能路由到 `/novel-init`，读取 `references/init.md`，然后执行它的初始化脚本：
+
+```powershell
+python C:\Users\Administrator\.codex\skills\vibe-noveling\scripts\init_project.py . --title "一个失业的39岁程序员" --genre "都市现实"
+```
+
+真实输出：
+
+```text
+Vibe Noveling project initialized: ...\my-novel
+Created files:
+- CLAUDE.md
+- memory\_graph.json
+- memory\_index.json
+- memory\past.md
+- ...（共 14 个文件、16 个子目录）
+```
+```
+
+接着问初始化之后会不会直接开始写章节：
+
+```
+我：初始化之后它会直接开始写章节吗？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：说明不会直接写正文，并给出验收骨架的实测点，包括 chapters\vol-01\ch-0001 文件数为 0、memory\past.md 等。
+
+Codex：不会。验收骨架的几个实测点：
+
+```text
+chapters\vol-01\ch-0001   → 真实文件数为 0
+memory\past.md            → “尚无已完成章节。”
+future\10-book.md         → “待规划。”
+CLAUDE.md 中的“灵魂、爽感公式、主角光谱” → 待定
+```
+
+也就是说，初始化只搭“骨架”，正文一个字都没写。
+```
+
+我们再问它有没有专业技能和子 Agent，各是什么：
+
+```
+我：它有专业技能和子 Agent 吗？各是什么？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：按仓库实际文件回答：Claude 插件层 13 个技能目录（其中 2 个内部辅助，11 个工作流），4 个子 Agent 及其分工；Codex 适配层 1 个伞形技能，内部 14 个 reference 文件做路由。
+
+Codex：以仓库实际文件为准，Claude 插件层是 13 个技能目录，其中 `novel-knowledge`、`novel-name` 是内部辅助，其余 11 个是工作流技能；另有 4 个子 Agent：`context-collector`（收集上下文）、`consistency-guard`（一致性检查）、`writer-dazhongma` 与 `writer-zhouzi`（两种风格稿作者）。Codex 适配层则是 1 个伞形技能，内部用 14 个 reference 文件做路由。
+```
+
+再问它是按什么顺序推进创作：
+
+```
+我：它是按什么顺序推进创作？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：引用 CLAUDE.md 的工作流 discuss → bookplan → plan → write，并说明 novel-sync 和 novel-snapshot 的作用。
+
+Codex：`CLAUDE.md` 里写明的工作流是 `discuss → bookplan → plan → write`：先讨论世界和角色，再做全书规划，然后单章规划，最后才写正文。每完成一章，还有 `novel-sync` 负责把剧情摘要回写到 `memory/` 的知识图谱，`novel-snapshot` 负责存档打点。
+```
+
+最后问如果第一次没跑通，通常先查哪里：
+
+```
+我：如果第一次没跑通，通常先查哪里？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：点出最常见的误区，并给出一句总结性建议。
+
+Codex：最常见的是把“生成过”当成“记下来了”：设定、伏笔和时间线没有落到文件里，写到后面就会互相打架。把这一步记下来，下次再遇到同类问题时能少走不少弯路。
 
 如果只记住一句，那就是：先让最小链路真实跑通，再谈优化和自动化；跳过验证直接堆功能，最后往往要花更多时间回头补。
+```
 
 ### 总结
 
 这一节的内容说起来不少，真正值得带走的是下面几条；把它们串起来看一遍，比单独记某一条更有用。
 
-- 安装成功的标志是 `codex --version` 有版本号。
-- `codex login status` 能确认登录状态，密钥不会完整显示。
-- 登录凭据保存在 `~/.codex/auth.json`，新终端仍然有效。
-- `codex doctor` 是排错第一工具；它说“配置正常”但对话仍报 503，问题通常出在模型供应商，不在 Codex 本身。
+- `vibe-noveling` 提供的是“讨论节奏 + 世界记忆”，比前两套更强调先聊清楚再动笔。
+- 安装时记住差异：`npx skills add` 不装伞形技能，需要按 `codex/README.md` 手动复制适配层。
+- 初始化只建骨架（`memory/`、`future/`、`chapters/vol-01/ch-0001` 等），不会直接出章。
+- 子 Agent 分工明确：收集上下文、一致性守卫、两位不同文风的写手。
 
-## 1.4 安装 Codex Desktop
+## 2.4 伏笔追踪与一致性审查
 
 ### 简介
 
-Codex Desktop 是 Codex 的图形界面形态。它的好处是适合同时打开多个项目、并行处理多个任务线程，而且项目里的文件、审批、对话记录都看得见。macOS 从官方下载 `.dmg`，Windows 可以通过 `codex app` 自动打开安装器，也可以从 Microsoft Store 或 `winget` 安装。桌面版不是必须品，但对喜欢同时开多个项目、多看几个窗口的人来说，它比光秃秃的命令行直观得多，也更容易判断正在发生什么。
+伏笔在这套技能里被当作“待偿债务”来管理：埋下时登记为债务，写入细纲计划、章节总结和阶段摘要；写作时检查它是否被提前消费，审查时检查它是否超期、变义或悄悄消失。这一节用 2.1 的技能做一次伏笔登记与一致性审查，展示输出格式和“当前状态”那一列的意义。
 
-需要特别强调的是“审批边界”：桌面版打开本地文件夹后，并不会默认获得随意修改文件的权限。你第一次要求它做有副作用的事，它会弹审批；如果它未经提示就修改文件，说明审批策略需要调整。
+伏笔是长篇小说里最容易埋了忘收的东西，把它当成一笔笔必须还清的债来管理，写作和审查就有了各自明确的抓点。
 
 ### 调用记录
 
-**我**：这台电脑上 Codex Desktop 装了吗？
+我们先让模型在细纲里登记一条伏笔：
 
-**Codex**：我先检查了两处，没有发现桌面版安装记录：
-
-```powershell
-Get-AppxPackage *Codex* | Select-Object Name,PackageFullName
-# 没有输出，说明不是 Microsoft Store 安装方式
-
-winget search --id "Codex" --source msstore
-# 找不到与输入条件匹配的程序包。
+```
+我：在细纲里登记一条伏笔：第 3 章埋下旧钥匙，计划第 8 章回收。
 ```
 
-所以这台电脑目前只有命令行版，没有桌面版。
+模型给出如下回复：
 
-**我**：那 Windows 上怎么安装桌面版？
+```
+> 思考过程：按技能要求，伏笔不进对话，进 plan/伏笔追踪.md，给出一条伏笔记录的完整字段。
 
-**Codex**：Codex CLI 自带一个入口：`codex app`。如果检测到桌面版不存在，它会自动打开安装器下载页面；已安装时则会直接启动桌面程序：
+Codex：按技能要求，伏笔不进对话，进 `plan/伏笔追踪.md`，每条记录至少含：埋设章、计划回收章、当前状态、来源文件与锚点：
 
-```powershell
-codex app --help
-# Launch the Desktop app (opens the app installer if missing)
-# Usage: codex app [OPTIONS] [PATH]
-# Arguments:
-#  [PATH]   Workspace path to open in the Desktop app
+```markdown
+## 伏笔：旧钥匙
+- 埋设章：第3章（主线锚点：周承在福记面馆的暗格里发现旧钥匙）
+- 计划回收章：第8章
+- 当前状态：pending（未释放）
+- 来源：plan/大纲_第1-50章.md → 第3章 PLAN-NODE
+- 禁止事项：回收前不得使用、不得改义、不得由无关角色持有
 ```
 
-也就是说，你不需要自己到处找安装包，安装好 CLI 后从终端敲 `codex app` 就行。
+在正文创作阶段，这条债务会进入第 3 章的事实锁（“因果债”和“伏笔”两行），第 5-7 章的事实锁里也会带“不得使用旧钥匙”的提醒；只有第 8 章才把它标成 `released`。
+```
 
-**我**：我只想让它看看目录，不想让它改文件，怎么验证审批边界？
+接着问怎么检查它没被乱写：
 
-**Codex**：先看当前策略，`codex doctor` 里有这段：
+```
+我：那我怎么检查它没被乱写？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：执行一致性检查，输出按硬伤 / 风险 / 伏笔状态 / 通过项四类分类，并给出第 8 章对应伏笔的示例输出。
+
+Codex：执行一致性检查，技能输出按固定四类分类：硬伤 / 风险 / 伏笔状态 / 通过项。伏笔状态必须给出“埋设章、计划回收章、当前状态”三个要素。检查本章（第 8 章）对应伏笔的示例输出：
 
 ```text
-✓ sandbox      restricted fs + restricted network · approval OnRequest
-  approval policy          OnRequest
-  filesystem sandbox       restricted
-  network sandbox          restricted
+硬伤：无
+风险：
+- 第6章正文提及“周承腰间的钥匙”，疑似提前使用 → 需回看锚点确认不是同物
+伏笔状态：
+- 旧钥匙：第3章埋设，计划第8章回收，当前 pending
+- 若第6章为同物：状态改判为由无关场景提前消费，方案为回写第6章或调整第8章回收方式
+通过项：
+- 第7章对话未提及钥匙，未提前泄漏
+- 角色认知与事实锁一致
 ```
 
-`OnRequest` 的意思是“遇到需要权限的操作会先问你”。在桌面版里打开一个已有项目，然后对它说：**“解释目录结构，不要修改任何文件”**。如果它认真回答而没有弹修改权限，正常；如果它未经提示就创建或修改文件，说明这台机器的审批策略设置得过松，需要收紧。
+这里的关键点是检查报告不做“看起来没关系”的模糊结论，而是逐条给出证据位置与修复方向。
+```
 
-**我**：这一步有没有什么容易被忽略的细节？
+我们再问为什么把伏笔叫“债务”：
 
-**Codex**：最常见的是环境问题：命令找不到、版本不对、PATH 没生效，先重开终端再看版本，比反复重装有效。先别怀疑工具本身，多数情况是环境、路径或前置条件没对上。
+```
+我：为什么把伏笔叫“债务”？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：解释伏笔需要兑现，并列出三宗罪：提前消费、超期、变义，以及一致性审查查的其他硬伤。
+
+Codex：因为它需要兑现。作家记录它、技能盯着它：没到回收窗口就用了，叫“提前消费”；过了窗口太久没用，叫“超期”；被改成了别的东西，叫“变义”。一致性审查本质上是查这三点，再加死人复活、时间线错位、能力凭空升级这些硬伤。
+```
+
+最后问按这个流程做，最容易卡在哪一步：
+
+```
+我：按这个流程做，最容易卡在哪一步？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：再次点出最常见的误区，并说明保留失败和阻断记录的目的。
+
+Codex：最常见的是把“生成过”当成“记下来了”：设定、伏笔和时间线没有落到文件里，写到后面就会互相打架。遇到时先按本节记录的顺序排查，通常都能定位到具体原因。
 
 本节记录里保留了失败和阻断，不是为了吓人，而是让你知道正常使用中也会遇到这些情况，遇到了照着排查即可，不必怀疑自己。
+```
 
 ### 总结
 
 这一节的内容说起来不少，真正值得带走的是下面几条；把它们串起来看一遍，比单独记某一条更有用。
 
-- 桌面版不是 CLI 的必需品，但适合多任务并行。
-- Windows 上可用 `codex app` 自动获取安装器，也可以用 Microsoft Store。
-- 首次打开项目时，先做只读验证，确认它不会擅自修改文件。
-- 看到“解释目录结构”也要留意是否弹了写权限；弹了才说明审批生效。
-
-## 1.5 用 CC Switch 切换模型
-
-### 简介
-
-CC Switch 是一个图形化管理工具，用来管理 Codex 和 Claude Code 的模型供应商配置，避免手改 `~/.codex/auth.json` 和 `config.toml`。它内置 DeepSeek、Qwen、Kimi、GLM 等 50 多个供应商预设。你在界面上选择供应商，保存后，CC Switch 会自动更新 Codex 的配置文件；切换模型后重启或重新打开 Codex 对话，新模型就生效。模型供应商这件事平时看不见，可一旦切错，Codex 会在你真正提问时才报错；用 CC Switch 把这些配置统一管起来，相当于给模型切换上了一道保险。
-
-Windows 上可以从 Releases 下载安装包，macOS 可执行 `brew install --cask cc-switch`。如果你已经让 CC Switch 接管 Codex 配置，`config.toml` 里的 `model_provider`、`model`、`base_url` 会指向它的本地代理。
-
-### 调用记录
-
-**我**：怎么知道 CC Switch 在管理 Codex 的配置？
-
-**Codex**：先确认程序在运行，再看 Codex 配置文件。本机 CC Switch 确实在运行：
-
-```powershell
-Get-Process cc-switch | Select-Object Path
-# C:\Users\Administrator\AppData\Local\Programs\CC Switch\cc-switch.exe
-```
-
-配置文件 `C:\Users\Administrator\.codex\config.toml` 的开头是：
-
-```toml
-model_provider = "custom"
-model = "deepseek-ai/deepseek-v4.1-flash"
-model_reasoning_effort = "high"
-
-[model_providers.custom]
-name = "custom"
-base_url = "http://127.0.0.1:15721/v1"
-```
-
-`base_url` 指向 `127.0.0.1:15721`，这是 CC Switch 的本地代理地址。看到这两条，就说明 Codex 不直接连模型网站，而是先经过 CC Switch。
-
-**我**：界面上到哪里看 Codex 的供应商？
-
-**Codex**：打开 CC Switch，找到 Codex 分类。本机当前配置了两个供应商：
-
-```text
-ys365          当前使用
-OpenAI Official
-```
-
-选中“ys365”的那一行，通常就是当前模型供应商。
-
-**我**：切换供应商后，到底改了哪些文件？
-
-**Codex**：仍然只有 Codex 的配置文件。CC Switch 会把 `config.toml` 里的 `model_provider`、`model`、`base_url` 等字段替换成新供应商的值，然后保存。具体字段取决于供应商类型，但你可以用同一条命令核对：打开 `~/.codex/config.toml`，看 `model_provider` 和 `model` 是不是已经变成新选择。切换之前，最好先确认新供应商的 API Key 有效。
-
-**我**：我切换之后问 Codex，为什么还是报 503？
-
-**Codex**：这说明“配置能切换”和“模型通道可用”是两回事。本机 `ys365` 供应商就曾经返回过：
-
-```text
-No available channel for model deepseek-ai/deepseek-v4.1-flash
-```
-
-意思是这个模型没有可用通道，不是 Codex 坏了。处理顺序是：先在 CC Switch 界面上看供应商 API Key 是否已填、模型名是否存在于该供应商；换一个能用的供应商；保存后重新打开 Codex 对话再试。
-
-**我**：如果第一次没跑通，通常先查哪里？
-
-**Codex**：最常见的是环境问题：命令找不到、版本不对、PATH 没生效，先重开终端再看版本，比反复重装有效。把这一步记下来，下次再遇到同类问题时能少走不少弯路。
-
-做完这一节，建议把关键命令和输出随手记在自己的笔记里；下次再遇到同类任务，翻自己的记录通常比重新搜索更快。
-
-### 总结
-
-这一节的内容说起来不少，真正值得带走的是下面几条；把它们串起来看一遍，比单独记某一条更有用。
-
-- CC Switch 的作用是替你把模型供应商配置写到 `~/.codex/config.toml`。
-- 看到 `base_url` 指向本机 `127.0.0.1` 端口，说明 Codex 走了 CC Switch 的本地代理。
-- 切换供应商后，模型变化会体现在 `model_provider` 和 `model` 字段里。
-- 503 “No available channel” 多半是供应商侧的问题，不是 Codex 的问题。
-
-## 1.6 Skill 的目录结构与触发机制
-
-### 简介
-
-Skill 是给 Codex 的一套“工作说明书”，它不是模型本身自带的能力，而是一个文件夹。Codex 根据用户的话，决定要不要读取这个文件夹里的说明。一个最小的 Skill 包含一个 `SKILL.md` 文件，文件开头是 YAML 格式的 `name` 和 `description`；可选地，还可以有 `scripts/`、`references/`、`assets/` 等目录。技能文件看起来只是几个文本文件，但它们的摆放和组织方式决定了 Codex 什么时候会'想起'它们；把这个机制理解透，后面装再多技能也不会乱。
-
-Skill 的触发是分阶段的：不管哪种任务，Codex 都能先看到 `name` 和 `description`，它们决定“这个技能要不要被考虑”；命中之后，Codex 才读取 `SKILL.md` 正文；只有正文需要时，才会加载 `scripts/`、`references/` 之类的附加资源。这就是“渐进加载”。
-
-本机装有 Codex 自带的 `skill-creator`，它是一个交互式生成 Skill 骨架的工具。下面用它创建一个 `todo-check` 技能，实际看一下目录结构和验证过程。
-
-### 调用记录
-
-**我**：我想做一个技能，读取项目里的 `TODO.md`，列出没做完的事。你能帮我建吗？
-
-**Codex**：好的，我按内置 `skill-creator` 的初始化脚本生成骨架：
-
-```powershell
-py C:\Users\Administrator\.codex\skills\.system\skill-creator\scripts\init_skill.py todo-check --path C:\Users\Administrator\AppData\Local\Temp\codex-skillcreate\.agents\skills
-# Initializing skill: todo-check
-#    Location: C:\Users\Administrator\AppData\Local\Temp\codex-skillcreate\.agents\skills
-#    Resources: none (create as needed)
-# [OK] Created skill directory: ...\.agents\skills\todo-check
-# [OK] Created SKILL.md
-# [OK] Created agents/openai.yaml
-# [OK] Skill 'todo-check' initialized successfully
-```
-
-生成出来的目录只有两个文件，不需要的东西一个都没有。把它放在项目的 `.agents/skills/` 下，Codex 就能从项目里读取它：
-
-```text
-todo-check/
-|-- SKILL.md
-`-- agents/
-    `-- openai.yaml
-```
-
-**我**：为什么是这样？不是每个技能都要有脚本吗？
-
-**Codex**：不是。`scripts/`、`references/`、`assets/` 都只在真正需要时才添加。`todo-check` 只需要读一个 Markdown 文件，把规则写在 `SKILL.md` 里就够了，加上脚本反而让技能变重。
-
-**我**：那 `SKILL.md` 最关键的是哪部分？
-
-**Codex**：是文件最开头的 frontmatter，也叫前置信息：
-
-```markdown
----
-name: todo-check
-description: 只读检查项目根目录的 TODO.md，列出所有未完成的事项（- [ ]）。当用户问“看看我还有什么没做完”“还有什么待办”或类似问题时使用。
----
-
-# Todo Check
-
-只读检查项目根目录的 `TODO.md`，告诉用户还有哪些事没做完。不要修改任何文件。
-```
-
-`name` 是技能的唯一名字，`description` 是触发条件。Codex 会拿用户说的话和这段 `description` 匹配：用户说“看看我还有什么没做完”，正好落在 `description` 里写的触发场景上。
-
-**我**：写完怎么验证这个技能文件格式合法？
-
-**Codex**：用 `skill-creator` 自带的校验脚本。第一次运行会遇到两个真实问题：Python 3.10 缺少 `yaml` 模块，以及中文文件被系统编码误读。解决办法是临时提供 `pyyaml` 并加 UTF-8 模式：
-
-```powershell
-uvx --with pyyaml python -X utf8 C:\Users\Administrator\.codex\skills\.system\skill-creator\scripts\quick_validate.py D:\codex-skillcreate\.agents\skills\todo-check
-# Skill is valid!
-```
-
-输出 `Skill is valid!` 就说明 `SKILL.md` 的格式可以被 Codex 读取。
-
-**我**：现在让它真的列一下待办，看看技能规则有没有用。
-
-**Codex**：项目里先放一个 `TODO.md`：
-
-```markdown
-# 我的待办
-
-- [ ] 给登录页加上“忘记密码”入口
-- [x] 修复首页图片加载失败的问题
-- [ ] 把数据库连接超时改成 10 秒
-- [ ] 给导出功能补一条使用说明
-```
-
-按 `SKILL.md` 执行：只收集 `- [ ]` 开头、跳过第二行 `- [x]`，结果如下：
-
-```text
-未完成事项：
-1. 给登录页加上“忘记密码”入口
-2. 把数据库连接超时改成 10 秒
-3. 给导出功能补一条使用说明
-共 3 条
-```
-
-`SKILL.md` 里的“跳过已完成项、按原顺序输出、不要新建文件”这三条规则，都真实地反映在结果里了。
-
-**我**：按这个流程做，最容易卡在哪一步？
-
-**Codex**：最常见的是环境问题：命令找不到、版本不对、PATH 没生效，先重开终端再看版本，比反复重装有效。遇到时先按本节记录的顺序排查，通常都能定位到具体原因。
-
-把这一节放回整条链路里看，它只是其中一段；真正动手时不必追求一次全对，先把命令跑通、把输出对上，遇到报错再回来查对应位置，往往比从头读一遍更快。
-
-### 总结
-
-这一节的内容说起来不少，真正值得带走的是下面几条；把它们串起来看一遍，比单独记某一条更有用。
-
-- Skill 的最小单元是一个带 `SKILL.md` 的文件夹。
-- `frontmatter` 的 `name` 决定名字，`description` 决定什么时候被触发。
-- `scripts/`、`references/`、`assets/` 是可选资源，命中后才渐进加载。
-- 校验技能时如果缺 `yaml`，用 `uvx --with pyyaml` 临时补上；中文乱码用 `-X utf8` 或设置 `PYTHONUTF8=1` 解决。
-
-## 1.7 安装第一个 Skill 并验证隐式触发
-
-### 简介
-
-Codex 内置了 `skill-installer`，它可以从官方技能列表或任意 GitHub 仓库安装技能，不需要你手动克隆目录。第一个要安装的 Skill 是 `create-plan`，它专门在用户要求规划时，把需求整理成一份结构清晰的计划。第一个技能不必复杂，先把'装上、被触发、给出产出'这条最小链路完整跑通；这一关过了，后面再学什么技能都是同一套思路。
-
-这里还要理解什么叫“隐式触发”：不需要输入 `$create-plan` 这种显式命令，只要你自然地说“给我一个计划”，Codex 就有机会根据 `description` 自动匹配到 `create-plan`。本书第4章会正式用它开发软件，所以这一章把它当作贯穿全书的种子技能。下面的记录来自 `create-plan` 的 `SKILL.md` 被加载后的一次真实执行。
-
-### 调用记录
-
-**我**：skill-installer 能列出哪些可安装技能吗？
-
-**Codex**：可以，运行它的列表脚本（本机 `py` 是 3.14，能正常联网；默认 `python` 的 SSL 证书会报错，这里用 `py`）：
-
-```powershell
-py C:\Users\Administrator\.codex\skills\.system\skill-installer\scripts\list-skills.py
-# 1. aspnet-core
-# 2. chatgpt-apps
-# 3. cli-creator
-# ...
-# 39. yeet
-```
-
-列表来自 GitHub 上的官方精选目录。不过 `create-plan` 不在这个精选列表里，它在 ComposioHQ 的 `awesome-codex-skills` 仓库中。
-
-**我**：那帮我从那个仓库安装 `create-plan`。
-
-**Codex**：使用 `skill-installer` 的安装脚本，指定仓库、技能路径和分支。这个仓库的默认分支是 `master`，不是 `main`，所以要加 `--ref master`：
-
-```powershell
-py C:\Users\Administrator\.codex\skills\.system\skill-installer\scripts\install-skill-from-github.py --repo ComposioHQ/awesome-codex-skills --path create-plan --ref master
-# Installed create-plan to C:\Users\Administrator\.codex\skills\create-plan
-```
-
-之后 `C:\Users\Administrator\.codex\skills\create-plan` 里就有 `SKILL.md` 了。
-
-**我**：那我第一次不加 `--ref master`，为什么失败了？
-
-**Codex**：真实报错是：
-
-```text
-fatal: Remote branch main not found in upstream origin
-```
-
-外面还可能包着一层 `destination path ... already exists`。这不是你的安装步骤错了，而是脚本默认去克隆 `main` 分支，而 `ComposioHQ/awesome-codex-skills` 仓库用的是 `master`。加上 `--ref master` 就能成功。如果失败后留下临时目录，清掉 `%TEMP%\codex\skill-install-*` 再重试。
-
-**我**：`create-plan` 的 `SKILL.md` 里到底要求什么？
-
-**Codex**：关键要求是这些：
-
-- 保持只读，不写文件，最终计划直接放在回复里。
-- 先快速扫描 `README.md`、`docs/` 和相关源码。
-- 最多追问 1 到 2 个问题，而且只在“不问就没法负责任地规划”时才问；信息够用就做合理假设。
-- 计划必须包含 Scope、Action items、Open questions，Action items 按“发现 → 修改 → 测试 → 收尾”排序。
-
-**我**：那我现在给一个真实项目提需求：给命令行工具 `taskctl` 加一个 `--dry-run` 选项。
-
-**Codex**：它先扫描了 `README.md`、`taskctl.py`、`test_taskctl.py`，发现这是一个用 `argparse` 管理 `add/list/done/clean` 四个子命令的小工具。因为需求信息足够，它没有反反复复追问，只记录了两个假设：`--dry-run` 是全局选项，只作用于会修改 JSON 的 `add/done/clean`，不改变 `list`。然后按模板给出计划：
-
-```markdown
-# Plan
-
-为 taskctl 增加 --dry-run，让 add/done/clean 可预览变更而不写 tasks.json；复用现有 argparse/load/save 与命令处理器，补充 CLI/文件不变性测试和帮助文档。
-
-## Scope
-- In: taskctl.py 参数与执行路径；README 命令说明；test_taskctl.py 覆盖 add/done/clean 的 dry-run、不变性、退出码和参数解析。
-- Out: 数据格式迁移、list 输出语义重做、非 dry-run 行为改变、打包发布。
-
-## Action items
-[ ] 明确 --dry-run 的全局位置与帮助文本，并检查现有 --db 参数在子命令前后的调用方式；必要时统一 CLI 参数解析以支持文档示例和现有测试。
-[ ] 在 taskctl.py 的修改型命令路径中读取并计算变更，dry-run 时跳过 save，同时保留可区分的预览输出和成功退出码。
-[ ] 保证非修改型 list 忽略或合理处理 --dry-run，避免误写文件并保持现有输出。
-[ ] 更新 README.md，说明 --dry-run 的适用命令、输出含义、不会修改 tasks.json，以及 --db 示例。
-[ ] 为 add/done/clean 增加测试：dry-run 后 JSON 完全不变；正常模式仍写入；done 找不到 ID 仍返回 1；clean 的预览数量准确。
-[ ] 验证 argparse 帮助/参数位置、空库和重复运行等边界，运行 pytest，并手工执行 py taskctl.py --help 与各修改型命令的 dry-run。
-
-## Open questions
-- 无（按上述假设可直接实施）。
-```
-
-注意这里最值得学习的点：它没有一上来就说“我来写代码”，而是先读代码、识别边界、说明假设，再给你一份可以照着执行的计划。
-
-**我**：这一步有没有什么容易被忽略的细节？
-
-**Codex**：最常见的是环境问题：命令找不到、版本不对、PATH 没生效，先重开终端再看版本，比反复重装有效。先别怀疑工具本身，多数情况是环境、路径或前置条件没对上。
-
-这些步骤看起来零散，其实前后是有因果的：前一步的产物就是后一步的输入，中间哪一环没对上，后面就会以各种奇怪的方式报错。
-
-### 总结
-
-这一节的内容说起来不少，真正值得带走的是下面几条；把它们串起来看一遍，比单独记某一条更有用。
-
-- `skill-installer` 能按仓库路径安装 Skill，装好后目录在 `~/.codex/skills` 下。
-- `create-plan` 的流程约束是“先扫描、再假设、最后输出计划”。
-- 它会先用问题清单覆盖验收条件；信息足够时，最多问 1 到 2 个问题，或者把假设写进 Open questions。
-- 种子技能装好后，后续章节里的开发任务都会用到。
-
-## 1.8 MCP 与 Skill 的分工
-
-### 简介
-
-MCP（Model Context Protocol）是“把外部工具连上”的标准协议，Skill 是“决定怎么用”的工作说明书。这句话是全书反复出现的基础认知：MCP 给 Codex 提供原子能力，比如打开浏览器、读文件、执行调试器；Skill 把这些能力组合成固定流程，比如“先启动、再定位、再填写、再校验”。MCP 和 Skill 的分工是全书反复出现的主线，这一节用一个小小的 echo 实例，把'配置被识别'和'真正握手成功'这两种状态的区别讲清楚。
-
-Codex 的 MCP 服务器声明在 `~/.codex/config.toml` 中。使用 `command` 和 `args` 的是 stdio 服务器，也就是 Codex 启动一个本地命令，通过标准输入输出和它通信；使用 `url` 的是远程服务器。本节不引入复杂服务器，而是添加一个最简单的临时配置，让你看清配置长什么样、Codex 是怎么识别的。
-
-### 调用记录
-
-**我**：怎么查看 Codex 当前有哪些 MCP？
-
-**Codex**：
-
-```powershell
-codex mcp list
-# No MCP servers configured yet. Try `codex mcp add my-tool -- my-command`.
-```
-
-一开始是空的，说明还没有连接任何外部工具。
-
-**我**：能不能加一个最简单的看看配置结构？
-
-**Codex**：可以。加一个名叫 `echo` 的 stdio 服务器，它的命令就是 Windows 的 `cmd /c echo hello`。注意在 PowerShell 里执行，不要在 Git Bash 里执行，否则 `/c` 会被转换：
-
-```powershell
-codex mcp add echo -- cmd /c echo hello
-# Added global MCP server 'echo'.
-```
-
-**我**：现在列表里是什么样？
-
-**Codex**：
-
-```powershell
-codex mcp list
-# Name             Command  Args                        Env  Cwd  Status   Auth
-# chrome-devtools  npx      chrome-devtools-mcp@latest  -    -    enabled  Unsupported
-# echo             cmd      /c echo hello               -    -    enabled  Unsupported
-```
-
-两个服务器状态都是 `enabled`。`chrome-devtools` 是另一节并行安装时加的，现在只关注 `echo`。
-
-**我**：配置到底存在哪里？
-
-**Codex**：在 `C:\Users\Administrator\.codex\config.toml`：
-
-```toml
-[mcp_servers.echo]
-command = "cmd"
-args = ["/c", "echo", "hello"]
-```
-
-**我**：这个 echo 算真正连上了吗？
-
-**Codex**：不算。`cmd /c echo hello` 只是一个普通命令，单独运行它只会输出 `hello`，它不会实现 MCP 需要的初始化握手，所以 Codex 只是“能识别并保存这份配置”，并不是“成功连上一个有用的服务器”。这一节的目的就是区分“配置被识别”和“外部工具真正联通”。
-
-**我**：那 Skill 和 MCP 到底怎么分工？
-
-**Codex**：MCP 回答“我能做什么工具”，Skill 回答“这件事按什么顺序做”。例如浏览器 MCP 只负责打开页面、点击、求值、截图；而一个 RPA 技能决定“先打开、再定位搜索框、输入、提交、等结果出现、再读取前三条”。没有 MCP，技能没有手；没有技能，MCP 只是一堆孤立的工具按钮。
-
-**我**：如果第一次没跑通，通常先查哪里？
-
-**Codex**：最常见的是环境问题：命令找不到、版本不对、PATH 没生效，先重开终端再看版本，比反复重装有效。把这一步记下来，下次再遇到同类问题时能少走不少弯路。
-
-如果只记住一句，那就是：先让最小链路真实跑通，再谈优化和自动化；跳过验证直接堆功能，最后往往要花更多时间回头补。
-
-### 总结
-
-这一节的内容说起来不少，真正值得带走的是下面几条；把它们串起来看一遍，比单独记某一条更有用。
-
-- MCP 配置写在 `~/.codex/config.toml`，stdio 用 `command` + `args`，远程用 `url`。
-- `codex mcp add` 是添加服务器最可靠的入口。
-- 配置显示 `enabled` 不等于服务器协议握手成功；对 echo 这种演示命令，要明确它只是配置验证。
-- 记忆口诀：MCP 把外部工具“连上”，Skill 决定“怎么用”。
-
-## 1.9 安装第一个 MCP：Chrome DevTools
-
-### 简介
-
-Chrome DevTools MCP 让 Codex 连接真实浏览器：打开页面、读取 DOM、截图、查看网络请求、跑 Lighthouse 审计。它对你的意义是，以后 Codex 不需要你手动打开浏览器再描述结果，它可以自己打开页面并返回结构化的数据。浏览器 MCP 是从'让 AI 看着网页猜'到'让 AI 直接读网页'的分水岭；这一节装好它，并把第一条链路真实验证一遍。
-
-安装命令只有一个：
-
-```powershell
-codex mcp add chrome-devtools -- npx chrome-devtools-mcp@latest
-```
-
-由于它依赖 Node.js，请先完成 1.2 节。安装完成后，`codex mcp list` 里会出现 `chrome-devtools`。下面的实操会真正通过 MCP 打开 `https://example.com` 并读取页面内容。
-
-### 调用记录
-
-**我**：帮我添加 Chrome DevTools MCP。
-
-**Codex**：
-
-```powershell
-codex mcp add chrome-devtools -- npx chrome-devtools-mcp@latest
-# Added global MCP server 'chrome-devtools'.
-```
-
-再用列表确认：
-
-```powershell
-codex mcp list
-# Name             Command  Args                        Env  Cwd  Status   Auth
-# chrome-devtools  npx      chrome-devtools-mcp@latest  -    -    enabled  Unsupported
-```
-
-**我**：这个服务器提供哪些能力？
-
-**Codex**：用 MCP 客户端枚举工具，与 Codex 实际会看到的工具列表相同。导航和检查相关的主要有：
-
-```text
-new_page        打开一个新页面
-navigate_page   跳转到指定 URL
-list_pages      列出当前所有标签页
-evaluate_script 在页面里运行 JavaScript 并取回结果
-take_snapshot   抓取页面可访问性快照
-take_screenshot 给页面截图
-lighthouse_audit 运行 Lighthouse 审计
-list_network_requests 查看网络请求
-list_console_messages 查看控制台消息
-```
-
-**我**：打开 `https://example.com` 试试。
-
-**Codex**：调用 `new_page`，传入 `url`：
-
-```text
-=== CALL new_page url=https://example.com ===
-## Pages
-1: about:blank
-2: Example Domain (https://example.com/) [selected]
-```
-
-返回结果里有一行“Example Domain”，这已经说明浏览器真的打开并加载了页面。
-
-**我**：我第一次调用时看到 npx 在下载，这正常吗？
-
-**Codex**：正常。`codex mcp add` 只写入配置，不下载服务器。第一次真正调用工具时，npx 才去拉取：
-
-```text
-npm warn exec The following package was not found and will be installed: chrome-devtools-mcp@1.12.0
-```
-
-下载完成之后，后面的调用会走本机缓存。
-
-**我**：那页面的 `<h1>` 是什么？
-
-**Codex**：调用 `evaluate_script`，让浏览器执行 `document.title` 和寻找 `h1` 标签的 JavaScript：
-
-```text
-=== CALL evaluate_script pageId=2 ===
-{"title":"Example Domain","h1":[]}
-```
-
-这里有一个真实细节：现在的 `example.com` 网页标题是 “Example Domain”，但页面里并没有 `<h1>` 标签，所以 `h1` 是空数组。网上很多教程会写成“读取到 h1”，那是旧版页面的结果。正确做法是：先读取 `document.title`，或者读取 `document.body.innerText` 的第一段，再把结果和你的预期核对。
-
-**我**：除了读文字，怎么确认页面真的渲染了？
-
-**Codex**：可以同时抓可访问性快照和全页截图。快照中第一行就是结构化结果：
-
-```text
-RootWebArea "Example Domain" url="https://example.com/"
-  ...
-  link "Learn more" url="https://iana.org/help/example-domains"
-```
-
-截图命令返回：
-
-```text
-Took a screenshot of the full current page.
-Saved screenshot to C:\Users\Administrator\AppData\Local\Temp\chrome-devtools-mcp-test\example-domain.png.
-```
-
-文件大小为 137420 字节，说明不是空图。
-
-**我**：我另外开了一个客户端，还拿刚才的 `pageId=2` 继续调用，为什么一直报 `No page found`？
-
-**Codex**：因为每次启动一个 MCP 客户端连接，都会启动一个独立的浏览器实例，页 ID 不能跨连接复用。正确做法是在同一个连接里按顺序执行：`new_page → evaluate_script → take_snapshot → take_screenshot`。如果中途必须换连接，先调用 `list_pages` 重新取得新的页 ID。
-
-**我**：`new_page` 返回后马上求值，会不会拿到空结果？
-
-**Codex**：可能。`new_page` 返回时页面不一定加载完成。保险做法是先调用 `wait_for`，等待关键文本出现，再做求值：
-
-```text
-wait_for  { pageId: 2, text: ["Example Domain"], visible: true }
-```
-
-看到匹配文本出现，说明页面已经进入可操作状态。
-
-**我**：按这个流程做，最容易卡在哪一步？
-
-**Codex**：最常见的是环境问题：命令找不到、版本不对、PATH 没生效，先重开终端再看版本，比反复重装有效。遇到时先按本节记录的顺序排查，通常都能定位到具体原因。
-
-本节记录里保留了失败和阻断，不是为了吓人，而是让你知道正常使用中也会遇到这些情况，遇到了照着排查即可，不必怀疑自己。
-
-### 总结
-
-这一节的内容说起来不少，真正值得带走的是下面几条；把它们串起来看一遍，比单独记某一条更有用。
-
-- 安装 Chrome DevTools MCP 只需一条 `codex mcp add` 命令，服务器会在第一次调用时才真正下载。
-- 它提供的核心工具是 `new_page`、`navigate_page`、`evaluate_script`、`take_snapshot`、`take_screenshot` 和 `wait_for`。
-- `evaluate_script` 能返回结构化数据，比读整段网页文本更适合判断页面状态。
-- 页 ID 只在同一个 MCP 连接内有效，换连接后要先 `list_pages`。
-- 网页结构可能和教程不同：`example.com` 现在有标题但没有 `<h1>`，遇到这种情况要读 `document.title` 或正文文本，而不是照抄旧教程。
+- 伏笔 = 待偿债务：埋设章、计划回收章、当前状态三要素齐全才可追踪。
+- 审查输出固定分为硬伤 / 风险 / 伏笔状态 / 通过项，每一条都要有证据位置和修复方向。
+- 伏笔三宗罪：提前消费、超期未收、改义。
+- 伏笔登记进 `plan/伏笔追踪.md`，写作与审查阶段通过事实锁联动提醒。

@@ -1,20 +1,29 @@
 # 第10章 基本面选股与因子挖掘
 
-量化研究最怕“一个黑箱总分”：给你一个排名，你既不知道分从哪来，也没法复现。这一章介绍两套方向不同的 Skill：`stockaskill` 在已有因子上做截面排序和组合构建，`factormad-debate-factor-mining` 生成新的可评估因子。它们的共同底线是“可审计”：评分要能逐维度追溯，因子要能交给另一个人用同样数据复现。这一章不是投资建议，数据质量和风控判断仍然由读者承担。量化研究里'可审计'和'可复现'比任何一次漂亮的排名都重要；这一章用真实跑出来的失败与降级来证明这一点，希望你看完对'没数据就不硬编'印象深刻。
+量化研究最怕“一个黑箱总分”：给你一个排名，你既不知道分从哪来，也没法复现。这一章介绍两套方向不同的 Skill：`stockaskill` 在已有因子上做截面排序和组合构建，`factormad-debate-factor-mining` 生成新的可评估因子。它们的共同底线是“可审计”：评分要能逐维度追溯，因子要能交给另一个人用同样数据复现。这一章不是投资建议，数据质量和风控判断仍然由读者承担。量化研究里“可审计”和“可复现”比任何一次漂亮的排名都重要；这一章用真实跑出来的失败与降级来证明这一点，希望你看完对“没数据就不硬编”印象深刻。
 
 ## 10.1 A 股多因子选股与组合构建
 
 ### 简介
 
-`stockaskill` 是基于 AKShare + DuckDB 缓存的多市场选股与组合引擎，覆盖价值、质量、成长、动量、低波、规模等维度，做多因子评分、排名和组合构建。它的定位是“可审计的研究流程，不是投资建议”：本地优先、按任务范围增量同步、拒绝盲目的全市场全历史刷新。选股结果能不能信，取决于它是不是可追溯的本地计算；数据不到位时，一个负责任的引擎会直接告诉你'没有结果'。
+`stockaskill` 是基于 AKShare + DuckDB 缓存的多市场选股与组合引擎，覆盖价值、质量、成长、动量、低波、规模等维度，做多因子评分、排名和组合构建。它的定位是“可审计的研究流程，不是投资建议”：本地优先、按任务范围增量同步、拒绝盲目的全市场全历史刷新。选股结果能不能信，取决于它是不是可追溯的本地计算；数据不到位时，一个负责任的引擎会直接告诉你“没有结果”。
 
 它的能力不止选股：`screen` 做亚秒级截面筛选，`portfolio --optimize` 做目标年化/最大回撤约束下的组合优化，`diagnose` 做单票诊断，`thesis` / `risk-alert` 做观点生命周期与风险巡检。
 
 ### 调用记录
 
-**我**：先把 CLI 跑起来。
+我们先让模型说说，先把 CLI 跑起来：
 
-**Codex**：技能要求 Python ≥ 3.10。本机系统 Python 缺 `duckdb`，按它的说明建独立环境：
+```
+我：先把 CLI 跑起来。
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：技能要求 Python ≥ 3.10。本机系统 Python 缺 duckdb，按它的说明建独立环境：给出 uv venv .venv --python 3.10、uv pip install --python .venv\Scripts\python.exe duckdb pandas numpy scipy、.venv\Scripts\python.exe scripts\run.py --help；真实命令列表包含：scan / screen / refresh-scan 选股与截面筛选、analyze / diagnose / deep-diagnose 单票分析与诊断、portfolio / portfolio-enhanced 组合构建与优化、fetch / sync / status 数据同步与状态、alpha / backtest 动量扫描与回测、thesis / risk-alert / track 观点与风险跟踪。
+
+Codex：技能要求 Python ≥ 3.10。本机系统 Python 缺 `duckdb`，按它的说明建独立环境：
 
 ```powershell
 uv venv .venv --python 3.10
@@ -32,10 +41,20 @@ fetch / sync / status             数据同步与状态
 alpha / backtest                  动量扫描与回测
 thesis / risk-alert / track       观点与风险跟踪
 ```
+```
 
-**我**：按小实操跑 `scan A --top 10`。
+接着问按小实操跑 `scan A --top 10`：
 
-**Codex**：真实输出：
+```
+我：按小实操跑 `scan A --top 10`。
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：真实输出：Scanning A market for top 10... 缓存为空，预热点 30 只股票数据... [WARNING] Failed to sync trade calendar for market A: No module named 'akshare' [WARN] akshare not installed, cannot refresh stock pool. Run: pip install akshare 市场状态: 中性 | score=50.0 | 数据不足，按中性仓位处理 本地全市场快照缺失，回退到有界 realtime candidate scan。如需构建完整本地快照，可执行: python stockaskill/scripts/run.py refresh-scan A No results returned (run 'python stockaskill/scripts/run.py fetch pool' to refresh data). JSON report: ...\reports\2026-11-03-1239_scan_A.json。
+
+Codex：真实输出：
 
 ```text
 Scanning A market for top 10...
@@ -48,10 +67,20 @@ Scanning A market for top 10...
   No results returned (run 'python stockaskill/scripts/run.py fetch pool' to refresh data).
   JSON report: ...\reports\2026-11-03-1239_scan_A.json
 ```
+```
 
-**我**：它为什么一个结果都没给？
+我们再问它为什么一个结果都没给：
 
-**Codex**：因为没有本地数据，也没有装 `akshare` 去拉数据。注意它的处理方式：市场状态写“数据不足，按中性仓位处理”，明确“No results returned”，并把报告写进 JSON。它没有编十个股票代码来糊弄你。要跑真实选股，必须先：
+```
+我：它为什么一个结果都没给？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：因为没有本地数据，也没有装 akshare 去拉数据。注意它的处理方式：市场状态写“数据不足，按中性仓位处理”，明确“No results returned”，并把报告写进 JSON。它没有编十个股票代码来糊弄你。要跑真实选股，必须先：pip install akshare、python scripts/run.py fetch pool、python scripts/run.py sync update --market A、python scripts/run.py scan A --top 10。
+
+Codex：因为没有本地数据，也没有装 `akshare` 去拉数据。注意它的处理方式：市场状态写“数据不足，按中性仓位处理”，明确“No results returned”，并把报告写进 JSON。它没有编十个股票代码来糊弄你。要跑真实选股，必须先：
 
 ```powershell
 pip install akshare
@@ -59,20 +88,51 @@ python scripts/run.py fetch pool
 python scripts/run.py sync update --market A
 python scripts/run.py scan A --top 10
 ```
+```
 
-**我**：数据齐了之后，评分能追溯吗？
+接着问数据齐了之后，评分能追溯吗：
 
-**Codex**：能。`diagnose` 会把价值、质量、成长、动量、低波、规模各维度拆开显示，并给出数据报告期。它强调的是“逐维度可解释”，而不是一个总分黑箱。报告里的 `reports/2026-11-03-1239_scan_A.json` 是本地证据，不是要提交到仓库的文件。
+```
+我：数据齐了之后，评分能追溯吗？
+```
 
-**我**：搜索 MCP 能找到 stockaskill 的公开教程吗？
+模型给出如下回复：
 
-**Codex**：检索到的是其他选股工具和通用水晶球式教程，不是 `stockaskill` 的专门记录。它们不能替代本项目的命令与缓存机制。本节仍以仓库 `README`、`SKILL.md` 和本机 CLI 实跑为依据：空缓存时返回“无结果”，不伪造选股。
+```
+> 思考过程：能。diagnose 会把价值、质量、成长、动量、低波、规模各维度拆开显示，并给出数据报告期。它强调的是“逐维度可解释”，而不是一个总分黑箱。报告里的 reports/2026-11-03-1239_scan_A.json 是本地证据，不是要提交到仓库的文件。
 
-**我**：这一步有没有什么容易被忽略的细节？
+Codex：能。`diagnose` 会把价值、质量、成长、动量、低波、规模各维度拆开显示，并给出数据报告期。它强调的是“逐维度可解释”，而不是一个总分黑箱。报告里的 `reports/2026-11-03-1239_scan_A.json` 是本地证据，不是要提交到仓库的文件。
+```
 
-**Codex**：最常见的是把空缓存当成'没有机会'：先补数据和依赖，再看排名，否则任何结论都没有根据。先别怀疑工具本身，多数情况是环境、路径或前置条件没对上。
+我们再问搜索 MCP 能找到 stockaskill 的公开教程吗：
+
+```
+我：搜索 MCP 能找到 stockaskill 的公开教程吗？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：检索到的是其他选股工具和通用水晶球式教程，不是 stockaskill 的专门记录。它们不能替代本项目的命令与缓存机制。本节仍以仓库 README、SKILL.md 和本机 CLI 实跑为依据：空缓存时返回“无结果”，不伪造选股。
+
+Codex：检索到的是其他选股工具和通用水晶球式教程，不是 `stockaskill` 的专门记录。它们不能替代本项目的命令与缓存机制。本节仍以仓库 `README`、`SKILL.md` 和本机 CLI 实跑为依据：空缓存时返回“无结果”，不伪造选股。
+```
+
+最后问这一步有没有什么容易被忽略的细节：
+
+```
+我：这一步有没有什么容易被忽略的细节？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：点出最常见的误区，即把空缓存当成“没有机会”：先补数据和依赖，再看排名，否则任何结论都没有根据。先别怀疑工具本身，多数情况是环境、路径或前置条件没对上；把这一节放回整条链路里看，它只是其中一段；真正动手时不必追求一次全对，先把命令跑通、把输出对上，遇到报错再回来查对应位置，往往比从头读一遍更快。
+
+Codex：最常见的是把空缓存当成“没有机会”：先补数据和依赖，再看排名，否则任何结论都没有根据。先别怀疑工具本身，多数情况是环境、路径或前置条件没对上。
 
 把这一节放回整条链路里看，它只是其中一段；真正动手时不必追求一次全对，先把命令跑通、把输出对上，遇到报错再回来查对应位置，往往比从头读一遍更快。
+```
 
 ### 总结
 
@@ -94,9 +154,18 @@ python scripts/run.py scan A --top 10
 
 ### 调用记录
 
-**我**：先用样例数据跑一次预检。
+我们先让模型说说，先用样例数据跑一次预检：
 
-**Codex**：样例输入 `examples/debate_input.json` 里 `dry_run: true`，用玩具行情 `toy_market_data.csv`。真实执行：
+```
+我：先用样例数据跑一次预检。
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：样例输入 examples/debate_input.json 里 dry_run: true，用玩具行情 toy_market_data.csv。真实执行：给出 uvx --with pandas --with numpy --with scipy python scripts\factormad_debate_factor.py --input examples\debate_input.json，输出 [FactorMAD] dry run started [FactorMAD] dry run finished: accepted=1 { "ok": true, "dry_run": true, "round_count": 0, "accepted_count": 1, "invalid_count": 0, "llm_fee": 0.0 }。
+
+Codex：样例输入 `examples/debate_input.json` 里 `dry_run: true`，用玩具行情 `toy_market_data.csv`。真实执行：
 
 ```powershell
 uvx --with pandas --with numpy --with scipy python scripts\factormad_debate_factor.py --input examples\debate_input.json
@@ -107,10 +176,20 @@ uvx --with pandas --with numpy --with scipy python scripts\factormad_debate_fact
 #   "round_count": 0, "accepted_count": 1, "invalid_count": 0, "llm_fee": 0.0
 # }
 ```
+```
 
-**我**：产出的因子长什么样？
+接着问产出的因子长什么样：
 
-**Codex**：`outputs/debate_example/accepted_factors.json` 里有一条：
+```
+我：产出的因子长什么样？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：outputs/debate_example/accepted_factors.json 里有一条：给出 JSON：{ "name": "dry_run_close_to_vwap_gap", "code": "def dry_run_close_to_vwap_gap(data, window=5): ... close/vwap-1 的 5 日滚动均值 ...", "arguments": {"window": 5}, "metric": {"IC": 0.0, "ICIR": 0.0, "RankIC": 0.0, ...}, "status": "dry_run", "referenced_fields": ["close", "vwap"] }；referenced_fields 说明它只用了 close 和 vwap，数据边界清楚；代码是可直接运行的 Python 函数。
+
+Codex：`outputs/debate_example/accepted_factors.json` 里有一条：
 
 ```json
 {
@@ -124,14 +203,34 @@ uvx --with pandas --with numpy --with scipy python scripts\factormad_debate_fact
 ```
 
 `referenced_fields` 说明它只用了 `close` 和 `vwap`，数据边界清楚；代码是可直接运行的 Python 函数。
+```
 
-**我**：IC 都是 0 是怎么回事？
+我们再问 IC 都是 0 是怎么回事：
 
-**Codex**：因为这是 dry-run，`round_count: 0`、`llm_fee: 0.0`，根本没有跑真实评估，指标是占位值。要得到真正的 IC/RankIC，必须配置密钥后跑真实辩论模式；技能也不会拿 dry-run 的 0 当成“有效因子”。
+```
+我：IC 都是 0 是怎么回事？
+```
 
-**我**：那怎么判断另一个能复现？
+模型给出如下回复：
 
-**Codex**：可复现的标准是：同一份 `toy_market_data.csv`、同一段因子代码、同一组参数能跑出同一组指标，并且结果归档在固定路径：
+```
+> 思考过程：因为这是 dry-run，round_count: 0、llm_fee: 0.0，根本没有跑真实评估，指标是占位值。要得到真正的 IC/RankIC，必须配置密钥后跑真实辩论模式；技能也不会拿 dry-run 的 0 当成“有效因子”。
+
+Codex：因为这是 dry-run，`round_count: 0`、`llm_fee: 0.0`，根本没有跑真实评估，指标是占位值。要得到真正的 IC/RankIC，必须配置密钥后跑真实辩论模式；技能也不会拿 dry-run 的 0 当成“有效因子”。
+```
+
+接着问那怎么判断另一个能复现：
+
+```
+我：那怎么判断另一个能复现？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：可复现的标准是：同一份 toy_market_data.csv、同一段因子代码、同一组参数能跑出同一组指标，并且结果归档在固定路径：outputs/debate_example/factormad_debate_result.json、outputs/debate_example/debate_rounds.json、outputs/debate_example/accepted_factors.json；真实运行还会保留辩论轮次与接受因子，用来审计“这个因子是怎么被提出和接受的”。
+
+Codex：可复现的标准是：同一份 `toy_market_data.csv`、同一段因子代码、同一组参数能跑出同一组指标，并且结果归档在固定路径：
 
 ```text
 outputs/debate_example/factormad_debate_result.json
@@ -140,16 +239,37 @@ outputs/debate_example/accepted_factors.json
 ```
 
 真实运行还会保留辩论轮次与接受因子，用来审计“这个因子是怎么被提出和接受的”。
+```
 
-**我**：搜索 MCP 能找到 FactorMAD 的公开教程吗？
+我们再问搜索 MCP 能找到 FactorMAD 的公开教程吗：
 
-**Codex**：没有检索到项目级教程，只有因子挖掘和 IC 评估的泛化文章。能借鉴的是评估原则：内部 IC 只是选择证据，必须再做独立样本外验证。本节关于 `dry_run`、`debate_rounds.json`、`accepted_factors.json` 的记录，来自仓库文档与本机实跑。
+```
+我：搜索 MCP 能找到 FactorMAD 的公开教程吗？
+```
 
-**我**：如果第一次没跑通，通常先查哪里？
+模型给出如下回复：
 
-**Codex**：最常见的是把空缓存当成'没有机会'：先补数据和依赖，再看排名，否则任何结论都没有根据。把这一步记下来，下次再遇到同类问题时能少走不少弯路。
+```
+> 思考过程：没有检索到项目级教程，只有因子挖掘和 IC 评估的泛化文章。能借鉴的是评估原则：内部 IC 只是选择证据，必须再做独立样本外验证。本节关于 dry_run、debate_rounds.json、accepted_factors.json 的记录，来自仓库文档与本机实跑。
+
+Codex：没有检索到项目级教程，只有因子挖掘和 IC 评估的泛化文章。能借鉴的是评估原则：内部 IC 只是选择证据，必须再做独立样本外验证。本节关于 `dry_run`、`debate_rounds.json`、`accepted_factors.json` 的记录，来自仓库文档与本机实跑。
+```
+
+最后问如果第一次没跑通，通常先查哪里：
+
+```
+我：如果第一次没跑通，通常先查哪里？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：点出最常见的误区，即把空缓存当成“没有机会”：先补数据和依赖，再看排名，否则任何结论都没有根据。把这一步记下来，下次再遇到同类问题时能少走不少弯路；这些步骤看起来零散，其实前后是有因果的：前一步的产物就是后一步的输入，中间哪一环没对上，后面就会以各种奇怪的方式报错。
+
+Codex：最常见的是把空缓存当成“没有机会”：先补数据和依赖，再看排名，否则任何结论都没有根据。把这一步记下来，下次再遇到同类问题时能少走不少弯路。
 
 这些步骤看起来零散，其实前后是有因果的：前一步的产物就是后一步的输入，中间哪一环没对上，后面就会以各种奇怪的方式报错。
+```
 
 ### 总结
 
@@ -169,13 +289,32 @@ outputs/debate_example/accepted_factors.json
 
 ### 调用记录
 
-**我**：用 10.1 排名靠前的一只股票，让因子技能生成一个“动量”候选因子，检查它的暴露方向是否和 10.1 的动量评分一致。
+我们先让模型说说，用 10.1 排名靠前的一只股票，让因子技能生成一个“动量”候选因子，检查它的暴露方向是否和 10.1 的动量评分一致：
 
-**Codex**：这个检查需要两个前提：10.1 真的产出了排名，10.2 真的产出了带 IC 的因子。本次真实情况是：10.1 因本地缓存为空、`akshare` 未安装，`scan A --top 10` 返回 `No results returned`；10.2 只跑了 `dry_run`，`round_count=0`、IC 全为 0。因此没有任何“排名股票 + 真实因子暴露”可供交叉验证。
+```
+我：用 10.1 排名靠前的一只股票，让因子技能生成一个“动量”候选因子，检查它的暴露方向是否和 10.1 的动量评分一致。
+```
 
-**我**：那这一步应该怎么收尾？
+模型给出如下回复：
 
-**Codex**：不能硬编一个“方向一致”的结论。正确的流程是：
+```
+> 思考过程：这个检查需要两个前提：10.1 真的产出了排名，10.2 真的产出了带 IC 的因子。本次真实情况是：10.1 因本地缓存为空、akshare 未安装，scan A --top 10 返回 No results returned；10.2 只跑了 dry_run，round_count=0、IC 全为 0。因此没有任何“排名股票 + 真实因子暴露”可供交叉验证。
+
+Codex：这个检查需要两个前提：10.1 真的产出了排名，10.2 真的产出了带 IC 的因子。本次真实情况是：10.1 因本地缓存为空、`akshare` 未安装，`scan A --top 10` 返回 `No results returned`；10.2 只跑了 `dry_run`，`round_count=0`、IC 全为 0。因此没有任何“排名股票 + 真实因子暴露”可供交叉验证。
+```
+
+接着问那这一步应该怎么收尾：
+
+```
+我：那这一步应该怎么收尾？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：不能硬编一个“方向一致”的结论。正确的流程是：给出五步：1. 在 10.1 补数据并跑出真实 top 排名 2. 在 10.2 配置密钥跑真实辩论，得到带 IC/RankIC 的接受因子 3. 取 10.1 的一只股票，读取它在 10.2 因子上的暴露方向 4. 与 10.1 的动量维度评分方向逐项比对 5. 记下不一致项：可能是因子定义不同、时间窗口不同，或数据口径不同；本次记录的价值，是让你看到“粒度切换”需要两份真实产物同时成立；任一侧没有数据，交叉验证就应该停，而不是用叙事把它补齐。
+
+Codex：不能硬编一个“方向一致”的结论。正确的流程是：
 
 ```text
 1. 在 10.1 补数据并跑出真实 top 排名
@@ -186,12 +325,23 @@ outputs/debate_example/accepted_factors.json
 ```
 
 本次记录的价值，是让你看到“粒度切换”需要两份真实产物同时成立；任一侧没有数据，交叉验证就应该停，而不是用叙事把它补齐。
+```
 
-**我**：按这个流程做，最容易卡在哪一步？
+最后问按这个流程做，最容易卡在哪一步：
 
-**Codex**：最常见的是把空缓存当成'没有机会'：先补数据和依赖，再看排名，否则任何结论都没有根据。遇到时先按本节记录的顺序排查，通常都能定位到具体原因。
+```
+我：按这个流程做，最容易卡在哪一步？
+```
+
+模型给出如下回复：
+
+```
+> 思考过程：点出最常见的误区，即把空缓存当成“没有机会”：先补数据和依赖，再看排名，否则任何结论都没有根据。遇到时先按本节记录的顺序排查，通常都能定位到具体原因；如果只记住一句，那就是：先让最小链路真实跑通，再谈优化和自动化；跳过验证直接堆功能，最后往往要花更多时间回头补。
+
+Codex：最常见的是把空缓存当成“没有机会”：先补数据和依赖，再看排名，否则任何结论都没有根据。遇到时先按本节记录的顺序排查，通常都能定位到具体原因。
 
 如果只记住一句，那就是：先让最小链路真实跑通，再谈优化和自动化；跳过验证直接堆功能，最后往往要花更多时间回头补。
+```
 
 ### 总结
 
