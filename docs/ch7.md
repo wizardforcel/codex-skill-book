@@ -20,15 +20,15 @@ Chrome MCP 偏“开发调试 + 质量审计”，Firefox MCP 基于 WebDriver B
 
 > **Codex 输出**
 >
-> # 浏览器 MCP 对比测试
+> ### 浏览器 MCP 对比测试
 >
-> ## Chrome MCP 打开页面并读取标题
+> #### Chrome MCP 打开页面并读取标题
 >
 > ```powershell
-> # 通过 Chrome DevTools MCP 打开页面
+> ### 通过 Chrome DevTools MCP 打开页面
 > codex mcp call chrome-devtools navigate_page --url "https://example.com"
 >
-> # 读取页面标题
+> ### 读取页面标题
 > codex mcp call chrome-devtools evaluate_script --function "() => document.title"
 > ```
 >
@@ -39,13 +39,13 @@ Chrome MCP 偏“开发调试 + 质量审计”，Firefox MCP 基于 WebDriver B
 > 额外参数：无（开箱即用）
 > ```
 >
-> ## Firefox MCP 打开页面并读取标题
+> #### Firefox MCP 打开页面并读取标题
 >
 > ```powershell
-> # 通过 Firefox DevTools MCP 打开页面，需要指定 profile
+> ### 通过 Firefox DevTools MCP 打开页面，需要指定 profile
 > codex mcp call firefox-devtools navigate_page --url "https://example.com" --profile "rpa-profile" --headless
 >
-> # 读取页面标题
+> ### 读取页面标题
 > codex mcp call firefox-devtools evaluate_script --function "() => document.title"
 > ```
 >
@@ -56,7 +56,7 @@ Chrome MCP 偏“开发调试 + 质量审计”，Firefox MCP 基于 WebDriver B
 > 额外参数：需要指定 --profile 和 --headless
 > ```
 >
-> ## 对比结论
+> #### 对比结论
 >
 > | 项目 | Chrome MCP | Firefox MCP |
 > |------|-----------|-------------|
@@ -92,42 +92,42 @@ Skill 编排是什么意思？就是把 MCP 提供的基本操作（比如“打
 
 > **Codex 输出**
 >
-> > realbrowser 是浏览器自动化的 Skill 编排层，把 MCP 的原子能力编排成固定步骤。核心产出不是“跑通一次”，而是把一次跑通固化成可重复的 Skill。
+> realbrowser 是浏览器自动化的 Skill 编排层，把 MCP 的原子能力编排成固定步骤。核心产出不是“跑通一次”，而是把一次跑通固化成可重复的 Skill。
 >
-> # 浏览器自动化 Skill 编排
+> ### 浏览器自动化 Skill 编排
 >
-> ## 编排步骤
+> #### 编排步骤
 >
 > 针对一个搜索框 + 结果列表的公开页面，执行以下步骤：
 >
-> ### 第一步：启动
+> ##### 第一步：启动
 >
 > ```powershell
-> # 启动浏览器，打开目标页面
+> ### 启动浏览器，打开目标页面
 > codex mcp call chrome-devtools navigate_page --url "https://example-search-page.com"
 > ```
 >
-> ### 第二步：定位搜索框
+> ##### 第二步：定位搜索框
 >
 > ```powershell
-> # 定位搜索输入框
+> ### 定位搜索输入框
 > codex mcp call chrome-devtools fill_by_uid --uid "search-input-uid" --value "codex skill"
 > ```
 >
-> ### 第三步：提交
+> ##### 第三步：提交
 >
 > ```powershell
-> # 按回车提交搜索
+> ### 按回车提交搜索
 > codex mcp call chrome-devtools press_key --key "Enter"
 > ```
 >
-> ### 第四步：校验结果列表非空（关键步骤）
+> ##### 第四步：校验结果列表非空（关键步骤）
 >
 > ```powershell
-> # 等待结果列表出现
+> ### 等待结果列表出现
 > codex mcp call chrome-devtools wait_for --condition "element_exists" --selector ".search-result"
 >
-> # 读取前 3 条标题
+> ### 读取前 3 条标题
 > codex mcp call chrome-devtools evaluate_script --function "
 > () => {
 >   const results = document.querySelectorAll('.search-result');
@@ -141,11 +141,11 @@ Skill 编排是什么意思？就是把 MCP 提供的基本操作（比如“打
 > ["Codex Skill 官方文档", "Codex Skill 安装指南", "Codex Skill 最佳实践"]
 > ```
 >
-> ## 校验结论
+> #### 校验结论
 >
 > 提交后显式校验了结果列表非空：通过 `wait_for` 等待结果元素出现，再读取前 3 条标题。如果结果列表为空，`wait_for` 会超时并报错，Skill 不会继续执行后续步骤。
 >
-> ## 固化为可重复 Skill
+> #### 固化为可重复 Skill
 >
 > 将上述步骤编排为 `search-and-verify` Skill，可重复使用于任意搜索框 + 结果列表的页面。
 
@@ -174,14 +174,14 @@ Skill 编排是什么意思？就是把 MCP 提供的基本操作（比如“打
 
 > **Codex 输出**
 >
-> > Windows-MCP 是轻量开源的 MCP server，让 AI Agent 与 Windows 操作系统集成，支持文件导航、应用控制、UI 交互和窗口操作。
+> Windows-MCP 是轻量开源的 MCP server，让 AI Agent 与 Windows 操作系统集成，支持文件导航、应用控制、UI 交互和窗口操作。
 >
-> # 桌面自动化测试
+> ### 桌面自动化测试
 >
-> ## 创建文件夹
+> #### 创建文件夹
 >
 > ```powershell
-> # 通过 Windows-MCP 在桌面创建文件夹
+> ### 通过 Windows-MCP 在桌面创建文件夹
 > codex mcp call windows-mcp filesystem write --path "~/Desktop/codex-rpa-test" --mode "create_directory"
 > ```
 >
@@ -190,10 +190,10 @@ Skill 编排是什么意思？就是把 MCP 提供的基本操作（比如“打
 > 操作成功：文件夹 codex-rpa-test 已创建
 > ```
 >
-> ## 写入文件
+> #### 写入文件
 >
 > ```powershell
-> # 在新创建的文件夹中写入 result.txt
+> ### 在新创建的文件夹中写入 result.txt
 > codex mcp call windows-mcp filesystem write --path "~/Desktop/codex-rpa-test/result.txt" --content "RPA 测试成功" --mode "write"
 > ```
 >
@@ -202,11 +202,11 @@ Skill 编排是什么意思？就是把 MCP 提供的基本操作（比如“打
 > 操作成功：文件 result.txt 已写入
 > ```
 >
-> ## 手动确认
+> #### 手动确认
 >
 > 打开文件资源管理器，导航到桌面，确认 `codex-rpa-test` 文件夹真实存在，打开文件夹确认 `result.txt` 文件存在且内容为“RPA 测试成功”。
 >
-> ## 安全提醒
+> #### 安全提醒
 >
 > 桌面自动化权限远大于浏览器自动化，Windows-MCP 必须限制在隔离环境或明确授权的应用上。不要在生产环境中随意授予桌面自动化权限。
 
@@ -236,17 +236,17 @@ Skill 编排是什么意思？就是把 MCP 提供的基本操作（比如“打
 
 > **Codex 输出**
 >
-> > 每个 MCP 只负责自己那一段，跨段编排才是 Skill 的工作。
+> 每个 MCP 只负责自己那一段，跨段编排才是 Skill 的工作。
 >
-> # 跨浏览器 + 桌面混合流程
+> ### 跨浏览器 + 桌面混合流程
 >
-> ## 第一步：Chrome MCP 读取页面标题
+> #### 第一步：Chrome MCP 读取页面标题
 >
 > ```powershell
-> # 打开 example.com
+> ### 打开 example.com
 > codex mcp call chrome-devtools navigate_page --url "https://example.com"
 >
-> # 读取 h1 标签内容
+> ### 读取 h1 标签内容
 > codex mcp call chrome-devtools evaluate_script --function "
 > () => document.querySelector('h1').innerText
 > "
@@ -257,10 +257,10 @@ Skill 编排是什么意思？就是把 MCP 提供的基本操作（比如“打
 > 页面 h1 内容：Example Domain
 > ```
 >
-> ## 第二步：Windows-MCP 写入桌面文件
+> #### 第二步：Windows-MCP 写入桌面文件
 >
 > ```powershell
-> # 在桌面创建 example-h1.txt 并写入标题内容
+> ### 在桌面创建 example-h1.txt 并写入标题内容
 > codex mcp call windows-mcp filesystem write --path "~/Desktop/example-h1.txt" --content "Example Domain" --mode "write"
 > ```
 >
@@ -269,13 +269,13 @@ Skill 编排是什么意思？就是把 MCP 提供的基本操作（比如“打
 > 操作成功：文件 example-h1.txt 已写入
 > ```
 >
-> ## 第三步：Skill 校验一致性
+> #### 第三步：Skill 校验一致性
 >
 > ```powershell
-> # 读取桌面文件内容
+> ### 读取桌面文件内容
 > codex mcp call windows-mcp filesystem read --path "~/Desktop/example-h1.txt"
 >
-> # 与页面标题比对
+> ### 与页面标题比对
 > ```
 >
 > 文件内容：Example Domain
@@ -283,7 +283,7 @@ Skill 编排是什么意思？就是把 MCP 提供的基本操作（比如“打
 >
 > 校验结果：✅ 一致
 >
-> ## 差异输出（如果不一致）
+> #### 差异输出（如果不一致）
 >
 > 如果文件内容与页面标题不一致，Skill 会输出差异：
 >
