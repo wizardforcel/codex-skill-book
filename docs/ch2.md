@@ -28,7 +28,7 @@ npx skills add xiaofeng-928/chinese-longnovel-skill -a codex -g -y
 
 > **Codex 输出**
 >
-> > 思考过程：用户的请求属于“开书 → 总大纲 → 分阶段大纲细化”这条链路。技能不能跳过前置步骤直接编细纲，所以要先说明路由决定，再依次展开。
+> 思考过程：用户的请求属于“开书 → 总大纲 → 分阶段大纲细化”这条链路。技能不能跳过前置步骤直接编细纲，所以要先说明路由决定，再依次展开。
 >
 > Codex：技能先看自己的路由表。你这条请求对应“开书”“总大纲”“分阶段大纲细化”三个环节，它不会跳过前置直接编细纲。
 
@@ -38,19 +38,19 @@ npx skills add xiaofeng-928/chinese-longnovel-skill -a codex -g -y
 
 > **Codex 输出**
 >
-> > 思考过程：第一步是“开书”里的市场证据检查。本机没有真实的扫榜归档，所以按低可信度探索继续，并且要记录覆盖原因；同时要给出生成的开书方案文件样例。
+> 思考过程：第一步是“开书”里的市场证据检查。本机没有真实的扫榜归档，所以按低可信度探索继续，并且要记录覆盖原因；同时要给出生成的开书方案文件样例。
 >
 > Codex：先检查有没有 30 天内的扫榜归档（市场证据）。真实执行中，本机没有任何扫榜归档，技能按“人工补充数据 / 低可信度探索”规则继续，但要求一律记录覆盖原因。现场生成的 `创作依据/开书方案.md` 开头是这样：
 >
 > ```markdown
 > # 开书方案
 >
-> ## 一、扫榜元数据与证据等级
+> #### 一、扫榜元数据与证据等级
 > - 来源平台：无（本演示项目未进行真实榜单抓取）
 > - 市场验证状态：unvalidated（未完成市场验证）
 > - 证据等级：低可信度探索（low-confidence exploration）
 >
-> ### 覆盖原因
+> ##### 覆盖原因
 > 本项目的开书目标不是真实市场推书，而是演示技能路由的完整执行。
 > 当前不存在 30 天内且题材匹配、至少 5 本含 management_loop/system_loop 证据的扫榜归档。
 > 因此按技能允许的路径：“缺少新鲜扫榜归档，按低可信度探索继续”。
@@ -65,19 +65,19 @@ npx skills add xiaofeng-928/chinese-longnovel-skill -a codex -g -y
 
 > **Codex 输出**
 >
-> > 思考过程：接下来是建最小项目壳，然后生成总大纲，要给出小说名、类型标签、系统设计档案等片段，并说明 6 个宏观阶段块和 exit_condition。
+> 思考过程：接下来是建最小项目壳，然后生成总大纲，要给出小说名、类型标签、系统设计档案等片段，并说明 6 个宏观阶段块和 exit_condition。
 >
 > Codex：先建最小项目壳（`novel-config.md`、`创作依据/开书方案.md`、`设定/`、`plan/`），再走“总大纲 → 分阶段大纲细化”。现场生成的这部书叫《老街食光记》（经营+美食+系统），`novel-config.md` 里已经写死目标 1000 章、当前规划窗口第 1-50 章、窗口合同与剧情预算锁都是 `locked`。
 >
 > 总大纲头部是技能规定的格式：
 >
 > ```markdown
-> ## 类型标签
+> #### 类型标签
 > - 主类型：经营流（美食小馆）+ 系统爽文，辅以老街人情悬疑线。
 > - 爽点模式：打脸（质疑→真实出品→口碑反杀）+ 经营成长盘账爽点 + 伏笔回收。
 > - 类型承诺检查重点：每次涨价/促销后要展示顾客支付能力变化；每次开发新菜要完成一次可围观的真做真吃。
 >
-> ## 系统设计档案（摘要）
+> #### 系统设计档案（摘要）
 > - 系统名称/核心循环：灶神簿——试菜/口碑账页→获灶神点→兑换菜谱残页与食材票→再投入经营。
 > - 永久限制：系统商店与面馆经营账严格分账；食材票货物只能自用；灶神点不得兑换现金。
 > ```
@@ -90,12 +90,12 @@ npx skills add xiaofeng-928/chinese-longnovel-skill -a codex -g -y
 
 > **Codex 输出**
 >
-> > 思考过程：细化前要过三道闸门，然后每章细纲带 PLAN-NODE 规划块和事实锁；要给出事实锁的简化示例并解释字段含义。
+> 思考过程：细化前要过三道闸门，然后每章细纲带 PLAN-NODE 规划块和事实锁；要给出事实锁的简化示例并解释字段含义。
 >
 > Codex：细化前先过三道闸门：同范围系统发展计划存在、窗口合同章号与宏观阶段匹配、剧情预算锁为 `locked`；第 1-50 章还要先有黄金三章微操细纲，缺了就停在上游。细纲每一章都带 `MYNOVEL:PLAN-NODE` 规划块，并且每章附“事实锁”清单。事实锁的结构由技能规定（以下为按提示词生成的简化示例）：
 >
 > ```markdown
-> ## 第3章 事实锁
+> #### 第3章 事实锁
 > - 硬事实：主线锚点 = 第2章末 "福记面馆招牌挂上"；expected_value = "福记面馆"
 > - 时间锚：当前年份 = 同第1章；expected_value = "开业第3天"
 > - 角色认知：赵全不知道旧账本在库房里；expected_value = "不知情"
@@ -113,7 +113,7 @@ npx skills add xiaofeng-928/chinese-longnovel-skill -a codex -g -y
 
 > **Codex 输出**
 >
-> > 思考过程：要解释“清单”和“事实锁”的区别，核心在于绑定到文件锚点和哈希，以及跨会话可复核，不能靠模型记忆。
+> 思考过程：要解释“清单”和“事实锁”的区别，核心在于绑定到文件锚点和哈希，以及跨会话可复核，不能靠模型记忆。
 >
 > Codex：清单人人会列，区别在“绑定”和“验证”。技能把每一条锁都绑定到具体文件的锚点和哈希；正文生成只允许同义改写，不能动 `expected_value`。你跨会话继续写、或者让另一个模型来续写，它读的不是你的记忆，而是这串可复核的事实锁。写几百章后的一致性，靠的就是这些稳定的 token 对照，而不是“我记得”。
 
@@ -123,7 +123,7 @@ npx skills add xiaofeng-928/chinese-longnovel-skill -a codex -g -y
 
 > **Codex 输出**
 >
-> > 思考过程：总结最常见的卡点，即把“生成过”当成“记下来了”，并给出排查建议。
+> 思考过程：总结最常见的卡点，即把“生成过”当成“记下来了”，并给出排查建议。
 >
 > Codex：最常见的是把“生成过”当成“记下来了”：设定、伏笔和时间线没有落到文件里，写到后面就会互相打架。遇到时先按本节记录的顺序排查，通常都能定位到具体原因。
 
@@ -160,7 +160,7 @@ npx skills add https://github.com/ExplosiveCoderflome/ani-book-skill -a codex -g
 
 > **Codex 输出**
 >
-> > 思考过程：要用技能自带的控制器初始化，本机 python 缺 pyyaml，所以用 uvx --with pyyaml 临时补依赖，并给出真实的 JSON 输出和生成的工作区骨架。
+> 思考过程：要用技能自带的控制器初始化，本机 python 缺 pyyaml，所以用 uvx --with pyyaml 临时补依赖，并给出真实的 JSON 输出和生成的工作区骨架。
 >
 > Codex：用技能自带的控制器初始化（本机 `python` 缺 `yaml`，这里用 `uvx --with pyyaml` 临时补依赖）：
 >
@@ -191,7 +191,7 @@ npx skills add https://github.com/ExplosiveCoderflome/ani-book-skill -a codex -g
 
 > **Codex 输出**
 >
-> > 思考过程：初始化后运行 status，展示缺失的 7 个必需文件和 next_action，再展示全部就绪后的状态样例。
+> 思考过程：初始化后运行 status，展示缺失的 7 个必需文件和 next_action，再展示全部就绪后的状态样例。
 >
 > Codex：刚初始化时运行 `status`，它老实告诉你 7 个必需文件还缺着：
 >
@@ -229,12 +229,12 @@ npx skills add https://github.com/ExplosiveCoderflome/ani-book-skill -a codex -g
 
 > **Codex 输出**
 >
-> > 思考过程：展示 chapters/chapter-001/plan.md 的节选和 context-package.md 的已选/已裁文件列表，说明什么是“分层上下文”的实际样子。
+> 思考过程：展示 chapters/chapter-001/plan.md 的节选和 context-package.md 的已选/已裁文件列表，说明什么是“分层上下文”的实际样子。
 >
 > Codex：`chapters/chapter-001/plan.md` 是本章合同，节选：
 >
 > ```markdown
-> ## 基本任务
+> #### 基本任务
 > - 本章即时目标：陈默修好一只停摆的旧怀表，并在表盖内侧发现与妹妹有关的编号。
 > - 主要阻力：怀表来源不明；回声带来剧烈头痛；开发公司的人当天下午就来取表。
 > - 必须推进的剧情和信息：
@@ -247,13 +247,13 @@ npx skills add https://github.com/ExplosiveCoderflome/ani-book-skill -a codex -g
 > `context-package.md` 则只挑本章真正需要的权威文件，并明确写“裁掉了什么”：
 >
 > ```markdown
-> ## 已选权威文件
+> #### 已选权威文件
 > | 文件 | 用途 |
 > | novel-brief.md | 频道、阅读承诺、叙事偏好、字数例外 |
 > | story-bible.md | 长期对立、主角成长路径、揭示梯度 |
 > | characters/character-roster.md | 陈默、林小雨、老周的当下呈现 |
 >
-> ## 因无关或超窗而裁掉
+> #### 因无关或超窗而裁掉
 > - 第二卷的证人线、第三卷的妹妹现身。
 > - 旧港内部结构、闸门记录细节。
 > ```
@@ -266,15 +266,15 @@ npx skills add https://github.com/ExplosiveCoderflome/ani-book-skill -a codex -g
 
 > **Codex 输出**
 >
-> > 思考过程：按章节计划写出 draft.md，给出字数统计和正文开头，并说明写完后 next 自动指向人类化润色。
+> 思考过程：按章节计划写出 draft.md，给出字数统计和正文开头，并说明写完后 next 自动指向人类化润色。
 >
 > Codex：按章节计划实际写出了 `chapters/chapter-001/draft.md`。字数统计：不含空白 529 字符，其中汉字 446 字，落在计划的 450–650 字可接受区间附近。开头是：
 >
-> > 表盖合上的时候，指针停在两点十七分。
-> >
-> > 陈默把放大镜卡回眼眶，拿镊子挑开第一颗螺丝。这表不旧，壳子擦得发亮，可机芯里全是干掉的盐霜。有人带着它下过水，又把它泡在盐里十年。
-> >
-> > “从旧港出来的。”老周在电话里只说了这一句，就挂了。
+> 表盖合上的时候，指针停在两点十七分。
+>
+> 陈默把放大镜卡回眼眶，拿镊子挑开第一颗螺丝。这表不旧，壳子擦得发亮，可机芯里全是干掉的盐霜。有人带着它下过水，又把它泡在盐里十年。
+>
+> “从旧港出来的。”老周在电话里只说了这一句，就挂了。
 >
 > 写完后 `next` 自动指向下一步——给正文做人类化润色，而不是回头重做大纲。
 
@@ -284,7 +284,7 @@ npx skills add https://github.com/ExplosiveCoderflome/ani-book-skill -a codex -g
 
 > **Codex 输出**
 >
-> > 思考过程：说明 start-step / finish-step 的流程，并给出真实的报错文本和 token 用量登记要求。
+> 思考过程：说明 start-step / finish-step 的流程，并给出真实的报错文本和 token 用量登记要求。
 >
 > Codex：先 `start-step`，返回唯一 `run_id` 并把该工件标成 `in_progress`；写完正文后 `finish-step`。这里有一个真实护栏：
 >
@@ -300,7 +300,7 @@ npx skills add https://github.com/ExplosiveCoderflome/ani-book-skill -a codex -g
 
 > **Codex 输出**
 >
-> > 思考过程：分三步演示恢复逻辑：删除文件后 status/next 没变；validate 发现文件缺失；reconcile 把缺失当成受保护变更并重算下一步，还要 approve --overwrite 授权才能重写。
+> 思考过程：分三步演示恢复逻辑：删除文件后 status/next 没变；validate 发现文件缺失；reconcile 把缺失当成受保护变更并重算下一步，还要 approve --overwrite 授权才能重写。
 >
 > Codex：不会。真实执行分三步暴露了它的恢复逻辑：
 >
@@ -343,7 +343,7 @@ npx skills add https://github.com/ExplosiveCoderflome/ani-book-skill -a codex -g
 
 > **Codex 输出**
 >
-> > 思考过程：总结三样东西的分工：novel-state.yaml 记录进度，status/next 给下一步，validate/reconcile 发现偏差并修正；强调不靠模型记忆也不靠数文件。
+> 思考过程：总结三样东西的分工：novel-state.yaml 记录进度，status/next 给下一步，validate/reconcile 发现偏差并修正；强调不靠模型记忆也不靠数文件。
 >
 > Codex：三样东西分工：`novel-state.yaml` 记录项目做到哪，`status` / `next` 给出当前唯一的下一步，`validate` / `reconcile` 负责发现“状态说好了、文件却不在”的偏差并把它修正成一个可执行的恢复动作。它不是靠模型记忆，也不是靠目录里数文件。
 
@@ -353,7 +353,7 @@ npx skills add https://github.com/ExplosiveCoderflome/ani-book-skill -a codex -g
 
 > **Codex 输出**
 >
-> > 思考过程：再次点出最常见的误区，并把零散步骤的因果关系串起来。
+> 思考过程：再次点出最常见的误区，并把零散步骤的因果关系串起来。
 >
 > Codex：最常见的是把“生成过”当成“记下来了”：设定、伏笔和时间线没有落到文件里，写到后面就会互相打架。先别怀疑工具本身，多数情况是环境、路径或前置条件没对上。
 >
@@ -388,7 +388,7 @@ npx skills add https://github.com/ExplosiveCoderflome/ani-book-skill -a codex -g
 
 > **Codex 输出**
 >
-> > 思考过程：解释 npx skills add 只装了 11 个子技能，没有伞形技能，需要手动复制适配层并用 quick_validate.py 校验，给出校验输出。
+> 思考过程：解释 npx skills add 只装了 11 个子技能，没有伞形技能，需要手动复制适配层并用 quick_validate.py 校验，给出校验输出。
 >
 > Codex：不能直接用。实测 `npx skills add wwt87/vibe-noveling -a codex -g -y` 只安装了 11 个子技能（`novel-init`、`novel-discuss`、`novel-bookplan`、`novel-plan`、`novel-write`、`novel-revise`、`novel-sync`、`novel-progress`、`novel-snapshot`，以及 `booming`、`fuck-it`），并没有 `$vibe-noveling` 伞形技能。按仓库 `codex/README.md` 把 `codex/skills/vibe-noveling` 复制到 `~/.codex/skills/vibe-noveling` 后，用校验脚本确认：
 >
@@ -402,7 +402,7 @@ npx skills add https://github.com/ExplosiveCoderflome/ani-book-skill -a codex -g
 
 > **Codex 输出**
 >
-> > 思考过程：技能路由到 novel-init，执行初始化脚本，给出真实的创建文件列表。
+> 思考过程：技能路由到 novel-init，执行初始化脚本，给出真实的创建文件列表。
 >
 > Codex：技能路由到 `/novel-init`，读取 `references/init.md`，然后执行它的初始化脚本：
 >
@@ -428,7 +428,7 @@ npx skills add https://github.com/ExplosiveCoderflome/ani-book-skill -a codex -g
 
 > **Codex 输出**
 >
-> > 思考过程：说明不会直接写正文，并给出验收骨架的实测点，包括 chapters\vol-01\ch-0001 文件数为 0、memory\past.md 等。
+> 思考过程：说明不会直接写正文，并给出验收骨架的实测点，包括 chapters\vol-01\ch-0001 文件数为 0、memory\past.md 等。
 >
 > Codex：不会。验收骨架的几个实测点：
 >
@@ -447,7 +447,7 @@ npx skills add https://github.com/ExplosiveCoderflome/ani-book-skill -a codex -g
 
 > **Codex 输出**
 >
-> > 思考过程：按仓库实际文件回答：Claude 插件层 13 个技能目录（其中 2 个内部辅助，11 个工作流），4 个子 Agent 及其分工；Codex 适配层 1 个伞形技能，内部 14 个 reference 文件做路由。
+> 思考过程：按仓库实际文件回答：Claude 插件层 13 个技能目录（其中 2 个内部辅助，11 个工作流），4 个子 Agent 及其分工；Codex 适配层 1 个伞形技能，内部 14 个 reference 文件做路由。
 >
 > Codex：以仓库实际文件为准，Claude 插件层是 13 个技能目录，其中 `novel-knowledge`、`novel-name` 是内部辅助，其余 11 个是工作流技能；另有 4 个子 Agent：`context-collector`（收集上下文）、`consistency-guard`（一致性检查）、`writer-dazhongma` 与 `writer-zhouzi`（两种风格稿作者）。Codex 适配层则是 1 个伞形技能，内部用 14 个 reference 文件做路由。
 
@@ -457,7 +457,7 @@ npx skills add https://github.com/ExplosiveCoderflome/ani-book-skill -a codex -g
 
 > **Codex 输出**
 >
-> > 思考过程：引用 CLAUDE.md 的工作流 discuss → bookplan → plan → write，并说明 novel-sync 和 novel-snapshot 的作用。
+> 思考过程：引用 CLAUDE.md 的工作流 discuss → bookplan → plan → write，并说明 novel-sync 和 novel-snapshot 的作用。
 >
 > Codex：`CLAUDE.md` 里写明的工作流是 `discuss → bookplan → plan → write`：先讨论世界和角色，再做全书规划，然后单章规划，最后才写正文。每完成一章，还有 `novel-sync` 负责把剧情摘要回写到 `memory/` 的知识图谱，`novel-snapshot` 负责存档打点。
 
@@ -467,7 +467,7 @@ npx skills add https://github.com/ExplosiveCoderflome/ani-book-skill -a codex -g
 
 > **Codex 输出**
 >
-> > 思考过程：点出最常见的误区，并给出一句总结性建议。
+> 思考过程：点出最常见的误区，并给出一句总结性建议。
 >
 > Codex：最常见的是把“生成过”当成“记下来了”：设定、伏笔和时间线没有落到文件里，写到后面就会互相打架。把这一步记下来，下次再遇到同类问题时能少走不少弯路。
 >
@@ -498,12 +498,12 @@ npx skills add https://github.com/ExplosiveCoderflome/ani-book-skill -a codex -g
 
 > **Codex 输出**
 >
-> > 思考过程：按技能要求，伏笔不进对话，进 plan/伏笔追踪.md，给出一条伏笔记录的完整字段。
+> 思考过程：按技能要求，伏笔不进对话，进 plan/伏笔追踪.md，给出一条伏笔记录的完整字段。
 >
 > Codex：按技能要求，伏笔不进对话，进 `plan/伏笔追踪.md`，每条记录至少含：埋设章、计划回收章、当前状态、来源文件与锚点：
 >
 > ```markdown
-> ## 伏笔：旧钥匙
+> #### 伏笔：旧钥匙
 > - 埋设章：第3章（主线锚点：周承在福记面馆的暗格里发现旧钥匙）
 > - 计划回收章：第8章
 > - 当前状态：pending（未释放）
@@ -519,7 +519,7 @@ npx skills add https://github.com/ExplosiveCoderflome/ani-book-skill -a codex -g
 
 > **Codex 输出**
 >
-> > 思考过程：执行一致性检查，输出按硬伤 / 风险 / 伏笔状态 / 通过项四类分类，并给出第 8 章对应伏笔的示例输出。
+> 思考过程：执行一致性检查，输出按硬伤 / 风险 / 伏笔状态 / 通过项四类分类，并给出第 8 章对应伏笔的示例输出。
 >
 > Codex：执行一致性检查，技能输出按固定四类分类：硬伤 / 风险 / 伏笔状态 / 通过项。伏笔状态必须给出“埋设章、计划回收章、当前状态”三个要素。检查本章（第 8 章）对应伏笔的示例输出：
 >
@@ -543,7 +543,7 @@ npx skills add https://github.com/ExplosiveCoderflome/ani-book-skill -a codex -g
 
 > **Codex 输出**
 >
-> > 思考过程：解释伏笔需要兑现，并列出三宗罪：提前消费、超期、变义，以及一致性审查查的其他硬伤。
+> 思考过程：解释伏笔需要兑现，并列出三宗罪：提前消费、超期、变义，以及一致性审查查的其他硬伤。
 >
 > Codex：因为它需要兑现。作家记录它、技能盯着它：没到回收窗口就用了，叫“提前消费”；过了窗口太久没用，叫“超期”；被改成了别的东西，叫“变义”。一致性审查本质上是查这三点，再加死人复活、时间线错位、能力凭空升级这些硬伤。
 
@@ -553,7 +553,7 @@ npx skills add https://github.com/ExplosiveCoderflome/ani-book-skill -a codex -g
 
 > **Codex 输出**
 >
-> > 思考过程：再次点出最常见的误区，并说明保留失败和阻断记录的目的。
+> 思考过程：再次点出最常见的误区，并说明保留失败和阻断记录的目的。
 >
 > Codex：最常见的是把“生成过”当成“记下来了”：设定、伏笔和时间线没有落到文件里，写到后面就会互相打架。遇到时先按本节记录的顺序排查，通常都能定位到具体原因。
 >
