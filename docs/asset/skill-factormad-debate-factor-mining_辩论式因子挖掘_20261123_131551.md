@@ -11,10 +11,10 @@
 > **提示词**：请使用 skill-factormad-debate-factor-mining 用 toy_market_data.csv 跑一次 dry_run，确认它能输出辩论记录和候选因子 JSON，不调用 LLM。
 
 > **Codex 输出**
+
+> 思考过程：skill-factormad-debate-factor-mining 是一个 FactorMAD 风格的双 Agent 辩论式因子挖掘流程：一个 Agent 提出候选因子的代码实现，另一个 Agent 从可运行性、未来函数、NaN/inf、索引对齐、零成交量等角度批评和修正，最终输出可执行 Python 函数而非只有公式的表达式，并做轻量 Pearson IC、RankIC、ICIR 筛选，所有候选、辩论意见和筛选结果按时间戳归档。
 >
-> > 思考过程：skill-factormad-debate-factor-mining 是一个 FactorMAD 风格的双 Agent 辩论式因子挖掘流程：一个 Agent 提出候选因子的代码实现，另一个 Agent 从可运行性、未来函数、NaN/inf、索引对齐、零成交量等角度批评和修正，最终输出可执行 Python 函数而非只有公式的表达式，并做轻量 Pearson IC、RankIC、ICIR 筛选，所有候选、辩论意见和筛选结果按时间戳归档。
->
-> > dry_run 模式下不调用 LLM，仅验证流程能否正常运行，输出辩论记录和候选因子 JSON。
+> dry_run 模式下不调用 LLM，仅验证流程能否正常运行，输出辩论记录和候选因子 JSON。
 
 # dry_run 执行结果
 
@@ -55,7 +55,7 @@
 > **提示词**：开启真实运行，只要求生成 1 个候选因子。回答：这个因子在辩论中被反方指出了哪些问题、最终版本修正了什么、IC/RankIC 是在哪个时间区间和样本上计算的。检查输出目录中是否同时存在 `debate` 记录和 `accepted_factors`。
 
 > **Codex 输出**
->
+
 > # 真实运行结果
 >
 > 生成的候选因子：1 个
@@ -86,10 +86,10 @@
 > ## IC/RankIC 计算
 >
 > - 时间区间：2023-01-01 至 2023-12-31
-- 样本：沪深300成分股，300 只股票
-- Pearson IC：0.085
-- RankIC：0.092
-- ICIR：1.25
+> - 样本：沪深300成分股，300 只股票
+> - Pearson IC：0.085
+> - RankIC：0.092
+> - ICIR：1.25
 >
 > ## 输出目录结构
 >

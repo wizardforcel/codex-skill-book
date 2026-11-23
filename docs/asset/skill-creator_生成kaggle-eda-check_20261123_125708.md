@@ -11,10 +11,10 @@
 > **提示词**：请使用 skill-creator 创建一个名为 kaggle-eda-check 的 Skill，description 收紧到一句话，覆盖“表格数据先查缺失和目标分布，时序数据先按时间切分并检查周期”。生成后用“帮我看看这个 CSV 有没有问题”测试隐式触发，检查它是否在动手画图之前先要求确认数据类型和分析目标。
 
 > **Codex 输出**
+
+> 思考过程：kaggle-eda-check 的核心是一条门禁：在动手画图或做统计之前，先要求用户确认数据类型和分析目标。description 需要收紧到一句，既能被“帮我看看这个 CSV 有没有问题”隐式命中，又要明确表达“先诊断、后出图”的原则。
 >
-> > 思考过程：kaggle-eda-check 的核心是一条门禁：在动手画图或做统计之前，先要求用户确认数据类型和分析目标。description 需要收紧到一句，既能被“帮我看看这个 CSV 有没有问题”隐式命中，又要明确表达“先诊断、后出图”的原则。
->
-> > Skill 骨架包括 SKILL.md（frontmatter + 使用说明）和 scripts/ 目录下的一个诊断脚本。脚本的逻辑是：读取 CSV → 输出 schema、缺失率、目标变量分布 → 判断数据类型（表格 vs 时序）→ 询问用户分析目标 → 只有在用户确认后才给出后续建议，不直接画图。
+> Skill 骨架包括 SKILL.md（frontmatter + 使用说明）和 scripts/ 目录下的一个诊断脚本。脚本的逻辑是：读取 CSV → 输出 schema、缺失率、目标变量分布 → 判断数据类型（表格 vs 时序）→ 询问用户分析目标 → 只有在用户确认后才给出后续建议，不直接画图。
 >
 > # SKILL.md
 >
@@ -47,7 +47,7 @@
 > import sys
 > from pathlib import Path
 >
-> import pandas as pd
+> import pandas as pd>
 >
 >
 > def diagnose(csv_path: Path) -> dict:
@@ -98,10 +98,10 @@
 > **提示词**：在项目目录中准备一个示例 CSV 文件（含缺失值和日期列），然后用“帮我看看这个 CSV 有没有问题”测试 kaggle-eda-check 的隐式触发。
 
 > **Codex 输出**
+
+> 用户输入“帮我看看这个 CSV 有没有问题”与 kaggle-eda-check 的 description 匹配，应当隐式命中。
 >
-> > 首先检查用户输入“帮我看看这个 CSV 有没有问题”是否与 kaggle-eda-check 的 description 匹配。description 是“表格数据先查缺失和目标分布，时序数据先按时间切分并检查周期，出图前先确认数据类型和分析目标”，与用户意图一致，应当隐式命中。
->
-> > 模拟运行脚本，读取示例 CSV，输出 schema、缺失率、目标分布，检测到日期列后提示用户先确认分析目标，不直接生成图表。
+> 模拟运行脚本，读取示例 CSV，输出 schema、缺失率、目标分布，检测到日期列后提示用户先确认分析目标，不直接生成图表。
 >
 > === 数据诊断摘要（出图前先确认）===
 > 行数：1000
