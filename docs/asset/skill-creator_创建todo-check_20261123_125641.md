@@ -105,6 +105,44 @@ if __name__ == "__main__":
 
 ---
 
+## 实操二：验证拆解骨架结构
+
+接着拆解骨架：
+
+> **提示词**：用 skill-creator 再生成一个最小 Skill 骨架，然后手工打开 SKILL.md，逐个指出 frontmatter 里 name、description、allowed-tools 的作用，并说明 scripts/、references/ 各自该放什么。最后删掉 references/ 里的文件重测触发，确认它们在命中后才被加载。
+
+> **Codex 输出**
+
+> 思考过程：理解触发机制要看两层——frontmatter 决定“什么时候命中”，目录决定“命中后加载什么”。name 是唯一标识；description 决定隐式触发时的匹配（触发词藏在里面）；allowed-tools 限制能用的工具。scripts/ 放可执行逻辑，references/ 放命中后才读取的参考资料。
+>
+> 拆解结果（示例）：
+> - `name`：Skill 的唯一名（如 date-check）
+> - `description`：隐式触发匹配的唯一入口，触发词必须在这里
+> - `allowed-tools`：可调用的工具白名单（如 bash、file 读写）
+> - `scripts/`：执行脚本（命中后运行）
+> - `references/`：参考资料（命中后才加载，不命中不读）
+>
+> 删除 references/ 文件后重测触发：Skill 仍能命中（description 还在），但涉及参考资料的逻辑会提示缺少引用文件——证明 references/ 是命中后才加载，不是常驻上下文。
+
+---
+
+## 实操三：验证 description 触发实验
+
+最后测试 description 对触发的影响：
+
+> **提示词**：把 todo-check 的 description 改成完全不含“待办/未完成”的说法，再用“看看我还有什么没做完”测试，观察是否不再触发；然后再改回含触发词的描述，确认恢复。
+
+> **Codex 输出**
+
+> 思考过程：description 是隐式触发的“广告词”——模型判断这轮用户意图匹配哪个 Skill 时，就看 description。把触发词（待办/未完成）删掉后，同样的用户话不再被路由到这个 Skill，就像换了招牌。
+>
+> 实验结果：
+> 1. description 改为“这是一个检查文件列表的工具”后，“看看我还有什么没做完”不再触发 todo-check（或触发得很弱）。
+> 2. 改回“读取项目根目录下的 TODO.md，列出所有未完成的任务项”后，同句触发恢复。
+>
+> 结论：触发词必须前载进 description，一句话“描述清楚做什么”，这就是第 14.2 节“描述前载触发词”原则的由来。
+
+
 ## 总结
 
 `skill-creator` 成功生成了 `todo-check` Skill 骨架，包含 `SKILL.md`（frontmatter 声明了 `name` 和 `description`，用于隐式触发）和 `scripts/todo_check.py`（实现读取与解析逻辑）。复制到 `.agents/skills/` 后，使用“看看我还有什么没做完”能够正确触发，输出了两个未完成任务项，验证了隐式触发机制生效。
